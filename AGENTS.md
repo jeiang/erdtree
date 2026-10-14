@@ -47,7 +47,7 @@ Pitfalls:
 
 ## Development Commands
 
-Run commands inside the Nix dev shell (`flake.nix`, nixpkgs Rust toolchain): `nix develop -c <cmd>`, or `nix develop` once.
+Run commands inside the Nix dev shell (`flake.nix`, toolchain from `rust-toolchain.toml` via rust-overlay): `nix develop -c <cmd>`, or `nix develop` once.
 
 ```sh
 cargo build                     # debug build
@@ -77,12 +77,13 @@ nix fmt                         # format flake.nix
 - `src/context/config/toml/mod.rs`: TOML discovery. Unix order: `$ERDTREE_TOML_PATH`, `$XDG_CONFIG_HOME/erdtree/.erdtree.toml`, `$XDG_CONFIG_HOME/.erdtree.toml`, `$HOME/.config/erdtree/.erdtree.toml`, `$HOME/.erdtree.toml`. Windows: `%APPDATA%\erdtree\.erdtree.toml`. Legacy rc uses `$ERDTREE_CONFIG_PATH`.
 - `src/tree/mod.rs`, `src/tree/visitor.rs`: walk and tree assembly.
 - `.github/workflows/ci.yml`: fmt, clippy, tests on Linux/macOS, MSRV `cargo check` on 1.70.0, aggregated into the `ci-pass` job (the required check for `master`). `publish.yml` (tag-triggered release, 7 targets, Windows on `nightly-2023-06-11`), `test.yml` (manual prerelease).
+- `rust-toolchain.toml`: pinned dev/CI toolchain (1.99.0). Bump it deliberately and fix new lints in the same PR; `nix develop` and CI both follow it.
 - `flake.nix` / `flake.lock`: dev shell. Update with `nix flake update`.
 - `CHANGELOG.md`: SemVer release notes.
 
 ## Runtime/Tooling Preferences
 
-- Cargo; no workspace, no Cargo features, no profile overrides. Local toolchain comes from the flake (current stable); CI uses `dtolnay/rust-toolchain@stable` plus a 1.70.0 MSRV job. When raising `rust-version` in `Cargo.toml`, update the `msrv` job in `ci.yml`.
+- Cargo; no workspace, no Cargo features, no profile overrides. CI installs the `rust-toolchain.toml` version with `rustup toolchain install`; the `msrv` job overrides it with `RUSTUP_TOOLCHAIN: 1.70.0`. When raising `rust-version` in `Cargo.toml`, update that job.
 - Windows requires nightly (hard-link support) and is not built in CI yet; the Windows-only config code in `src/context/config/toml/mod.rs` does not compile.
 - `Cargo.lock` is committed; releases build with `--locked`. Do not hand-edit it.
 

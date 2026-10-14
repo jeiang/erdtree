@@ -13,6 +13,7 @@
 #![allow(
     clippy::cast_precision_loss,
     clippy::struct_excessive_bools,
+    // Shared prefixes like `max_*` and `num_*` are deliberate field names.
     clippy::struct_field_names,
     clippy::wildcard_imports
 )]
