@@ -1,6 +1,6 @@
-use super::{config, error::Error, Context};
+use super::{Context, config, error::Error};
 use clap::{
-    builder::ArgAction, parser::ValueSource, ArgMatches, Command, CommandFactory, FromArgMatches,
+    ArgMatches, Command, CommandFactory, FromArgMatches, builder::ArgAction, parser::ValueSource,
 };
 use std::{
     ffi::{OsStr, OsString},

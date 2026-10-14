@@ -70,7 +70,7 @@ fn try_get_group(gid: libc::gid_t) -> Result<String, Error> {
         let mut result: *mut libc::group = ptr::null_mut();
         // SAFETY: `grp` and `buf` are valid for the call; `buf` is `len` bytes long. The result
         // is only read by the caller when `result` is non-null, in which case `grp` is initialized.
-        let code = unsafe { libc::getgrgid_r(gid, grp.as_mut_ptr(), buf, len, &mut result) };
+        let code = unsafe { libc::getgrgid_r(gid, grp.as_mut_ptr(), buf, len, &raw mut result) };
         (code, !result.is_null())
     })
     .map_err(Error::LibC)?
@@ -97,7 +97,7 @@ fn try_get_user(uid: libc::uid_t) -> Result<String, Error> {
         let mut result: *mut libc::passwd = ptr::null_mut();
         // SAFETY: `pwd` and `buf` are valid for the call; `buf` is `len` bytes long. The result
         // is only read by the caller when `result` is non-null, in which case `pwd` is initialized.
-        let code = unsafe { libc::getpwuid_r(uid, pwd.as_mut_ptr(), buf, len, &mut result) };
+        let code = unsafe { libc::getpwuid_r(uid, pwd.as_mut_ptr(), buf, len, &raw mut result) };
         (code, !result.is_null())
     })
     .map_err(Error::LibC)?

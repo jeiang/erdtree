@@ -1,4 +1,4 @@
-use crossterm::{cursor, ExecutableCommand};
+use crossterm::{ExecutableCommand, cursor};
 use std::io;
 use terminal_size::terminal_size;
 
@@ -10,5 +10,5 @@ pub fn restore() -> io::Result<()> {
 /// Attempts to get the current size of the tty's window. Returns `None` if stdout isn't tty or if
 /// failed to get width.
 pub fn get_window_width() -> Option<usize> {
-    Some(usize::from(terminal_size()?.0 .0))
+    Some(usize::from(terminal_size()?.0.0))
 }

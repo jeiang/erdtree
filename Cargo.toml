@@ -1,7 +1,7 @@
 [package]
 name = "erdtree"
 version = "3.1.2"
-edition = "2021"
+edition = "2024"
 authors = ["Benjamin Nguyen <benjamin.van.nguyen@gmail.com>"]
 description = """
 erdtree (erd) is a cross-platform, multi-threaded, and general purpose
@@ -15,7 +15,7 @@ keywords = ["tree", "find", "ls", "du", "commandline"]
 exclude = ["assets/*", "scripts/*", "example/*"]
 readme = "README.md"
 license = "MIT"
-rust-version = "1.70.0"
+rust-version = "1.88"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

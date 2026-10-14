@@ -1,5 +1,5 @@
 use crate::{
-    context::{column, Context},
+    context::{Context, column},
     disk_usage::file_size::FileSize,
     fs::inode::Inode,
     progress::{IndicatorHandle, Message},
@@ -9,7 +9,7 @@ use count::FileCount;
 use error::Error;
 use ignore::{WalkBuilder, WalkParallel};
 use indextree::{Arena, NodeId};
-use node::{cmp::NodeComparator, Node};
+use node::{Node, cmp::NodeComparator};
 use std::{
     collections::{HashMap, HashSet},
     convert::TryFrom,
@@ -113,10 +113,10 @@ impl Tree {
                 let mut root_id = None;
 
                 while let Ok(TraversalState::Ongoing(node)) = rx.recv() {
-                    if let Some(ref mailbox) = progress_indicator_mailbox {
-                        if mailbox.send(Message::Index).is_err() {
-                            return Err(Error::Terminated);
-                        }
+                    if let Some(ref mailbox) = progress_indicator_mailbox
+                        && mailbox.send(Message::Index).is_err()
+                    {
+                        return Err(Error::Terminated);
                     }
 
                     if node.is_dir() {
@@ -145,10 +145,10 @@ impl Tree {
                     }
                 }
 
-                if let Some(ref mailbox) = progress_indicator_mailbox {
-                    if mailbox.send(Message::DoneIndexing).is_err() {
-                        return Err(Error::Terminated);
-                    }
+                if let Some(ref mailbox) = progress_indicator_mailbox
+                    && mailbox.send(Message::DoneIndexing).is_err()
+                {
+                    return Err(Error::Terminated);
                 }
 
                 let root_id = root_id.ok_or(Error::MissingRoot)?;
@@ -224,10 +224,11 @@ impl Tree {
             Self::update_column_properties(column_properties, node, ctx);
 
             // If a hard-link is already accounted for then don't increment parent dir size.
-            if let Some(inode) = node.inode() {
-                if inode.nlink > 1 && !inode_set.insert(inode) {
-                    continue;
-                }
+            if let Some(inode) = node.inode()
+                && inode.nlink > 1
+                && !inode_set.insert(inode)
+            {
+                continue;
             }
 
             if let Some(file_size) = node.file_size() {

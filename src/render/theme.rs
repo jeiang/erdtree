@@ -21,10 +21,10 @@ pub fn link_theme_getter() -> Theme {
     Box::new(move |node| {
         let current_depth = node.depth();
 
-        if let Some(ldepth) = link_depth {
-            if current_depth == ldepth {
-                link_depth = None;
-            }
+        if let Some(ldepth) = link_depth
+            && current_depth == ldepth
+        {
+            link_depth = None;
         }
 
         if link_depth.is_some() || node.is_symlink() {

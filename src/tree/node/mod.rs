@@ -1,6 +1,6 @@
 use crate::{
     context::Context,
-    disk_usage::file_size::{byte, line_count, word_count, DiskUsage, FileSize},
+    disk_usage::file_size::{DiskUsage, FileSize, byte, line_count, word_count},
     fs::inode::Inode,
     icons,
     styles::get_ls_colors,

@@ -1,7 +1,7 @@
 use crate::{
     context::Context,
     disk_usage::{
-        file_size::{byte, DiskUsage, FileSize},
+        file_size::{DiskUsage, FileSize, byte},
         units::{BinPrefix, PrefixKind, SiPrefix},
     },
     render::theme,
@@ -20,7 +20,7 @@ use chrono::{DateTime, Local};
 #[cfg(unix)]
 use crate::{
     context::time,
-    disk_usage::file_size::{block, BLOCK_SIZE_BYTES},
+    disk_usage::file_size::{BLOCK_SIZE_BYTES, block},
     styles::PLACEHOLDER,
 };
 

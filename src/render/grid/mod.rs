@@ -1,4 +1,4 @@
-use crate::{ansi::Escaped, tree::node::Node, Context};
+use crate::{Context, ansi::Escaped, tree::node::Node};
 use cell::Cell;
 use std::{
     fmt::{self, Display},

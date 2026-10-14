@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Keep in sync with `rust-version` in Cargo.toml; overrides rust-toolchain.toml.
-      RUSTUP_TOOLCHAIN: 1.70.0
+      RUSTUP_TOOLCHAIN: 1.88.0
     steps:
       - uses: actions/checkout@v7
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal

@@ -5,14 +5,14 @@ use clap::{FromArgMatches, Parser};
 use color::Coloring;
 use error::Error;
 use ignore::{
-    overrides::{Override, OverrideBuilder},
     DirEntry,
+    overrides::{Override, OverrideBuilder},
 };
 use regex::Regex;
 use std::{
     borrow::Borrow,
     convert::From,
-    io::{stdin, stdout, IsTerminal},
+    io::{IsTerminal, stdin, stdout},
     num::NonZeroUsize,
     path::{Path, PathBuf},
     thread::available_parallelism,
@@ -348,11 +348,11 @@ impl Context {
                 }
 
                 match file_type {
-                    file::Type::File if entry_type.map_or(true, |ft| !ft.is_file()) => {
-                        return false
+                    file::Type::File if entry_type.is_none_or(|ft| !ft.is_file()) => {
+                        return false;
                     },
-                    file::Type::Link if entry_type.map_or(true, |ft| !ft.is_symlink()) => {
-                        return false
+                    file::Type::Link if entry_type.is_none_or(|ft| !ft.is_symlink()) => {
+                        return false;
                     },
                     _ => {},
                 }
@@ -401,11 +401,7 @@ impl Context {
                 }
                 let matched = Self::ancestor_glob_match(dir_entry.path(), &overrides, 1);
 
-                if negated_glob {
-                    !matched
-                } else {
-                    matched
-                }
+                if negated_glob { !matched } else { matched }
             })),
 
             _ => Ok(Box::new(move |dir_entry| {
@@ -417,11 +413,11 @@ impl Context {
                 }
 
                 match file_type {
-                    file::Type::File if entry_type.map_or(true, |ft| !ft.is_file()) => {
-                        return false
+                    file::Type::File if entry_type.is_none_or(|ft| !ft.is_file()) => {
+                        return false;
                     },
-                    file::Type::Link if entry_type.map_or(true, |ft| !ft.is_symlink()) => {
-                        return false
+                    file::Type::Link if entry_type.is_none_or(|ft| !ft.is_symlink()) => {
+                        return false;
                     },
                     _ => {},
                 }
@@ -449,7 +445,7 @@ impl Context {
     }
 
     /// Update column width properties.
-    pub fn update_column_properties(&mut self, col_props: &column::Properties) {
+    pub const fn update_column_properties(&mut self, col_props: &column::Properties) {
         self.max_size_width = col_props.max_size_width;
         self.max_size_unit_width = col_props.max_size_unit_width;
 

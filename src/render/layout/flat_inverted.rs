@@ -1,9 +1,9 @@
 use crate::{
     render::{
-        grid::{self, Row},
         Engine, FlatInverted,
+        grid::{self, Row},
     },
-    tree::{count::FileCount, Tree},
+    tree::{Tree, count::FileCount},
 };
 use indextree::NodeEdge;
 use std::fmt::{self, Display};
