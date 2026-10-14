@@ -1,8 +1,9 @@
 //! Failures writing to stdout: broken pipes are quiet, other errors are reported.
 
+#![cfg(unix)]
+
 use std::process::Command;
 
-#[cfg(unix)]
 fn big_tree() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     // Output must exceed the pipe buffer (64 KiB on Linux).
@@ -16,7 +17,6 @@ fn big_tree() -> tempfile::TempDir {
     dir
 }
 
-#[cfg(unix)]
 #[test]
 fn broken_pipe_exits_quietly() {
     use std::process::Stdio;
