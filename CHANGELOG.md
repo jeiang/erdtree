@@ -3,7 +3,7 @@ All notable changes to this project will be documented in this file.
  
 This project adheres to [Semantic Versioning](http://semver.org/).
 
-## Unreleased
+## [Unreleased]
 
 ### Bug Fixes
 - Windows: the `.erdtree.toml` lookup (`$ERDTREE_TOML_PATH`, then `%APPDATA%\erdtree\.erdtree.toml`) now compiles ([upstream #254](https://github.com/solidiquis/erdtree/issues/254)).
@@ -13,6 +13,10 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Internal
 - CI now builds, lints and tests on Windows.
+
+### Build
+- Releases are built and published by a [cargo-dist](https://github.com/axodotdev/cargo-dist) generated workflow (`.github/workflows/release.yml`) with shell/PowerShell installers, SHA-256 checksums, and build attestations. Replaces `publish.yml` and `test.yml`.
+- `repository`/`homepage` in `Cargo.toml` point at the `jeiang/erdtree` fork.
 
 ## [3.1.2] - 2023-07-02
 

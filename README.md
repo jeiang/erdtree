@@ -292,9 +292,21 @@ $ scoop install erdtree
 $ pkgin install erdtree
 ```
 
-### Releases
+### Prebuilt binaries and installers
 
-Binaries for common architectures can be downloaded from latest releases.
+Releases of this fork are published at [github.com/jeiang/erdtree/releases](https://github.com/jeiang/erdtree/releases) for Linux (x86_64/aarch64, glibc and musl), macOS (x86_64/aarch64), and Windows (x86_64). Each release has archives containing `erd`, SHA-256 checksums, and build attestations (verify with `gh attestation verify <file> -R jeiang/erdtree`).
+
+Shell installer (Linux/macOS):
+
+```
+$ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/jeiang/erdtree/releases/latest/download/erdtree-installer.sh | sh
+```
+
+PowerShell installer (Windows):
+
+```
+> powershell -ExecutionPolicy Bypass -c "irm https://github.com/jeiang/erdtree/releases/latest/download/erdtree-installer.ps1 | iex"
+```
 
 ### Latest non-release
 
