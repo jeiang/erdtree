@@ -12,6 +12,9 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - The progress indicator restores the cursor on errors and panics and no longer panics on I/O or thread failures ([upstream #260](https://github.com/solidiquis/erdtree/issues/260)).
 
 ### Internal
+- MSRV is now 1.88 and the crate uses the 2024 edition.
+- Replaced the unmaintained `ansi_term` ([RUSTSEC-2021-0139](https://rustsec.org/advisories/RUSTSEC-2021-0139)) with `nu-ansi-term`; removed `once_cell` in favor of `std::sync`; upgraded all direct dependencies (drops `time 0.1`, `proc-macro-error`, `instant` and their advisories). Rendered output is unchanged.
+- Added `cargo-deny` (`deny.toml`, `deny` CI job) and weekly Dependabot updates for Cargo and GitHub Actions.
 - CI now builds, lints and tests on Windows.
 
 ### Build
