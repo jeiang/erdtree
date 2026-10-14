@@ -5,7 +5,6 @@ use crate::{
     },
     tree::{Tree, count::FileCount},
 };
-use indextree::NodeEdge;
 use std::fmt::{self, Display};
 
 impl Display for Engine<Flat> {
@@ -13,15 +12,11 @@ impl Display for Engine<Flat> {
         let ctx = self.context();
         let tree = self.tree();
         let arena = tree.arena();
-        let root_id = tree.root_id();
+        let order = tree.flat_order(ctx);
         let max_depth = ctx.level();
         let mut file_count_data = vec![];
 
-        for edge in root_id.reverse_traverse(arena) {
-            let node_id = match edge {
-                NodeEdge::Start(id) => id,
-                NodeEdge::End(_) => continue,
-            };
+        for node_id in order.into_iter().rev() {
             file_count_data.push(Tree::compute_file_count(node_id, arena));
 
             let node = arena[node_id].get();

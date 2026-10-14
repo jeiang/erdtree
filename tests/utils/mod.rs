@@ -2,7 +2,11 @@ use std::process::Command;
 use std::process::Stdio;
 use strip_ansi_escapes::strip as strip_ansi_escapes;
 
-pub fn run_cmd(args: &[&str]) -> String {
+/// Runs `erd` and returns stdout with ANSI escapes stripped but whitespace untouched, so tests
+/// can assert on leading and interior whitespace.
+// Each integration test target compiles this module separately; not all of them call this.
+#[allow(dead_code)]
+pub fn run_cmd_untrimmed(args: &[&str]) -> String {
     let mut cmd = Command::new("cargo");
     cmd.args([
         "run",
@@ -34,14 +38,15 @@ pub fn run_cmd(args: &[&str]) -> String {
         panic!("{err_msg}");
     }
 
-    let out = String::from_utf8(strip_ansi_escapes(output.stdout))
-        .unwrap()
-        .trim()
-        .to_string();
+    let out = String::from_utf8(strip_ansi_escapes(output.stdout)).unwrap();
 
     // Expected trees are written with `/` separators.
     #[cfg(windows)]
     let out = out.replace('\\', "/");
 
     out
+}
+
+pub fn run_cmd(args: &[&str]) -> String {
+    run_cmd_untrimmed(args).trim().to_string()
 }
