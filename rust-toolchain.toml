@@ -1,0 +1,6 @@
+# Development and CI toolchain, read by rustup (CI) and flake.nix (local).
+# The minimum supported version is `rust-version` in Cargo.toml.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

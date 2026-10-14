@@ -1,10 +1,16 @@
 {
   description = "erdtree development environment";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
   outputs =
-    { nixpkgs, ... }:
+    { nixpkgs, rust-overlay, ... }:
     let
       forAllSystems = nixpkgs.lib.genAttrs [
         "aarch64-darwin"
@@ -17,19 +23,21 @@
       devShells = forAllSystems (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ rust-overlay.overlays.default ];
+          };
+          # Same toolchain as CI, plus components for local editing only.
+          toolchainFile = ./rust-toolchain.toml;
+          toolchain = (pkgs.rust-bin.fromRustupToolchainFile toolchainFile).override {
+            extensions = (builtins.fromTOML (builtins.readFile toolchainFile)).toolchain.components ++ [
+              "rust-analyzer"
+              "rust-src"
+            ];
+          };
         in
         {
-          default = pkgs.mkShell {
-            packages = with pkgs; [
-              cargo
-              clippy
-              rust-analyzer
-              rustc
-              rustfmt
-            ];
-            RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
-          };
+          default = pkgs.mkShell { packages = [ toolchain ]; };
         }
       );
 
