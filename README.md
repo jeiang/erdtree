@@ -80,30 +80,25 @@ Options:
 
   -C, --color <COLOR>
           Mode of coloring output
-          
-          [default: auto]
 
           Possible values:
           - none:  Print plainly without ANSI escapes
           - auto:  Attempt to colorize output
           - force: Turn on colorization always
+          
+          [default: auto]
 
   -d, --disk-usage <DISK_USAGE>
           Print physical or logical file size
-          
-          [default: physical]
 
           Possible values:
-          - logical:
-            How many bytes does a file contain
-          - physical:
-            How many actual bytes on disk, taking into account blocks, sparse files, and compression
-          - line:
-            How many total lines a file contains
-          - word:
-            How many total words a file contains
-          - block:
-            How many blocks are allocated to store the file
+          - logical:  How many bytes does a file contain
+          - physical: How many actual bytes on disk, taking into account blocks, sparse files, and compression
+          - line:     How many total lines a file contains
+          - word:     How many total words a file contains
+          - block:    How many blocks are allocated to store the file
+          
+          [default: physical]
 
   -f, --follow
           Follow symlinks
@@ -144,14 +139,10 @@ Options:
           Which format to use for the timestamp; default by default
 
           Possible values:
-          - iso:
-            Timestamp formatted following the iso8601, with slight differences and the time-zone omitted
-          - iso-strict:
-            Timestamp formatted following the exact iso8601 specifications
-          - short:
-            Timestamp only shows date without time in YYYY-MM-DD format
-          - default:
-            Timestamp is shown in DD MMM HH:MM format
+          - iso:        Timestamp formatted following the iso8601, with slight differences and the time-zone omitted
+          - iso-strict: Timestamp formatted following the exact iso8601 specifications
+          - short:      Timestamp only shows date without time in YYYY-MM-DD format
+          - default:    Timestamp is shown in DD MMM HH:MM format
 
   -L, --level <NUM>
           Maximum depth to display
@@ -184,8 +175,6 @@ Options:
 
   -s, --sort <SORT>
           How to sort entries
-          
-          [default: size]
 
           Possible values:
           - name:    Sort entries by file name in lexicographical order
@@ -200,16 +189,18 @@ Options:
           - rcreate: Sort entries by older to newer Creation Date
           - mod:     Sort entries by newer to older Alteration Date
           - rmod:    Sort entries by older to newer Alteration Date
+          
+          [default: size]
 
       --dir-order <DIR_ORDER>
           Sort directories before or after all other file types
-          
-          [default: none]
 
           Possible values:
           - none:  Directories are ordered as if they were regular nodes
           - first: Sort directories above files
           - last:  Sort directories below files
+          
+          [default: none]
 
   -T, --threads <THREADS>
           Number of threads to use
@@ -218,26 +209,26 @@ Options:
 
   -u, --unit <UNIT>
           Report disk usage in binary or SI units
-          
-          [default: bin]
 
           Possible values:
           - bin: Displays disk usage using binary prefixes
           - si:  Displays disk usage using SI prefixes
+          
+          [default: bin]
 
   -x, --one-file-system
           Prevent traversal into directories that are on different filesystems
 
   -y, --layout <LAYOUT>
           Which kind of layout to use when rendering the output
-          
-          [default: regular]
 
           Possible values:
           - regular:  Outputs the tree with the root node at the bottom of the output
           - inverted: Outputs the tree with the root node at the top of the output
           - flat:     Outputs a flat layout using paths rather than an ASCII tree
           - iflat:    Outputs an inverted flat layout with the root at the top of the output
+          
+          [default: regular]
 
   -., --hidden
           Show hidden files
