@@ -478,6 +478,13 @@ impl TryFrom<&Context> for WalkParallel {
         let root_id = fs::canonicalize(ctx.dir())
             .map_err(|e| Error::DirNotFound(format!("{}: {e}", ctx.dir().display())))?;
 
+        if !root_id.is_dir() {
+            return Err(Error::DirNotFound(format!(
+                "{}: Not a directory",
+                ctx.dir().display()
+            )));
+        }
+
         let mut builder = WalkBuilder::new(root_id);
 
         // With `--include`, hidden entries are filtered by `include_predicate` instead, as the
