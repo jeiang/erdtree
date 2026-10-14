@@ -20,12 +20,12 @@ impl Inode {
 pub struct Error;
 
 impl Inode {
-    /// Computes the inode of the entry at `path` given its `md`, which must come from
-    /// `symlink_metadata` semantics (i.e. not following links).
+    /// Computes the inode of the entry at `path` given its `md`, which describes the link target
+    /// if `followed_link` is `true` and the entry itself otherwise.
     #[cfg(unix)]
     // Same signature as the fallible Windows implementation.
     #[allow(clippy::unnecessary_wraps)]
-    pub fn try_new(_path: &Path, md: &Metadata) -> Result<Self, Error> {
+    pub fn try_new(_path: &Path, md: &Metadata, _followed_link: bool) -> Result<Self, Error> {
         use std::os::unix::fs::MetadataExt;
 
         Ok(Self::new(md.ino(), md.dev(), md.nlink()))
@@ -34,9 +34,10 @@ impl Inode {
     /// Computes the inode of the file at `path`. Windows does not expose the file index through
     /// the metadata of a directory entry on stable Rust, so the file is opened and queried with
     /// `GetFileInformationByHandle`. Only regular files can be hard-linked so everything else
-    /// (directories, symlinks) is reported as having insufficient information.
+    /// (directories, unfollowed symlinks) is reported as having insufficient information. A
+    /// followed symlink resolves to its target, matching the Unix behavior.
     #[cfg(windows)]
-    pub fn try_new(path: &Path, md: &Metadata) -> Result<Self, Error> {
+    pub fn try_new(path: &Path, md: &Metadata, followed_link: bool) -> Result<Self, Error> {
         use std::{
             fs::OpenOptions,
             mem::MaybeUninit,
@@ -51,11 +52,19 @@ impl Inode {
             return Err(Error);
         }
 
+        // Open the reparse point itself unless it is a followed link, so that file-type reparse
+        // points (e.g. cloud placeholders) are not recalled.
+        let flags = if followed_link {
+            FILE_FLAG_BACKUP_SEMANTICS
+        } else {
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+        };
+
         // No access rights are requested; we only query metadata.
         let file = OpenOptions::new()
             .access_mode(0)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .custom_flags(flags)
             .open(path)
             .map_err(|_e| Error)?;
 
@@ -81,7 +90,7 @@ impl Inode {
 
     /// Platforms without a notion of inodes.
     #[cfg(not(any(unix, windows)))]
-    pub fn try_new(_path: &Path, _md: &Metadata) -> Result<Self, Error> {
+    pub fn try_new(_path: &Path, _md: &Metadata, _followed_link: bool) -> Result<Self, Error> {
         Err(Error)
     }
 }
