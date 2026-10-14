@@ -217,6 +217,10 @@ pub struct Context {
     #[arg(long)]
     pub no_progress: bool,
 
+    /// Omit the directory and file count summary from output
+    #[arg(long)]
+    pub no_report: bool,
+
     /// Omit disk usage from output
     #[arg(long)]
     pub suppress_size: bool,

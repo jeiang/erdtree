@@ -251,6 +251,9 @@ Options:
       --no-progress
           Hides the progress indicator
 
+      --no-report
+          Omit the directory and file count summary from output
+
       --suppress-size
           Omit disk usage from output
 
