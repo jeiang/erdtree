@@ -54,7 +54,7 @@ You can think of `erdtree` as a little bit of `du`, `tree`, `find`, `wc` and `ls
   - [Completions](#completions)
   - [Same filesystem](#same-filesystem)
 * [Comparisons against similar programs](#comparisons-against-similar-programs)
-  - [exa](#exa)
+  - [eza](#eza)
   - [dua](#dua)
   - [dust](#dust)
   - [fd](#fd)
@@ -886,12 +886,12 @@ specialized in acting as modern replacements for their Unix progenitors, `erdtre
 No case will be made as to why `erdtree` should be preferred over X, Y, or Z, but because of some notable similarities with the following programs it is worth a brief
 comparison.
 
-### [exa](https://github.com/ogham/exa)
+### [eza](https://github.com/eza-community/eza)
 
-`exa` and `erdtree` are similar in that they both have tree-views and show information about permissions, owners, groups, etc..
+`eza`, the maintained successor of the now unmaintained [`exa`](https://github.com/ogham/exa), and `erdtree` are similar in that they both have tree-views and show information about permissions, owners, groups, etc..
 
-The disadvantage of `exa`, however, is that it [does not provide information about the disk usages of directories](https://github.com/ogham/exa/issues/91), which
-also makes sorting files by size a little dubious. The advantage `exa` has over `erdtree`, however, is in the fact that `exa` is much more comprehensive as an `ls` replacement.
+`eza` can show the recursive size of directories with `--total-size` (Unix only), but disk usage is not its focus: `erdtree` offers physical vs logical sizes,
+line/word/block counts, hardlink deduplication, and size-based filtering. The advantage `eza` has over `erdtree` is in the fact that `eza` is much more comprehensive as an `ls` replacement.
 
 Both tools are complimentary to one another and it is encouraged that you have both in your toolkit.
 
