@@ -88,6 +88,16 @@ pub trait Reconciler: CommandFactory + FromArgMatches {
                     }
                 },
                 ArgAction::SetFalse => {},
+                ArgAction::Append => {
+                    // Repeatable options need the key before every value.
+                    let Ok(Some(raw)) = argument_source.try_get_raw(id_str) else {
+                        continue;
+                    };
+                    for value in raw {
+                        final_args.push(key.clone());
+                        final_args.push(value.to_os_string());
+                    }
+                },
                 _ => {
                     let Ok(Some(raw)) = argument_source.try_get_raw(id_str) else {
                         continue;
