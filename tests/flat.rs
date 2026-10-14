@@ -150,3 +150,38 @@ fn flat_suppress_size_has_no_extra_whitespace() {
         }
     }
 }
+
+/// With `--long`, a suppressed size column leaves exactly one separator between the long fields
+/// and the path (like the tree layout), not a blank column. Long fields vary by machine, so the
+/// paths come from the plain run and only the text around them is checked.
+#[cfg(unix)]
+#[test]
+fn flat_long_suppress_size_has_single_separator() {
+    for layout in ["flat", "iflat"] {
+        let args = ["--layout", layout, "--suppress-size", "tests/flat_data"];
+        let plain = utils::run_cmd_untrimmed(&args);
+        let paths = plain
+            .lines()
+            .take_while(|l| !l.is_empty())
+            .collect::<Vec<_>>();
+
+        let mut long_args = vec!["--long"];
+        long_args.extend(args);
+        let long = utils::run_cmd_untrimmed(&long_args);
+        let rows = long
+            .lines()
+            .take_while(|l| !l.is_empty())
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), paths.len(), "{layout}: {long:?}");
+        for (row, path) in rows.iter().zip(paths) {
+            let fields = row
+                .strip_suffix(path)
+                .unwrap_or_else(|| panic!("{layout}: {row:?} does not end with {path:?}"));
+            assert!(
+                fields.ends_with(' ') && !fields.ends_with("  "),
+                "{layout}: bad separator before path in {row:?}"
+            );
+        }
+    }
+}
