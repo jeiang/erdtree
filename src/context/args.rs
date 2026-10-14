@@ -150,10 +150,12 @@ fn load_rc_config_args() -> Option<Result<ArgMatches, Error>> {
     })
 }
 
-/// Loads an [`ArgMatches`] from `.erdtree.toml`.
+/// Loads an [`ArgMatches`] from `.erdtree.toml`, or `None` if there is no such file.
 #[inline]
 fn load_toml_config_args(named_table: Option<&str>) -> Result<Option<ArgMatches>, Error> {
-    let toml_config = config::toml::load()?;
+    let Some(toml_config) = config::toml::load()? else {
+        return Ok(None);
+    };
     let parsed_args = config::toml::parse(toml_config, named_table)?;
     let config_args = Context::command()
         .try_get_matches_from(parsed_args)

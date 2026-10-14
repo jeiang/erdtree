@@ -2,9 +2,6 @@ use config::ConfigError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Failed to load .erdtree.toml")]
-    LoadConfig,
-
     #[error("The configuration file is improperly formatted: {0}")]
     InvalidFormat(#[from] ConfigError),
 
