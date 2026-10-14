@@ -112,8 +112,7 @@ impl Display for Row<'_, Tree> {
 
         let row = format!("{size} {name}");
 
-        if ctx.truncate && ctx.window_width.is_some() {
-            let window_width = ctx.window_width.unwrap();
+        if let Some(window_width) = ctx.window_width.filter(|_| ctx.truncate) {
             let out = <str as Escaped>::truncate(&row, window_width);
             write!(f, "{out}")
         } else {
@@ -133,8 +132,7 @@ impl Display for Row<'_, Flat> {
 
         let row = format!("{size}   {path}");
 
-        if ctx.truncate && ctx.window_width.is_some() {
-            let window_width = ctx.window_width.unwrap();
+        if let Some(window_width) = ctx.window_width.filter(|_| ctx.truncate) {
             let out = <str as Escaped>::truncate(&row, window_width);
             write!(f, "{out}")
         } else {

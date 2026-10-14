@@ -5,6 +5,15 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+### Bug Fixes
+- Windows: the `.erdtree.toml` lookup (`$ERDTREE_TOML_PATH`, then `%APPDATA%\erdtree\.erdtree.toml`) now compiles ([upstream #254](https://github.com/solidiquis/erdtree/issues/254)).
+- Windows: builds on stable Rust (no more nightly `windows_by_handle`), and hard-link de-duplication now works by querying `GetFileInformationByHandle` via `windows-sys`.
+- Owner/group lookup uses the thread-safe `getpwuid_r`/`getgrgid_r` instead of `getpwuid`/`getgrgid` ([upstream #226](https://github.com/solidiquis/erdtree/issues/226), [#179](https://github.com/solidiquis/erdtree/issues/179)).
+- The progress indicator restores the cursor on errors and panics and no longer panics on I/O or thread failures ([upstream #260](https://github.com/solidiquis/erdtree/issues/260)).
+
+### Internal
+- CI now builds, lints and tests on Windows.
+
 ### Build
 - Releases are built and published by a [cargo-dist](https://github.com/axodotdev/cargo-dist) generated workflow (`.github/workflows/release.yml`) with shell/PowerShell installers, SHA-256 checksums, and build attestations. Replaces `publish.yml` and `test.yml`.
 - `repository`/`homepage` in `Cargo.toml` point at the `jeiang/erdtree` fork.

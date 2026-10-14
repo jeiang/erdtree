@@ -34,6 +34,8 @@ pub struct Cell<'a> {
 }
 
 /// The type of data that a [Cell] should render.
+// Without the Unix-only variants every variant is a `File*` variant.
+#[cfg_attr(not(unix), allow(clippy::enum_variant_names))]
 pub enum Kind<'a> {
     FileName {
         prefix: Option<&'a str>,

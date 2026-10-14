@@ -67,6 +67,12 @@ pub enum Error {
 
     #[error("#{0}")]
     Send(#[from] SendError<Message>),
+
+    #[error("Failed to set interrupt handler: {0}")]
+    Interrupt(#[from] ctrlc::Error),
+
+    #[error("The progress indicator thread panicked")]
+    Panicked,
 }
 
 impl Default for Indicator<'_> {
@@ -97,9 +103,11 @@ impl IndicatorHandle {
         self.mailbox.clone()
     }
 
-    /// Analogous to [`Self::try_terminate`] but panics if failure.
-    pub fn terminate(this: Option<Self>) {
-        Self::try_terminate(this).expect("Failed to properly terminate the progress indicator");
+    /// Waits for the [`Indicator`] thread to finish, if it hasn't been joined already.
+    pub fn join(&mut self) -> Result<(), Error> {
+        self.join_handle
+            .take()
+            .map_or(Ok(()), |h| h.join().map_err(|_e| Error::Panicked)?)
     }
 
     /// Attempts to terminate the [`Indicator`] with cleanup.
@@ -112,37 +120,53 @@ impl IndicatorHandle {
             // reason then this will proceed as normal.
             let _ = handle.mailbox().send(Message::Finish);
 
-            handle
-                .join_handle
-                .take()
-                .map(|h| h.join().unwrap())
-                .transpose()?;
+            handle.join()?;
         }
 
         Ok(())
     }
 }
 
+impl Drop for IndicatorHandle {
+    /// Makes sure the [`Indicator`] thread is torn down, and thus the cursor restored, even when
+    /// the owner unwinds from a panic or returns early.
+    fn drop(&mut self) {
+        if self.join_handle.is_some() {
+            let _ = self.mailbox.send(Message::Finish);
+            let _ = self.join();
+        }
+    }
+}
+
+impl Drop for Indicator<'_> {
+    /// The cursor is hidden for the lifetime of the [`Indicator`]; always show it again, including
+    /// when the owning thread fails with an error or panics.
+    fn drop(&mut self) {
+        let _ = self.stdout.execute(cursor::Show);
+    }
+}
+
 impl Indicator<'_> {
     /// Initializes an [`Indicator`] returning an atomic reference counter of an [`IndicatorHandle`] if
     /// a progress indicator is enabled via [`Context`]. Upon initialization an interrupt handler is
-    /// also registered. Sources of panic can come from [`IndicatorHandle::terminate`] or
-    /// [`ctrlc::set_handler`].
-    pub fn maybe_init(ctx: &Context) -> Option<IndicatorHandle> {
-        (ctx.stdout_is_tty && !ctx.no_progress)
-            .then(Indicator::measure)
-            .map(|indicator| {
-                let mailbox = indicator.mailbox();
+    /// also registered; failing to register it is an error.
+    pub fn maybe_init(ctx: &Context) -> Result<Option<IndicatorHandle>, Error> {
+        if !ctx.stdout_is_tty || ctx.no_progress {
+            return Ok(None);
+        }
 
-                let int_handler = move || {
-                    let _ = mailbox.try_send(Message::Finish);
-                    tty::restore();
-                };
+        let indicator = Indicator::measure();
+        let mailbox = indicator.mailbox();
 
-                ctrlc::set_handler(int_handler).expect("Failed to set interrupt handler");
+        let int_handler = move || {
+            let _ = mailbox.try_send(Message::Finish);
+            let _ = tty::restore();
+        };
 
-                indicator
-            })
+        // On failure `indicator` is dropped here, which tears the thread down.
+        ctrlc::set_handler(int_handler)?;
+
+        Ok(Some(indicator))
     }
 
     /// Initializes a worker thread that owns [`Indicator`] that awaits on [`Message`]s to traverse
@@ -189,7 +213,7 @@ impl Indicator<'_> {
                 let stdout = &mut self.stdout;
                 stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
                 stdout.execute(cursor::RestorePosition)?;
-                self.rendering();
+                self.rendering()?;
             },
 
             (Rendering | Indexing, Done) => {
@@ -216,7 +240,8 @@ impl Indicator<'_> {
 
     /// The user-facing output when the `state` of the [`Indicator`] is `Rendering`.
     #[inline]
-    fn rendering(&mut self) {
-        write!(self.stdout, "Preparing output...").unwrap();
+    fn rendering(&mut self) -> Result<(), Error> {
+        write!(self.stdout, "Preparing output...")?;
+        Ok(())
     }
 }

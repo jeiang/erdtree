@@ -229,23 +229,25 @@ mod windows {
     use super::Error;
     use config::{Config, File};
 
-    /// Try to read in config from the following location:
+    /// Try to read in config from the following locations in order:
+    /// - `$ERDTREE_TOML_PATH`
     /// - `%APPDATA%\erdtree\.erdtree.toml`
     pub(super) fn load_toml() -> Result<Config, Error> {
-        super::toml_from_env().or_else(toml_from_appdata)
+        super::toml_from_env().or_else(|_| toml_from_appdata())
     }
 
     /// Try to read in config from the following location:
     /// - `%APPDATA%\erdtree\.erdtree.toml`
     fn toml_from_appdata() -> Result<Config, Error> {
-        let app_data = dirs::config_dir()?;
+        let app_data = dirs::config_dir().ok_or(Error::LoadConfig)?;
 
         let file = app_data
             .join(ERDTREE_DIR)
             .join(ERDTREE_CONFIG_TOML)
             .to_str()
             .and_then(|s| s.strip_suffix(".toml"))
-            .map(File::with_name)?;
+            .map(File::with_name)
+            .ok_or(Error::LoadConfig)?;
 
         Config::builder()
             .add_source(file)

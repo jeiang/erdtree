@@ -269,7 +269,7 @@ impl TryFrom<(DirEntry, &Context)> for Node {
             _ => None,
         };
 
-        let inode = Inode::try_from(&metadata).ok();
+        let inode = Inode::try_new(path, &metadata).ok();
 
         #[cfg(unix)]
         let unix_attrs = if ctx.long
