@@ -23,7 +23,7 @@ use progress::{Indicator, IndicatorHandle, Message};
 use render::{Engine, Flat, FlatInverted, Inverted, Regular};
 use std::{
     error::Error,
-    io::{Write, stdout},
+    io::{self, ErrorKind, Write, stdout},
     process::ExitCode,
 };
 use tree::Tree;
@@ -64,7 +64,14 @@ mod utils;
 
 fn main() -> ExitCode {
     if let Err(e) = run() {
-        eprintln!("{e}");
+        // A closed stdout (e.g. `erd | head`) is not an error worth reporting.
+        if let Some(io_err) = e.downcast_ref::<io::Error>()
+            && io_err.kind() == ErrorKind::BrokenPipe
+        {
+            return ExitCode::SUCCESS;
+        }
+
+        eprintln!("erd: {e}");
         return ExitCode::FAILURE;
     }
 
@@ -117,15 +124,15 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     #[cfg(debug_assertions)]
-    {
-        if std::env::var_os("ERDTREE_DEBUG").is_none() {
-            let _ = writeln!(stdout(), "{output}");
-        }
-    }
+    let should_write = std::env::var_os("ERDTREE_DEBUG").is_none();
 
     #[cfg(not(debug_assertions))]
-    {
-        let _ = writeln!(stdout(), "{output}");
+    let should_write = true;
+
+    if should_write {
+        let mut out = stdout().lock();
+        writeln!(out, "{output}")?;
+        out.flush()?;
     }
 
     Ok(())
