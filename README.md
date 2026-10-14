@@ -1,9 +1,12 @@
 # erdtree (erd)
 
-[![Build status](https://github.com/solidiquis/erdtree/actions/workflows/ci.yml/badge.svg)](https://github.com/solidiquis/erdtree/actions)
-[![Crates.io](https://img.shields.io/crates/v/erdtree.svg)](https://crates.io/crates/erdtree)
-[![Packaging status](https://repology.org/badge/tiny-repos/erdtree.svg)](https://repology.org/project/erdtree/versions)
-[![Crates.io](https://img.shields.io/crates/d/erdtree)](https://crates.io/crates/erdtree)
+[![CI](https://github.com/jeiang/erdtree/actions/workflows/ci.yml/badge.svg)](https://github.com/jeiang/erdtree/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/jeiang/erdtree)](https://github.com/jeiang/erdtree/releases/latest)
+
+> [!NOTE]
+> This is a fork of [solidiquis/erdtree](https://github.com/solidiquis/erdtree), which is no longer actively developed. It fixes bugs and
+> adds features requested in upstream issues; see the [CHANGELOG](CHANGELOG.md) for the differences. Fork releases start at 4.0.0 and are
+> published only on [GitHub](https://github.com/jeiang/erdtree/releases); the crates.io, Homebrew, Scoop and NetBSD packages are upstream 3.x.
 
 `erdtree` is a modern, cross-platform, multi-threaded, and general purpose filesystem and disk-usage utility that is aware of `.gitignore` and hidden file rules.
 The following are some feature highlights:
@@ -285,6 +288,9 @@ Options:
 
 ## Installation
 
+This fork is installed from its [GitHub releases](#prebuilt-binaries-and-installers) or with
+[`cargo install --git`](#from-source). The crates.io, Homebrew, Scoop and NetBSD packages below install upstream erdtree 3.x.
+
 ### crates.io
 
 Make sure you have [Rust and its toolchain](https://www.rust-lang.org/tools/install) installed. A stable toolchain is sufficient on all platforms, including Windows.
@@ -327,15 +333,14 @@ PowerShell installer (Windows):
 > powershell -ExecutionPolicy Bypass -c "irm https://github.com/jeiang/erdtree/releases/latest/download/erdtree-installer.ps1 | iex"
 ```
 
-### Latest non-release
+### From source
 
-If you'd like the latest features that are on `master` but aren't yet included as part of a release:
+To build a release or the latest `master` with Cargo:
 
 ```
-$ cargo install --git https://github.com/solidiquis/erdtree --branch master
+$ cargo install --locked --git https://github.com/jeiang/erdtree --tag v4.0.0
+$ cargo install --locked --git https://github.com/jeiang/erdtree --branch master
 ```
-
-Other means of installation to come.
 
 ## Documentation
 
