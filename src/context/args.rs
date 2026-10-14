@@ -74,7 +74,7 @@ pub trait Reconciler: CommandFactory + FromArgMatches {
                 });
 
             let Some(key) = arg.get_long().map(|l| format!("--{l}")).map(OsString::from) else {
-                continue
+                continue;
             };
 
             match arg.get_action() {
@@ -84,9 +84,9 @@ pub trait Reconciler: CommandFactory + FromArgMatches {
                         .is_some_and(|b| *b)
                     {
                         final_args.push(key);
-                    };
+                    }
                 },
-                ArgAction::SetFalse => continue,
+                ArgAction::SetFalse => {},
                 _ => {
                     let Ok(Some(raw)) = argument_source.try_get_raw(id_str) else {
                         continue;

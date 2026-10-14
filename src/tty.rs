@@ -1,6 +1,6 @@
 use crossterm::{cursor, ExecutableCommand};
-use terminal_size::terminal_size;
 use std::io;
+use terminal_size::terminal_size;
 
 /// Restore terminal settings.
 pub fn restore() {

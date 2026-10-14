@@ -3,6 +3,8 @@ use std::sync::mpsc::Sender;
 use crate::{tree::node::Node, Context};
 use ignore::{DirEntry, Error as IgnoreError, ParallelVisitor, ParallelVisitorBuilder, WalkState};
 
+// Nearly every message is `Ongoing`, so boxing would only add an allocation per node.
+#[allow(clippy::large_enum_variant)]
 pub enum TraversalState {
     Ongoing(Node),
     Done,
@@ -19,13 +21,13 @@ pub struct BranchVisitorBuilder<'a> {
 }
 
 impl<'a> BranchVisitorBuilder<'a> {
-    pub fn new(ctx: &'a Context, tx: Sender<TraversalState>) -> Self {
+    pub const fn new(ctx: &'a Context, tx: Sender<TraversalState>) -> Self {
         Self { ctx, tx }
     }
 }
 
 impl<'a> Branch<'a> {
-    pub fn new(ctx: &'a Context, tx: Sender<TraversalState>) -> Self {
+    pub const fn new(ctx: &'a Context, tx: Sender<TraversalState>) -> Self {
         Self { ctx, tx }
     }
 }

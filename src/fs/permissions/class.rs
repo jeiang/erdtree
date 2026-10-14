@@ -82,9 +82,7 @@ impl Permissions {
 
     /// Returns `true` if sticky bit is enabled.
     pub fn attr_is_sticky(&self) -> bool {
-        self.attr
-            .as_ref()
-            .map_or(false, |attr| attr == &Attribute::Sticky)
+        self.attr.as_ref() == Some(&Attribute::Sticky)
     }
 
     /// Helper function to compute permissions.

@@ -101,7 +101,7 @@ impl Display for Metric {
         {
             let cached_display = self.cached_display();
 
-            if cached_display.len() > 0 {
+            if !cached_display.is_empty() {
                 return write!(f, "{cached_display}");
             }
         }

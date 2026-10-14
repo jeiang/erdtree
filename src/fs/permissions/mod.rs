@@ -110,6 +110,8 @@ impl Display for FileModeXAttrs<'_> {
 
 /// For the octal representation of permissions
 impl Octal for FileMode {
+    // `libc::mode_t` is `u16` on macOS and `u32` on Linux.
+    #[allow(clippy::useless_conversion)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let modes_mask = self.st_mode & !u32::from(libc::S_IFMT);
         fmt::Octal::fmt(&modes_mask, f)
