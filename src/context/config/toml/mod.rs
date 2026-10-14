@@ -1,6 +1,10 @@
 use config::{Config, File, Value, ValueKind};
 use error::Error;
-use std::{env, ffi::OsString, path::PathBuf};
+use std::{
+    env,
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 /// Errors associated with loading and parsing the toml config file.
 pub mod error;
@@ -90,12 +94,12 @@ pub fn load() -> Result<Option<Config>, Error> {
         .map_err(Error::from)
 }
 
-/// Locations of `.erdtree.toml` in lookup order:
+/// Locations of the TOML config in lookup order:
 ///
 /// - `$ERDTREE_TOML_PATH`
-/// - `$XDG_CONFIG_HOME/erdtree/.erdtree.toml`
+/// - `$XDG_CONFIG_HOME/erdtree/{.erdtree.toml,erdtree.toml,config.toml}`
 /// - `$XDG_CONFIG_HOME/.erdtree.toml`
-/// - `$HOME/.config/erdtree/.erdtree.toml`
+/// - `$HOME/.config/erdtree/{.erdtree.toml,erdtree.toml,config.toml}`
 /// - `$HOME/.erdtree.toml`
 #[cfg(unix)]
 fn candidates() -> Vec<PathBuf> {
@@ -107,35 +111,42 @@ fn candidates() -> Vec<PathBuf> {
         .collect();
 
     if let Some(xdg) = env::var_os(XDG_CONFIG_HOME).map(PathBuf::from) {
-        paths.push(xdg.join(ERDTREE_DIR).join(ERDTREE_CONFIG_TOML));
+        paths.extend(in_erdtree_dir(&xdg.join(ERDTREE_DIR)));
         paths.push(xdg.join(ERDTREE_CONFIG_TOML));
     }
 
     if let Some(home) = env::var_os(HOME).map(PathBuf::from) {
-        paths.push(
-            home.join(CONFIG_DIR)
-                .join(ERDTREE_DIR)
-                .join(ERDTREE_CONFIG_TOML),
-        );
+        paths.extend(in_erdtree_dir(&home.join(CONFIG_DIR).join(ERDTREE_DIR)));
         paths.push(home.join(ERDTREE_CONFIG_TOML));
     }
 
     paths
 }
 
-/// Locations of `.erdtree.toml` in lookup order:
+/// Locations of the TOML config in lookup order:
 ///
 /// - `$ERDTREE_TOML_PATH`
-/// - `%APPDATA%\erdtree\.erdtree.toml`
+/// - `%APPDATA%\erdtree\{.erdtree.toml,erdtree.toml,config.toml}`
 #[cfg(windows)]
 fn candidates() -> Vec<PathBuf> {
-    use super::{ERDTREE_CONFIG_TOML, ERDTREE_DIR};
+    use super::ERDTREE_DIR;
 
     env::var_os(super::ERDTREE_TOML_PATH)
         .map(PathBuf::from)
         .into_iter()
-        .chain(dirs::config_dir().map(|d| d.join(ERDTREE_DIR).join(ERDTREE_CONFIG_TOML)))
+        .chain(
+            dirs::config_dir()
+                .into_iter()
+                .flat_map(|d| in_erdtree_dir(&d.join(ERDTREE_DIR))),
+        )
         .collect()
+}
+
+/// Config file names accepted inside an `erdtree` config directory, in lookup order.
+fn in_erdtree_dir(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
+    [super::ERDTREE_CONFIG_TOML, "erdtree.toml", "config.toml"]
+        .map(|name| dir.join(name))
+        .into_iter()
 }
 
 /// Simple utility used to extract the underlying value from the [`Value`] enum that we get when

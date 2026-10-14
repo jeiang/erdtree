@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - `--traversal-depth <NUM>` limits how deep the filesystem walk goes ([upstream #257](https://github.com/solidiquis/erdtree/issues/257), [#253](https://github.com/solidiquis/erdtree/issues/253), [#69](https://github.com/solidiquis/erdtree/issues/69)). Directory sizes and file counts then only include traversed entries. `--level` stays display-only.
 - `--exclude <GLOB>` (repeatable, or `exclude = [...]` in `.erdtree.toml`) skips entries matching a gitignore-style glob during traversal; excluded directories are not descended into and contribute nothing to sizes or counts ([upstream #262](https://github.com/solidiquis/erdtree/issues/262)). `.erdtree.toml` now accepts arrays of strings for repeatable options.
 - `--no-report` omits the summary line (`N directories, M files`) and the blank line before it, like `tree --noreport` ([upstream #240](https://github.com/solidiquis/erdtree/issues/240)). Also available as `no-report` in `.erdtree.toml`.
+- The TOML config can also be named `erdtree.toml` or `config.toml` inside an `erdtree` config directory (`$XDG_CONFIG_HOME/erdtree/`, `$HOME/.config/erdtree/`, `%APPDATA%\erdtree\`); `.erdtree.toml` is still checked first ([upstream #250](https://github.com/solidiquis/erdtree/issues/250)).
 
 ### Bug Fixes
 - A directory reported twice by the filesystem walk now fails with an error naming the directory instead of panicking in tree assembly ([upstream #260](https://github.com/solidiquis/erdtree/issues/260)); the underlying trigger is still unknown.
