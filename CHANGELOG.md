@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased]
 
 ### Bug Fixes
+- Errors writing to stdout are no longer ignored: a closed pipe (e.g. `erd | head`) exits quietly with status 0, any other write error prints `erd: <error>` to stderr and exits non-zero. All fatal errors are now prefixed with `erd: `.
 - `--layout flat|iflat` sorts globally across all entries (including with `--dirs-only`) instead of per directory; the root stays last (`flat`) or first (`iflat`) ([upstream #224](https://github.com/solidiquis/erdtree/issues/224), based on [#234](https://github.com/solidiquis/erdtree/pull/234)). Output of `--layout flat` with the default `--sort` changes accordingly.
 - `--layout flat|iflat` no longer prints a blank size column (leading whitespace) when `--suppress-size` is used ([upstream #241](https://github.com/solidiquis/erdtree/issues/241)).
 - File names and icons now use the full `LS_COLORS` style (background color and attributes such as underline, not just the foreground) ([upstream #259](https://github.com/solidiquis/erdtree/issues/259)).
