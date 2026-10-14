@@ -78,3 +78,28 @@ fn malformed_config_is_an_error() {
     let out = run_in_home(home.path());
     assert!(!out.status.success());
 }
+
+#[cfg(unix)]
+#[test]
+fn erdtree_dir_accepts_undotted_names_in_order() {
+    let home = TempDir::new().unwrap();
+    let dir = home.path().join(".config/erdtree");
+    write(&dir.join("config.toml"), "sort = \"bogus\"\n");
+    write(&dir.join("erdtree.toml"), "dirs-only = true\n");
+
+    // `erdtree.toml` wins over `config.toml`, which would fail to parse if it were read.
+    let out = run_in_home(home.path());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("nemesis.txt"));
+
+    // `config.toml` alone is found.
+    std::fs::remove_file(dir.join("erdtree.toml")).unwrap();
+    write(&dir.join("config.toml"), "dirs-only = true\n");
+    let out = run_in_home(home.path());
+    assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("nemesis.txt"));
+}

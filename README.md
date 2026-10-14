@@ -335,22 +335,30 @@ no reason to have both.
 
 #### TOML file
 
-`erdtree` will look for `.erdtree.toml` in any of the following locations:
+`erdtree` reads the first TOML config it finds, in this order. Inside an `erdtree` directory the file can be named
+`.erdtree.toml`, `erdtree.toml` or `config.toml` (checked in that order).
 
 On Unix-systems:
 
 ```
 $ERDTREE_TOML_PATH
 $XDG_CONFIG_HOME/erdtree/.erdtree.toml
+$XDG_CONFIG_HOME/erdtree/erdtree.toml
+$XDG_CONFIG_HOME/erdtree/config.toml
 $XDG_CONFIG_HOME/.erdtree.toml
 $HOME/.config/erdtree/.erdtree.toml
+$HOME/.config/erdtree/erdtree.toml
+$HOME/.config/erdtree/config.toml
 $HOME/.erdtree.toml
 ```
 
 On Windows:
 
 ```
+%ERDTREE_TOML_PATH%
 %APPDATA%\erdtree\.erdtree.toml
+%APPDATA%\erdtree\erdtree.toml
+%APPDATA%\erdtree\config.toml
 ```
 
 [Here](example/.erdtree.toml) and below is an example of a valid `.erdtree.toml`:
