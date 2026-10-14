@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased]
 
 ### Bug Fixes
+- File names and icons now use the full `LS_COLORS` style (background color and attributes such as underline, not just the foreground) ([upstream #259](https://github.com/solidiquis/erdtree/issues/259)).
 - Windows: the `.erdtree.toml` lookup (`$ERDTREE_TOML_PATH`, then `%APPDATA%\erdtree\.erdtree.toml`) now compiles ([upstream #254](https://github.com/solidiquis/erdtree/issues/254)).
 - Windows: builds on stable Rust (no more nightly `windows_by_handle`), and hard-link de-duplication now works by querying `GetFileInformationByHandle` via `windows-sys`.
 - Owner/group lookup uses the thread-safe `getpwuid_r`/`getgrgid_r` instead of `getpwuid`/`getgrgid` ([upstream #226](https://github.com/solidiquis/erdtree/issues/226), [#179](https://github.com/solidiquis/erdtree/issues/179)).
