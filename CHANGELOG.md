@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased]
 
 ### Features
+- `--min-size <SIZE>` hides entries smaller than `SIZE` (an integer with an optional unit: `B`, `KB`..`PB` or `KiB`..`PiB`, case-insensitive) in the active `--disk-usage` metric; directories are compared by their total size and ancestors of shown entries stay ([upstream #252](https://github.com/solidiquis/erdtree/issues/252)). Totals and the summary file count still cover everything traversed. Units are rejected for line/word/block counts, and the option conflicts with `--suppress-size`. Also available as `min-size` in `.erdtree.toml`.
 - `--traversal-depth <NUM>` limits how deep the filesystem walk goes ([upstream #257](https://github.com/solidiquis/erdtree/issues/257), [#253](https://github.com/solidiquis/erdtree/issues/253), [#69](https://github.com/solidiquis/erdtree/issues/69)). Directory sizes and file counts then only include traversed entries. `--level` stays display-only.
 
 ### Bug Fixes

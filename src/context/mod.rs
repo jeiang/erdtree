@@ -1,7 +1,11 @@
-use super::disk_usage::{file_size::DiskUsage, units::PrefixKind};
+use super::disk_usage::{
+    file_size::DiskUsage,
+    threshold::{MinSize, parse_min_size},
+    units::PrefixKind,
+};
 
 use args::Reconciler;
-use clap::{FromArgMatches, Parser};
+use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum, error::ErrorKind};
 use color::Coloring;
 use error::Error;
 use ignore::{
@@ -148,6 +152,14 @@ pub struct Context {
     #[arg(short = 't', long, value_enum)]
     pub file_type: Option<file::Type>,
 
+    /// Hide entries smaller than SIZE in the active disk-usage metric (for directories, their
+    /// total size); parent directories of shown entries stay. Totals and the summary file count
+    /// still cover everything traversed. SIZE is an integer with an optional unit: B, KB, MB,
+    /// GB, TB, PB (powers of 1000) or KiB, MiB, GiB, TiB, PiB (powers of 1024), case-insensitive;
+    /// units are only valid with byte sizes ('--disk-usage logical|physical')
+    #[arg(long, value_name = "SIZE", value_parser = parse_min_size)]
+    pub min_size: Option<MinSize>,
+
     /// Remove empty directories from output
     #[arg(short = 'P', long)]
     pub prune: bool,
@@ -265,8 +277,26 @@ impl Context {
     pub fn try_init() -> Result<Self, Error> {
         Self::compute_args().and_then(|args| {
             color::no_color_env();
-            Self::from_arg_matches(&args).map_err(Error::Config)
+            let ctx = Self::from_arg_matches(&args).map_err(Error::Config)?;
+            ctx.validate_min_size()?;
+            Ok(ctx)
         })
+    }
+
+    /// A unit suffix on `--min-size` is meaningless for line, word, and block counts. This needs
+    /// the merged `--disk-usage`, so it cannot be a [`clap`] value parser.
+    fn validate_min_size(&self) -> Result<(), Error> {
+        if self.min_size.is_some_and(|min| min.has_unit) && !self.byte_metric() {
+            return Err(Error::ArgParse(Self::command().error(
+                ErrorKind::ValueValidation,
+                format!(
+                    "invalid value for '--min-size <SIZE>': units are only supported with '--disk-usage logical' or 'physical'; give a bare number for '--disk-usage {}'",
+                    self.disk_usage.to_possible_value().map_or_else(String::new, |v| v.get_name().to_owned())
+                ),
+            )));
+        }
+
+        Ok(())
     }
 
     /// Determines whether or not it's appropriate to display color in output based on

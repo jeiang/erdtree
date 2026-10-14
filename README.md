@@ -41,6 +41,7 @@ You can think of `erdtree` as a little bit of `du`, `tree`, `find`, `wc` and `ls
   - [Hidden files](#hidden-files)
   - [Icons](#icons)
   - [Maximum depth](#maximum-depth)
+  - [Hiding small entries](#hiding-small-entries)
   - [Pruning empty directories](#pruning-empty-directories)
   - [Sorting](#sorting)
   - [Directories only](#directories-only)
@@ -173,6 +174,9 @@ Options:
           - file: A regular file
           - dir:  A directory
           - link: A symlink
+
+      --min-size <SIZE>
+          Hide entries smaller than SIZE in the active disk-usage metric (for directories, their total size); parent directories of shown entries stay. Totals and the summary file count still cover everything traversed. SIZE is an integer with an optional unit: B, KB, MB, GB, TB, PB (powers of 1000) or KiB, MiB, GiB, TiB, PiB (powers of 1024), case-insensitive; units are only valid with byte sizes ('--disk-usage logical|physical')
 
   -P, --prune
           Remove empty directories from output
@@ -601,6 +605,20 @@ Directories are fully traversed by default. To limit the maximum depth:
 Limiting the maximum depth to display will not affect the total disk usage report nor the file count report.
 
 To also stop the filesystem walk at a given depth (faster on large trees), use `--traversal-depth <NUM>`. Depth is counted like `--level` (the root is 0), so `--level 1 --traversal-depth 1` lists the same entries as `--level 1`, but directory sizes and the file count then only include traversed entries. `--traversal-depth 0` walks only the root. It can also be set in `.erdtree.toml` as `traversal-depth = 1`.
+
+### Hiding small entries
+
+To only show entries that take up at least a given amount of space:
+
+```
+--min-size <SIZE>
+```
+
+`SIZE` is an integer with an optional, case-insensitive unit suffix: `B` (or no suffix) for bytes, SI units `KB`, `MB`, `GB`, `TB`, `PB` (powers of 1000), or binary units `KiB`, `MiB`, `GiB`, `TiB`, `PiB` (powers of 1024), e.g. `--min-size 500`, `--min-size 10KB`, `--min-size 1GiB`. The unit options are independent of `--unit`.
+
+The threshold is compared with the size that is displayed, in the active `--disk-usage` metric; for a directory that is its total size. An entry is shown when its size is at least `SIZE`, and the parent directories of every shown entry stay. With `--disk-usage line|word|block` the threshold is a bare count and unit suffixes are rejected. `--min-size` cannot be combined with `--suppress-size`. Hiding happens after traversal, so the total size and the summary file count still cover the whole traversed tree (see `--traversal-depth`), and `--level` only limits depth as before. Directories that were empty on disk are still removed by `--prune`; a directory whose contents are all hidden is kept. If nothing is left besides the root, erd reports that there is nothing to show.
+
+It can also be set in `.erdtree.toml` as `min-size = "1GB"`.
 
 ### Pruning empty directories
 

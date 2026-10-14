@@ -37,14 +37,26 @@ mod visitor;
 pub struct Tree {
     arena: Arena<Node>,
     root_id: NodeId,
+
+    /// Entries removed from `arena` by `--min-size`, which the summary file count still includes.
+    hidden: FileCount,
 }
 
 pub type Result<T> = StdResult<T, Error>;
 
 impl Tree {
     /// Constructor for [Tree].
-    pub const fn new(arena: Arena<Node>, root_id: NodeId) -> Self {
-        Self { arena, root_id }
+    pub const fn new(arena: Arena<Node>, root_id: NodeId, hidden: FileCount) -> Self {
+        Self {
+            arena,
+            root_id,
+            hidden,
+        }
+    }
+
+    /// File count of the entries hidden by `--min-size`.
+    pub const fn hidden_count(&self) -> FileCount {
+        self.hidden
     }
 
     /// Initiates file-system traversal and [Tree] as well as updates the [Context] object with
@@ -55,7 +67,7 @@ impl Tree {
     ) -> Result<(Self, Context)> {
         let mut column_properties = column::Properties::from(&ctx);
 
-        let (arena, root_id) = Self::traverse(&ctx, &mut column_properties, indicator)?;
+        let (arena, root_id, hidden) = Self::traverse(&ctx, &mut column_properties, indicator)?;
 
         ctx.update_column_properties(&column_properties);
 
@@ -63,7 +75,7 @@ impl Tree {
             ctx.set_window_width();
         }
 
-        let tree = Self::new(arena, root_id);
+        let tree = Self::new(arena, root_id, hidden);
 
         if tree.is_stump() {
             return Err(Error::NoMatches);
@@ -100,7 +112,7 @@ impl Tree {
         ctx: &Context,
         column_properties: &mut column::Properties,
         indicator: Option<&IndicatorHandle>,
-    ) -> Result<(Arena<Node>, NodeId)> {
+    ) -> Result<(Arena<Node>, NodeId, FileCount)> {
         let walker = WalkParallel::try_from(ctx)?;
         let (tx, rx) = mpsc::channel();
 
@@ -173,7 +185,22 @@ impl Tree {
                     Self::filter_directories(root_id, &mut tree);
                 }
 
-                Ok((tree, root_id))
+                let mut hidden = FileCount::default();
+
+                if let Some(min_size) = ctx.min_size
+                    && min_size.value > 0
+                {
+                    hidden = Self::hide_small_entries(root_id, &mut tree, min_size.value);
+
+                    // Hidden entries must not leave the size columns wider than needed.
+                    *column_properties = column::Properties::from(ctx);
+
+                    for node_id in root_id.descendants(&tree) {
+                        Self::update_column_properties(column_properties, tree[node_id].get(), ctx);
+                    }
+                }
+
+                Ok((tree, root_id, hidden))
             });
 
             let mut visitor_builder = BranchVisitorBuilder::new(ctx, Sender::clone(&tx));
@@ -292,6 +319,42 @@ impl Tree {
         for node_id in &to_detach {
             node_id.detach(tree);
         }
+    }
+
+    /// Detaches every entry whose displayed size is below `threshold`, except directories that
+    /// still contain a shown entry. A directory's size is the sum of its children, so this only
+    /// matters for hard links that were counted in another directory. Returns the file count of
+    /// the detached entries; the root is never hidden.
+    fn hide_small_entries(root_id: NodeId, tree: &mut Arena<Node>, threshold: u64) -> FileCount {
+        let mut shown = HashSet::new();
+        let mut hidden = FileCount::default();
+
+        let ids = root_id.descendants(tree).skip(1).collect::<Vec<_>>();
+
+        // Pre-order reversed: every child is visited before its parent.
+        for &id in ids.iter().rev() {
+            let node = tree[id].get();
+
+            if node.file_size().map_or(0, FileSize::value) >= threshold {
+                shown.insert(id);
+            }
+
+            if shown.contains(&id) {
+                if let Some(parent) = tree[id].parent() {
+                    shown.insert(parent);
+                }
+            } else {
+                hidden += node;
+            }
+        }
+
+        for id in ids {
+            if !shown.contains(&id) {
+                id.detach(tree);
+            }
+        }
+
+        hidden
     }
 
     /// Compute total number of files for a single directory without recurring into child

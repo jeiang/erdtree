@@ -85,7 +85,11 @@ impl Display for Engine<Inverted> {
         }
 
         if !file_count_data.is_empty() {
-            write!(f, "\n{}", FileCount::from(file_count_data))?;
+            write!(
+                f,
+                "\n{}",
+                FileCount::from(file_count_data) + tree.hidden_count()
+            )?;
         }
 
         Ok(())
