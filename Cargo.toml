@@ -1,6 +1,6 @@
 [package]
 name = "erdtree"
-version = "3.1.2"
+version = "4.0.0"
 edition = "2024"
 authors = ["Benjamin Nguyen <benjamin.van.nguyen@gmail.com>"]
 description = """
@@ -8,7 +8,7 @@ erdtree (erd) is a cross-platform, multi-threaded, and general purpose
 filesystem and disk usage utility that is aware of .gitignore and hidden file rules.
 """
 categories = ["command-line-utilities"]
-documentation = "https://github.com/solidiquis/erdtree"
+documentation = "https://github.com/jeiang/erdtree"
 homepage = "https://github.com/jeiang/erdtree"
 repository = "https://github.com/jeiang/erdtree"
 keywords = ["tree", "find", "ls", "du", "commandline"]

@@ -5,6 +5,16 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-10-14
+
+First release of the [jeiang/erdtree](https://github.com/jeiang/erdtree) fork of [solidiquis/erdtree](https://github.com/solidiquis/erdtree), which is no longer actively developed. The major version marks changes to existing output and behavior:
+
+- `--layout flat|iflat` sorts globally for size and time sorts, so flat output order changes.
+- `--level` only limits what is displayed; use `--traversal-depth` to limit the walk.
+- Argument relations and config files are validated on the merged arguments; invalid configs that were silently accepted now fail.
+- MSRV is 1.88.
+- Releases are published on GitHub only; crates.io, Homebrew, Scoop and NetBSD still ship upstream 3.x.
+
 ### Features
 - `--min-size <SIZE>` hides entries smaller than `SIZE` (an integer with an optional unit: `B`, `KB`..`PB` or `KiB`..`PiB`, case-insensitive) in the active `--disk-usage` metric; directories are compared by their total size and ancestors of shown entries stay ([upstream #252](https://github.com/solidiquis/erdtree/issues/252)). Totals and the summary file count still cover everything traversed. Units are rejected for line/word/block counts, and the option conflicts with `--suppress-size`. Also available as `min-size` in `.erdtree.toml`.
 - `--sort nameci` and `--sort rnameci` sort by file name ignoring case (full Unicode lowercase folding; ties fall back to the case-sensitive name order so output is deterministic) ([upstream #258](https://github.com/solidiquis/erdtree/issues/258)).
