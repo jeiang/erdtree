@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased]
 
 ### Features
+- `--sort nameci` and `--sort rnameci` sort by file name ignoring case (full Unicode lowercase folding; ties fall back to the case-sensitive name order so output is deterministic) ([upstream #258](https://github.com/solidiquis/erdtree/issues/258)).
 - `--traversal-depth <NUM>` limits how deep the filesystem walk goes ([upstream #257](https://github.com/solidiquis/erdtree/issues/257), [#253](https://github.com/solidiquis/erdtree/issues/253), [#69](https://github.com/solidiquis/erdtree/issues/69)). Directory sizes and file counts then only include traversed entries. `--level` stays display-only.
 
 ### Bug Fixes

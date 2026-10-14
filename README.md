@@ -185,6 +185,8 @@ Options:
           Possible values:
           - name:    Sort entries by file name in lexicographical order
           - rname:   Sort entries by file name in reversed lexicographical order
+          - nameci:  Sort entries by file name in case-insensitive lexicographical order
+          - rnameci: Sort entries by file name in reversed case-insensitive lexicographical order
           - size:    Sort entries by size smallest to largest, top to bottom
           - rsize:   Sort entries by size largest to smallest, bottom to top
           - access:  Sort entries by newer to older Accessing Date
@@ -613,7 +615,7 @@ Sometimes empty directories may appear in the output. To remove them:
 
 ### Sorting
 
-Various sorting methods are provided:
+Various sorting methods are provided (`nameci`/`rnameci` fold case with full Unicode lowercasing and break ties with the case-sensitive name order):
 
 ```
 -s, --sort <SORT>
@@ -624,6 +626,8 @@ Various sorting methods are provided:
       Possible values:
       - name:    Sort entries by file name in lexicographical order
       - rname:   Sort entries by file name in reversed lexicographical order
+      - nameci:  Sort entries by file name in case-insensitive lexicographical order
+      - rnameci: Sort entries by file name in reversed case-insensitive lexicographical order
       - size:    Sort entries by size smallest to largest, top to bottom
       - rsize:   Sort entries by size largest to smallest, bottom to top
       - access:  Sort entries by newer to older Accessing Date
