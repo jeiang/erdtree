@@ -192,6 +192,11 @@ pub struct Context {
     #[arg(short = '.', long)]
     pub hidden: bool,
 
+    /// Exclude entries matching a gitignore-style glob (matched relative to the root); excluded
+    /// directories are not descended into and do not count towards sizes. Can be repeated
+    #[arg(long, value_name = "GLOB", action = clap::ArgAction::Append)]
+    pub exclude: Vec<String>,
+
     /// Disable traversal of .git directory when traversing hidden files
     #[arg(long)]
     pub no_git: bool,
@@ -399,7 +404,7 @@ impl Context {
 
     /// Predicate used for filtering via globs and file-types.
     pub fn glob_predicate(&self) -> Predicate {
-        let mut builder = OverrideBuilder::new(self.dir());
+        let mut builder = OverrideBuilder::new(self.dir_canonical());
 
         let mut negated_glob = false;
 
@@ -468,12 +473,16 @@ impl Context {
         }
     }
 
-    /// Special override to toggle the visibility of the git directory.
+    /// Special override to toggle the visibility of the git directory and to apply `--exclude`.
     pub fn no_git_override(&self) -> Result<Override, Error> {
-        let mut builder = OverrideBuilder::new(self.dir());
+        let mut builder = OverrideBuilder::new(self.dir_canonical());
 
         if self.no_git {
             builder.add("!.git")?;
+        }
+
+        for glob in &self.exclude {
+            builder.add(&format!("!{}", glob.trim_start_matches('!')))?;
         }
 
         Ok(builder.build()?)

@@ -39,6 +39,7 @@ You can think of `erdtree` as a little bit of `du`, `tree`, `find`, `wc` and `ls
   - [Layouts](#layouts)
   - [gitignore](#gitignore)
   - [Hidden files](#hidden-files)
+  - [Excluding paths](#excluding-paths)
   - [Icons](#icons)
   - [Maximum depth](#maximum-depth)
   - [Hiding small entries](#hiding-small-entries)
@@ -240,6 +241,9 @@ Options:
 
   -., --hidden
           Show hidden files
+
+      --exclude <GLOB>
+          Exclude entries matching a gitignore-style glob (matched relative to the root); excluded directories are not descended into and do not count towards sizes. Can be repeated
 
       --no-git
           Disable traversal of .git directory when traversing hidden files
@@ -579,6 +583,25 @@ it use `--no-git`.
 
 If hidden files are ignored it will not be included in the total disk usage.
 
+### Excluding paths
+
+```
+--exclude <GLOB>
+      Exclude entries matching a gitignore-style glob (matched relative to the root); excluded directories are not descended into and do not count towards sizes. Can be repeated
+```
+
+```
+$ erd --exclude node_modules --exclude '*.log'
+```
+
+Globs use [gitignore syntax](https://git-scm.com/docs/gitignore#_pattern_format) and are matched relative to the root: `build` matches any entry named `build`, `/build` only one directly under the root.
+Excluded entries (and everything inside excluded directories) are not traversed, so they are left out of the output, the total disk usage, and the file counts. The root itself is never excluded.
+`--exclude` composes with `--pattern`, `--hidden`, `--prune`, and `.gitignore` handling. In `.erdtree.toml` use an array:
+
+```toml
+exclude = ["node_modules", "*.log"]
+```
+
 ### Icons
 
 ```
@@ -754,6 +777,8 @@ Filtering for particular files using a regular expression or glob is supported u
 If `--file-type` is not provided when filtering, regular files (`file`) is the default.
 
 Additionally, **any file that is filtered out will be excluded from the total disk usage**.
+
+A negated glob (`--glob --pattern '!*.log'`) keeps everything that does not match. Like other patterns it only tests entries of the `--file-type` (regular files by default), so `!build` does not remove a `build` directory unless `--file-type dir` is given; to skip paths regardless of type use `--exclude`. Glob patterns are matched per path component, so a pattern containing a slash such as `!lipsum/**` applies to files but not to `--file-type dir`.
 
 Lastly, when applying a regular expression or glob to directories, all of its descendents regardless of file-type will be included in the output.
 If you wish to only show directories you may use `--dirs-only`.

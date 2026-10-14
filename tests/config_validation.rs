@@ -155,3 +155,36 @@ fn cli_only_missing_pattern_still_errors() {
     assert!(err.contains("--pattern"), "{err}");
     assert!(err.contains("Usage: erd"), "{err}");
 }
+
+#[test]
+fn config_exclude_array() {
+    let out = run_with_toml("exclude = [\"lipsum\", \"dream_cycle\"]\n", &["tests/data"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = stdout(&out);
+    assert!(
+        !out.contains("lipsum") && !out.contains("dream_cycle"),
+        "{out}"
+    );
+    assert!(out.contains("the_yellow_king"), "{out}");
+}
+
+#[test]
+fn cli_exclude_overrides_config_exclude() {
+    let out = run_with_toml(
+        "exclude = [\"lipsum\", \"dream_cycle\"]\n",
+        &["--exclude", "the_yellow_king", "tests/data"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = stdout(&out);
+    assert!(
+        out.contains("lipsum") && out.contains("dream_cycle"),
+        "{out}"
+    );
+    assert!(!out.contains("the_yellow_king"), "{out}");
+}
+
+#[test]
+fn config_exclude_non_string_element_errors() {
+    let out = run_with_toml("exclude = [1]\n", &["tests/data"]);
+    assert!(!out.status.success());
+}

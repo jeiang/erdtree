@@ -18,6 +18,10 @@ enum ArgInstructions {
     /// Used for arguments such as `--threads 10`.
     PushKeyValue { parsed_value: OsString },
 
+    /// Used for repeatable arguments given as an array (e.g. `exclude = ["a", "b"]`), pushing the
+    /// key once per element.
+    PushKeyValues { parsed_values: Vec<OsString> },
+
     /// If a bool field is set to false in `.erdtree.toml` (e.g. `icons = false`) then we want to
     /// completely omit the key-value pair from the arguments that we ultimately use.
     Pass,
@@ -51,6 +55,13 @@ pub fn parse(config: Config, named_table: Option<&str>) -> Result<Vec<OsString>,
                 let fmt_key = process_key(k);
                 parsed_args.push(fmt_key);
                 parsed_args.push(parsed_value);
+            },
+
+            ArgInstructions::PushKeyValues { parsed_values } => {
+                for parsed_value in parsed_values {
+                    parsed_args.push(process_key(k));
+                    parsed_args.push(parsed_value);
+                }
             },
 
             ArgInstructions::PushKeyOnly => {
@@ -159,6 +170,14 @@ fn parse_argument(keyword: &str, arg: &Value) -> Result<ArgInstructions, Error> 
         ValueKind::I128(val) => try_parse_num!(*val),
         ValueKind::U64(val) => try_parse_num!(*val),
         ValueKind::U128(val) => try_parse_num!(*val),
+        ValueKind::Array(items) => items
+            .iter()
+            .map(|item| match &item.kind {
+                ValueKind::String(val) => Ok(OsString::from(val)),
+                _ => Err(Error::InvalidArgument(keyword.to_owned())),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(|parsed_values| ArgInstructions::PushKeyValues { parsed_values }),
         _ => Err(Error::InvalidArgument(keyword.to_owned())),
     }
 }
