@@ -154,6 +154,9 @@ Options:
   -L, --level <NUM>
           Maximum depth to display
 
+      --traversal-depth <NUM>
+          Limit the depth of the filesystem walk; directory sizes and file counts then only include traversed entries, unlike '--level' which only limits what is displayed
+
   -p, --pattern <PATTERN>
           Regular expression (or glob if '--glob' or '--iglob' is used) used to match files
 
@@ -596,6 +599,8 @@ Directories are fully traversed by default. To limit the maximum depth:
 ```
 
 Limiting the maximum depth to display will not affect the total disk usage report nor the file count report.
+
+To also stop the filesystem walk at a given depth (faster on large trees), use `--traversal-depth <NUM>`. Depth is counted like `--level` (the root is 0), so `--level 1 --traversal-depth 1` lists the same entries as `--level 1`, but directory sizes and the file count then only include traversed entries. `--traversal-depth 0` walks only the root. It can also be set in `.erdtree.toml` as `traversal-depth = 1`.
 
 ### Pruning empty directories
 

@@ -27,7 +27,7 @@ flowchart LR
 
 Pitfalls:
 - `WalkParallel` visit order is not tree order. Only post-collection assembly sorts.
-- `--level` limits display only; traversal and size totals still cover the full tree.
+- `--level` limits display only; traversal and size totals still cover the full tree. `--traversal-depth` (same depth numbering, root = 0) limits the walk itself via `WalkBuilder::max_depth`, so sizes and counts then cover only traversed entries.
 - `--dirs-only` and prune detach nodes after sizes are computed.
 
 ## Key Directories
