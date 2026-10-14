@@ -126,8 +126,12 @@ fn with_relations(cmd: Command) -> Command {
 }
 
 /// Parses `args` (without the binary name) against `cmd` with all argument relations enforced.
+/// The real binary name is prepended so usage errors read `Usage: erd ...`.
 fn validate(cmd: &Command, args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches, Error> {
-    let full = std::iter::once(OsString::from("--")).chain(args);
+    let bin = std::env::args_os()
+        .next()
+        .unwrap_or_else(|| OsString::from("erd"));
+    let full = std::iter::once(bin).chain(args);
     with_relations(cmd.clone())
         .try_get_matches_from(full)
         .map_err(Error::ArgParse)
