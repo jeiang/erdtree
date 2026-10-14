@@ -258,6 +258,9 @@ Options:
       --no-report
           Omit the directory and file count summary from output
 
+      --summarize
+          Print only the root and its total disk usage, like 'du -s'; same as '--level 0 --no-report' and overrides '--level'
+
       --suppress-size
           Omit disk usage from output
 
@@ -519,7 +522,7 @@ Logical size just reports the total number of bytes in a file.
 If you want the same exact disk usage reporting as `du`, you can do the following:
 
 ```
-$ erd --layout flat --disk-usage block --no-ignore --hidden --level
+$ erd --layout flat --disk-usage block --no-ignore --hidden
 ```
 
 or in short-hand
@@ -531,6 +534,12 @@ $ erd -y flat -d block -i -.
 <p align="center">
   <img src="https://github.com/solidiquis/erdtree/blob/master/assets/du_match.png?raw=true" alt="failed to load png" />
 </p>
+
+For a single line with the total, like `du -s`, add `--summarize` (the same as `--level 0 --no-report`):
+
+```
+$ erd --disk-usage block --no-ignore --hidden --summarize
+```
 
 #### Word and line count
 

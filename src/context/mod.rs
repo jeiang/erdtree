@@ -225,6 +225,11 @@ pub struct Context {
     #[arg(long)]
     pub no_report: bool,
 
+    /// Print only the root and its total disk usage, like 'du -s'; same as '--level 0
+    /// --no-report' and overrides '--level'
+    #[arg(long)]
+    pub summarize: bool,
+
     /// Omit disk usage from output
     #[arg(long)]
     pub suppress_size: bool,
@@ -290,8 +295,14 @@ impl Context {
     pub fn try_init() -> Result<Self, Error> {
         Self::compute_args().and_then(|args| {
             color::no_color_env();
-            let ctx = Self::from_arg_matches(&args).map_err(Error::Config)?;
+            let mut ctx = Self::from_arg_matches(&args).map_err(Error::Config)?;
             ctx.validate_min_size()?;
+
+            if ctx.summarize {
+                ctx.level = Some(0);
+                ctx.no_report = true;
+            }
+
             Ok(ctx)
         })
     }
