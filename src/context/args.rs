@@ -1,6 +1,7 @@
 use super::{Context, config, error::Error};
 use clap::{
-    ArgMatches, Command, CommandFactory, FromArgMatches, builder::ArgAction, parser::ValueSource,
+    ArgGroup, ArgMatches, Command, CommandFactory, FromArgMatches, builder::ArgAction,
+    parser::ValueSource,
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -23,7 +24,7 @@ pub trait Reconciler: CommandFactory + FromArgMatches {
         let user_args = Command::clone(&cmd).get_matches();
 
         if user_args.get_one::<bool>("no_config").is_some_and(|b| *b) {
-            return Ok(user_args);
+            return validate(&cmd, std::env::args_os().skip(1));
         }
 
         let maybe_config_args = {
@@ -34,7 +35,7 @@ pub trait Reconciler: CommandFactory + FromArgMatches {
                     return Err(Error::Rc);
                 }
 
-                Some(rc)
+                Some(rc?)
             } else {
                 let toml = load_toml_config_args(named_table.map(String::as_str))?;
 
@@ -47,7 +48,7 @@ pub trait Reconciler: CommandFactory + FromArgMatches {
         };
 
         let Some(config_args) = maybe_config_args else {
-            return Ok(user_args);
+            return validate(&cmd, std::env::args_os().skip(1));
         };
 
         let mut final_args = init_empty_args();
@@ -97,11 +98,40 @@ pub trait Reconciler: CommandFactory + FromArgMatches {
             }
         }
 
-        Ok(cmd.get_matches_from(final_args))
+        validate(&cmd, final_args.into_iter().skip(1))
     }
 }
 
 impl Reconciler for Context {}
+
+/// Adds the relations between arguments (`requires` and mutual exclusion) to `cmd`.
+///
+/// These are deliberately not declared on [`Context`] itself: the command-line and the config
+/// file are each parsed on their own before being merged, and neither is complete without the
+/// other (e.g. `glob = true` in the config with `--pattern` on the command-line). Relations are
+/// therefore only enforced by [`validate`], once, on the merged arguments.
+fn with_relations(cmd: Command) -> Command {
+    // These arguments only exist on Unix; `mut_arg` panics on unknown ids.
+    #[cfg(unix)]
+    let cmd = cmd
+        .mut_arg("octal", |a| a.requires("long"))
+        .mut_arg("time", |a| a.requires("long"))
+        .mut_arg("time_format", |a| a.requires("long"));
+
+    cmd.mut_arg("glob", |a| a.requires("pattern"))
+        .mut_arg("iglob", |a| a.requires("pattern"))
+        .mut_arg("file_type", |a| a.requires("pattern"))
+        .mut_arg("no_git", |a| a.requires("hidden"))
+        .group(ArgGroup::new("searching").args(["glob", "iglob"]))
+}
+
+/// Parses `args` (without the binary name) against `cmd` with all argument relations enforced.
+fn validate(cmd: &Command, args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches, Error> {
+    let full = std::iter::once(OsString::from("--")).chain(args);
+    with_relations(cmd.clone())
+        .try_get_matches_from(full)
+        .map_err(Error::ArgParse)
+}
 
 /// Creates a properly formatted `Vec<OsString>` that [`clap::Command`] would understand.
 #[inline]
@@ -111,10 +141,12 @@ fn init_empty_args() -> Vec<OsString> {
 
 /// Loads an [`ArgMatches`] from `.erdtreerc`.
 #[inline]
-fn load_rc_config_args() -> Option<ArgMatches> {
+fn load_rc_config_args() -> Option<Result<ArgMatches, Error>> {
     config::rc::read_config_to_string().map(|rc_config| {
         let parsed_args = config::rc::parse(&rc_config);
-        Context::command().get_matches_from(parsed_args)
+        Context::command()
+            .try_get_matches_from(parsed_args)
+            .map_err(Error::Config)
     })
 }
 
@@ -123,7 +155,9 @@ fn load_rc_config_args() -> Option<ArgMatches> {
 fn load_toml_config_args(named_table: Option<&str>) -> Result<Option<ArgMatches>, Error> {
     let toml_config = config::toml::load()?;
     let parsed_args = config::toml::parse(toml_config, named_table)?;
-    let config_args = Context::command().get_matches_from(parsed_args);
+    let config_args = Context::command()
+        .try_get_matches_from(parsed_args)
+        .map_err(Error::Config)?;
 
     Ok(Some(config_args))
 }
