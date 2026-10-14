@@ -376,21 +376,21 @@ impl Tree {
     /// Nodes in the order the inverted flat layout (`iflat`) displays them; the flat layout
     /// displays the same list reversed.
     ///
-    /// Flat output has no hierarchy to preserve, so sorting is global rather than per directory:
-    /// the root comes first and every other node follows, ordered by the configured sort and
-    /// `--dir-order` across the whole tree. The sort is stable over a pre-order walk, so ties list
-    /// a directory before its contents.
+    /// Name sorts keep the hierarchy: a pre-order walk of the per-directory sorted tree, so each
+    /// directory's contents follow it, as when sorting by full path. Other sorts are global: the
+    /// root comes first and every other node follows, ordered by the configured sort and
+    /// `--dir-order` across the whole tree. That sort is stable over a pre-order walk, so ties
+    /// list a directory before its contents.
     #[must_use]
     pub fn flat_order(&self, ctx: &Context) -> Vec<NodeId> {
-        let mut ids = self
-            .root_id
-            .descendants(&self.arena)
-            .skip(1)
-            .collect::<Vec<_>>();
-        let comparator = node::cmp::comparator(ctx);
+        let mut ids = self.root_id.descendants(&self.arena).collect::<Vec<_>>();
 
-        ids.sort_by(|&a, &b| comparator(self.arena[a].get(), self.arena[b].get()));
-        ids.insert(0, self.root_id);
+        if ctx.sort.is_name() {
+            return ids;
+        }
+
+        let comparator = node::cmp::comparator(ctx);
+        ids[1..].sort_by(|&a, &b| comparator(self.arena[a].get(), self.arena[b].get()));
         ids
     }
 
