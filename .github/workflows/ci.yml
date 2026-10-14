@@ -8,9 +8,11 @@ on:
 permissions:
   contents: read
 
+# PRs: a new push cancels the superseded run. Pushes to master: one group per commit, so every
+# merged commit gets a complete run (a shared group would cancel pending runs).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
