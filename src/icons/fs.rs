@@ -1,5 +1,5 @@
-use ansi_term::{ANSIGenericString, Style};
 use ignore::DirEntry;
+use nu_ansi_term::{AnsiGenericString, Style};
 use std::{borrow::Cow, path::Path};
 
 /// Computes a plain, colorless icon with given parameters.
@@ -58,7 +58,7 @@ pub fn compute_with_color(
             foreground: Some(fg),
             ..
         }) => {
-            let ansi_string: ANSIGenericString<str> = fg.bold().paint(icon);
+            let ansi_string: AnsiGenericString<str> = fg.bold().paint(icon);
             let styled_icon = ansi_string.to_string();
             Cow::from(styled_icon)
         },

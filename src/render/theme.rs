@@ -2,7 +2,7 @@ use crate::{
     styles::{self, ThemesMap},
     tree::node::Node,
 };
-use ansi_term::{Color, Style};
+use nu_ansi_term::{Color, Style};
 use std::borrow::Cow;
 
 type Theme = Box<dyn FnMut(&Node) -> &'static ThemesMap>;

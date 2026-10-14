@@ -1,8 +1,7 @@
 use clap::ValueEnum;
-use once_cell::sync::OnceCell;
-use std::{env, ffi::OsString};
+use std::{env, ffi::OsString, sync::OnceLock};
 
-pub static NO_COLOR: OnceCell<Option<OsString>> = OnceCell::new();
+pub static NO_COLOR: OnceLock<Option<OsString>> = OnceLock::new();
 
 /// Reads in the `NO_COLOR` environment variable to determine whether or not to display color in
 /// the output.

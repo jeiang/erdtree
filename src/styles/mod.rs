@@ -1,7 +1,7 @@
 use crate::hash;
-use ansi_term::{Color, Style};
 use error::Error;
 use lscolors::LsColors;
+use nu_ansi_term::{Color, Style};
 use std::{collections::HashMap, sync::OnceLock};
 
 /// Errors for this module.
@@ -83,7 +83,7 @@ pub type ThemesMap = HashMap<&'static str, String>;
 /// themes are used and [`LS_COLORS`] won't be initialized.
 pub fn init(plain: bool) {
     #[cfg(windows)]
-    let _ = ansi_term::enable_ansi_support();
+    let _ = nu_ansi_term::enable_ansi_support();
 
     if plain {
         init_plain();
