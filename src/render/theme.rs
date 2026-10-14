@@ -46,7 +46,11 @@ pub fn stylize_file_name(node: &Node) -> Cow<'_, str> {
     let style = node.style();
 
     let Some(target_name) = node.symlink_target_file_name() else {
-        if let Some(Style {foreground: Some(ref fg), .. }) = style {
+        if let Some(Style {
+            foreground: Some(ref fg),
+            ..
+        }) = style
+        {
             let file_name = name.to_string_lossy();
             let styled_name = fg.bold().paint(file_name).to_string();
             return Cow::from(styled_name);

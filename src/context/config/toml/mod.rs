@@ -207,13 +207,17 @@ mod unix {
 
         file.map_or_else(
             || Err(Error::LoadConfig),
-            |f| Config::builder()
-                .add_source(f)
-                .build()
-                .map_err(|err| match err {
-                    ConfigError::FileParse { .. } | ConfigError::Type { .. } => Error::from(err),
-                    _ => Error::LoadConfig,
-                }),
+            |f| {
+                Config::builder()
+                    .add_source(f)
+                    .build()
+                    .map_err(|err| match err {
+                        ConfigError::FileParse { .. } | ConfigError::Type { .. } => {
+                            Error::from(err)
+                        },
+                        _ => Error::LoadConfig,
+                    })
+            },
         )
     }
 }

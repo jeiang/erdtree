@@ -273,7 +273,12 @@ impl TryFrom<(DirEntry, &Context)> for Node {
 
         #[cfg(unix)]
         let unix_attrs = if ctx.long
-            && path.components().count() <= ctx.dir_canonical().components().count().saturating_add(ctx.level())
+            && path.components().count()
+                <= ctx
+                    .dir_canonical()
+                    .components()
+                    .count()
+                    .saturating_add(ctx.level())
         {
             unix::Attrs::from((&metadata, &dir_entry))
         } else {

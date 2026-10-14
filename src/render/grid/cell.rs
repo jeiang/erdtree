@@ -122,7 +122,7 @@ impl<'a> Cell<'a> {
         let ctx = self.ctx;
 
         let Some(file_size) = node.file_size() else {
-            return Self::fmt_size_placeholder(f, ctx)
+            return Self::fmt_size_placeholder(f, ctx);
         };
 
         match file_size {

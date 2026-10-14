@@ -74,7 +74,7 @@ pub trait Reconciler: CommandFactory + FromArgMatches {
                 });
 
             let Some(key) = arg.get_long().map(|l| format!("--{l}")).map(OsString::from) else {
-                continue
+                continue;
             };
 
             match arg.get_action() {
