@@ -19,6 +19,9 @@ pub mod line_count;
 /// Concerned with measuring file size by word count.
 pub mod word_count;
 
+/// Streaming UTF-8 validation shared by the line and word count metrics.
+mod utf8_stream;
+
 #[cfg(unix)]
 pub const BLOCK_SIZE_BYTES: u16 = 512;
 
