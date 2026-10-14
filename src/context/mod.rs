@@ -55,14 +55,14 @@ pub mod sort;
 pub mod time;
 
 /// Defines the CLI.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "erdtree")]
 #[command(author = "Benjamin Nguyen. <benjamin.van.nguyen@gmail.com>")]
 #[command(version = "3.1.2")]
 #[command(about = "erdtree (erd) is a cross-platform, multi-threaded, and general purpose filesystem and disk usage utility.", long_about = None)]
 pub struct Context {
-    /// Directory to traverse; defaults to current working directory
-    dir: Option<PathBuf>,
+    /// Directories to traverse, each shown as its own tree; defaults to current working directory
+    dir: Vec<PathBuf>,
 
     /// Use configuration of named table rather than the top-level table in .erdtree.toml
     #[arg(short = 'c', long)]
@@ -353,8 +353,23 @@ impl Context {
     /// Returns [Path] of the root directory to be traversed.
     pub fn dir(&self) -> &Path {
         self.dir
-            .as_ref()
-            .map_or_else(|| Path::new("."), |pb| pb.as_path())
+            .first()
+            .map_or_else(|| Path::new("."), PathBuf::as_path)
+    }
+
+    /// One [Context] per root directory given on the command line, in order.
+    pub fn split_roots(self) -> Vec<Self> {
+        if self.dir.len() <= 1 {
+            return vec![self];
+        }
+
+        self.dir
+            .iter()
+            .map(|dir| Self {
+                dir: vec![dir.clone()],
+                ..self.clone()
+            })
+            .collect()
     }
 
     /// Returns canonical [Path] of the root directory to be traversed.

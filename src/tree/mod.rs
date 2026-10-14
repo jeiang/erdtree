@@ -55,13 +55,18 @@ impl Tree {
         }
     }
 
-    /// File count of the entries hidden by `--min-size` or skipped by the walk.
-    pub const fn hidden_count(&self) -> FileCount {
-        self.hidden
+    /// The summary count: every entry below the root, plus those hidden by `--min-size` or
+    /// skipped by the walk.
+    pub fn file_count(&self) -> FileCount {
+        self.root_id
+            .descendants(&self.arena)
+            .skip(1)
+            .fold(self.hidden, |acc, id| acc + self.arena[id].get())
     }
 
     /// Initiates file-system traversal and [Tree] as well as updates the [Context] object with
-    /// various properties necessary to render output.
+    /// various properties necessary to render output. The tree may be a stump (see
+    /// [`Self::is_stump`]).
     pub fn try_init(
         mut ctx: Context,
         indicator: Option<&IndicatorHandle>,
@@ -76,13 +81,7 @@ impl Tree {
             ctx.set_window_width();
         }
 
-        let tree = Self::new(arena, root_id, hidden);
-
-        if tree.is_stump() {
-            return Err(Error::NoMatches);
-        }
-
-        Ok((tree, ctx))
+        Ok((Self::new(arena, root_id, hidden), ctx))
     }
 
     /// Returns `true` if there are no entries to show excluding the `root_id`.
@@ -164,12 +163,6 @@ impl Tree {
                     {
                         branches.insert(parent, vec![]);
                     }
-                }
-
-                if let Some(ref mailbox) = progress_indicator_mailbox
-                    && mailbox.send(Message::DoneIndexing).is_err()
-                {
-                    return Err(Error::Terminated);
                 }
 
                 let root_id = root_id.ok_or(Error::MissingRoot)?;
@@ -385,16 +378,6 @@ impl Tree {
         hidden
     }
 
-    /// Compute total number of files for a single directory without recurring into child
-    /// directories. Files are grouped into three categories: directories, regular files, and
-    /// symlinks.
-    pub fn compute_file_count(node_id: NodeId, tree: &Arena<Node>) -> FileCount {
-        node_id
-            .children(tree)
-            .map(|child_id| tree[child_id].get())
-            .fold(FileCount::default(), |acc, node| acc + node)
-    }
-
     /// Nodes in the order the inverted flat layout (`iflat`) displays them; the flat layout
     /// displays the same list reversed.
     ///
@@ -492,10 +475,8 @@ impl TryFrom<&Context> for WalkParallel {
     type Error = Error;
 
     fn try_from(ctx: &Context) -> StdResult<Self, Self::Error> {
-        let root_id = fs::canonicalize(ctx.dir())?;
-
-        fs::metadata(&root_id)
-            .map_err(|e| Error::DirNotFound(format!("{}: {e}", root_id.display())))?;
+        let root_id = fs::canonicalize(ctx.dir())
+            .map_err(|e| Error::DirNotFound(format!("{}: {e}", ctx.dir().display())))?;
 
         let mut builder = WalkBuilder::new(root_id);
 

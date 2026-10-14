@@ -58,8 +58,8 @@ pub trait Reconciler: CommandFactory + FromArgMatches {
             let id_str = arg_id.as_str();
 
             if id_str == "dir" {
-                if let Some(dir) = user_args.try_get_one::<PathBuf>(id_str)? {
-                    final_args.push(OsString::from(dir));
+                if let Some(dirs) = user_args.try_get_many::<PathBuf>(id_str)? {
+                    final_args.extend(dirs.map(OsString::from));
                 }
                 continue;
             }

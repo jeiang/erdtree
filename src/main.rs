@@ -26,7 +26,7 @@ use std::{
     io::{self, ErrorKind, Write, stdout},
     process::ExitCode,
 };
-use tree::Tree;
+use tree::{Tree, count::FileCount};
 
 /// Operations to wrangle ANSI escaped strings.
 mod ansi;
@@ -94,30 +94,49 @@ fn run() -> Result<(), Box<dyn Error>> {
     styles::init(ctx.no_color());
 
     let indicator = Indicator::maybe_init(&ctx)?;
+    let no_report = ctx.no_report;
+    // `--summarize` prints one line per root, like `du -s a b`.
+    let separator = if ctx.summarize { "" } else { "\n" };
 
-    let (tree, ctx) = {
+    let mut trees = vec![];
+
+    for ctx in ctx.split_roots() {
         match Tree::try_init(ctx, indicator.as_ref()) {
-            Ok(res) => res,
+            Ok(res) => trees.push(res),
             Err(err) => {
                 let _ = IndicatorHandle::try_terminate(indicator);
                 return Err(Box::new(err));
             },
         }
-    };
-
-    macro_rules! compute_output {
-        ($t:ty) => {{
-            let render = Engine::<$t>::new(tree, ctx);
-            format!("{render}")
-        }};
     }
 
-    let output = match ctx.layout {
-        layout::Type::Flat => compute_output!(Flat),
-        layout::Type::Iflat => compute_output!(FlatInverted),
-        layout::Type::Inverted => compute_output!(Inverted),
-        layout::Type::Regular => compute_output!(Regular),
-    };
+    if trees.iter().all(|(tree, _)| tree.is_stump()) {
+        let _ = IndicatorHandle::try_terminate(indicator);
+        return Err(Box::new(tree::error::Error::NoMatches));
+    }
+
+    if let Some(progress) = &indicator {
+        progress
+            .mailbox()
+            .send(Message::DoneIndexing)
+            .map_err(|_e| tree::error::Error::Terminated)?;
+    }
+
+    let file_count = trees.iter().fold(FileCount::default(), |acc, (tree, _)| {
+        acc + tree.file_count()
+    });
+
+    // Every rendered tree ends in a newline, so the "\n" separator leaves a blank line between
+    // trees.
+    let mut output = trees
+        .into_iter()
+        .map(|(tree, ctx)| render(tree, ctx))
+        .collect::<Vec<_>>()
+        .join(separator);
+
+    if !no_report {
+        output = format!("{output}\n{file_count}\n");
+    }
 
     if let Some(mut progress) = indicator {
         progress
@@ -136,14 +155,19 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     if should_write {
         let mut out = stdout().lock();
-        // Rows end in a newline; only the summary line (absent with `--no-report`) does not.
-        if output.ends_with('\n') {
-            write!(out, "{output}")?;
-        } else {
-            writeln!(out, "{output}")?;
-        }
+        write!(out, "{output}")?;
         out.flush()?;
     }
 
     Ok(())
+}
+
+/// Renders the rows of `tree` in the layout selected by `ctx`.
+fn render(tree: Tree, ctx: Context) -> String {
+    match ctx.layout {
+        layout::Type::Flat => Engine::<Flat>::new(tree, ctx).to_string(),
+        layout::Type::Iflat => Engine::<FlatInverted>::new(tree, ctx).to_string(),
+        layout::Type::Inverted => Engine::<Inverted>::new(tree, ctx).to_string(),
+        layout::Type::Regular => Engine::<Regular>::new(tree, ctx).to_string(),
+    }
 }

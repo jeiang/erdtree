@@ -1,9 +1,6 @@
-use crate::{
-    render::{
-        Engine, Flat,
-        grid::{self, Row},
-    },
-    tree::{Tree, count::FileCount},
+use crate::render::{
+    Engine, Flat,
+    grid::{self, Row},
 };
 use std::fmt::{self, Display};
 
@@ -14,11 +11,8 @@ impl Display for Engine<Flat> {
         let arena = tree.arena();
         let order = tree.flat_order(ctx);
         let max_depth = ctx.level();
-        let mut file_count_data = vec![];
 
         for node_id in order.into_iter().rev() {
-            file_count_data.push(Tree::compute_file_count(node_id, arena));
-
             let node = arena[node_id].get();
 
             if node.depth() > max_depth {
@@ -28,14 +22,6 @@ impl Display for Engine<Flat> {
             let row = Row::<grid::Flat>::new(node, ctx, None);
 
             writeln!(f, "{row}")?;
-        }
-
-        if !ctx.no_report && !file_count_data.is_empty() {
-            write!(
-                f,
-                "\n{}",
-                FileCount::from(file_count_data) + tree.hidden_count()
-            )?;
         }
 
         Ok(())
