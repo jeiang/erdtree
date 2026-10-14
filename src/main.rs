@@ -136,7 +136,12 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     if should_write {
         let mut out = stdout().lock();
-        writeln!(out, "{output}")?;
+        // Rows end in a newline; only the summary line (absent with `--no-report`) does not.
+        if output.ends_with('\n') {
+            write!(out, "{output}")?;
+        } else {
+            writeln!(out, "{output}")?;
+        }
         out.flush()?;
     }
 

@@ -95,7 +95,7 @@ impl Display for Engine<Regular> {
             }
         }
 
-        if !file_count_data.is_empty() {
+        if !ctx.no_report && !file_count_data.is_empty() {
             write!(
                 f,
                 "\n{}",

@@ -30,7 +30,7 @@ impl Display for Engine<Flat> {
             writeln!(f, "{row}")?;
         }
 
-        if !file_count_data.is_empty() {
+        if !ctx.no_report && !file_count_data.is_empty() {
             write!(
                 f,
                 "\n{}",
