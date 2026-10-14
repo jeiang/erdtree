@@ -369,7 +369,7 @@ impl Context {
 
     /// Predicate used for filtering via globs and file-types.
     pub fn glob_predicate(&self) -> Predicate {
-        let mut builder = OverrideBuilder::new(self.dir());
+        let mut builder = OverrideBuilder::new(self.dir_canonical());
 
         let mut negated_glob = false;
 
@@ -440,7 +440,7 @@ impl Context {
 
     /// Special override to toggle the visibility of the git directory.
     pub fn no_git_override(&self) -> Result<Override, Error> {
-        let mut builder = OverrideBuilder::new(self.dir());
+        let mut builder = OverrideBuilder::new(self.dir_canonical());
 
         if self.no_git {
             builder.add("!.git")?;
