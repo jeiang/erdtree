@@ -417,8 +417,10 @@ impl TryFrom<&Context> for WalkParallel {
             .same_file_system(ctx.same_fs)
             .threads(ctx.threads);
 
-        if ctx.suppress_size && ctx.level() == 1 {
-            builder.max_depth(Some(1)).threads(1);
+        // `--level` is display-only; only `--traversal-depth` limits the walk. Both count the
+        // root as depth 0, so `--level N --traversal-depth N` shows the same entries.
+        if let Some(depth) = ctx.traversal_depth {
+            builder.max_depth(Some(depth));
         }
 
         if ctx.pattern.is_some() {

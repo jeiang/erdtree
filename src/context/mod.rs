@@ -127,6 +127,11 @@ pub struct Context {
     #[arg(short = 'L', long, value_name = "NUM")]
     level: Option<usize>,
 
+    /// Limit the depth of the filesystem walk; directory sizes and file counts then only include
+    /// traversed entries, unlike '--level' which only limits what is displayed
+    #[arg(long, value_name = "NUM")]
+    pub traversal_depth: Option<usize>,
+
     /// Regular expression (or glob if '--glob' or '--iglob' is used) used to match files
     #[arg(short, long)]
     pub pattern: Option<String>,
