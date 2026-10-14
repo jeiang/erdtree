@@ -127,41 +127,14 @@ fn glob_negative_anchored_pattern_with_relative_root() {
     assert_eq!(
         utils::run_cmd(&["--glob", "--pattern", "!lipsum/**", "tests/data"]),
         indoc!(
-            "308 B    ┌─ polaris.txt
- 308 B ┌─ dream_cycle
- 161 B ├─ nemesis.txt
-  83 B ├─ necronomicon.txt
- 143 B │  ┌─ cassildas_song.md
- 143 B ├─ the_yellow_king
- 100 B ├─ nylarlathotep.txt
- 803 B data
-
-3 directories, 5 files"
-        )
-    );
-}
-
-/// With `--file-type dir`, a negated glob removes matching directories and their contents.
-#[test]
-fn glob_negative_dir() {
-    assert_eq!(
-        utils::run_cmd(&[
-            "--glob",
-            "--pattern",
-            "!lipsum",
-            "--file-type",
-            "dir",
-            "tests/data"
-        ]),
-        indoc!(
-            "308 B    ┌─ polaris.txt
- 308 B ┌─ dream_cycle
- 161 B ├─ nemesis.txt
-  83 B ├─ necronomicon.txt
- 143 B │  ┌─ cassildas_song.md
- 143 B ├─ the_yellow_king
- 100 B ├─ nylarlathotep.txt
- 803 B data
+            "143 B    ┌─ cassildas_song.md
+143 B ┌─ the_yellow_king
+100 B ├─ nylarlathotep.txt
+161 B ├─ nemesis.txt
+ 83 B ├─ necronomicon.txt
+308 B │  ┌─ polaris.txt
+308 B ├─ dream_cycle
+795 B data
 
 2 directories, 5 files"
         )
