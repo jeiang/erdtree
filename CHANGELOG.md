@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased]
 
 ### Bug Fixes
+- Errors writing to stdout are no longer ignored: a closed pipe (e.g. `erd | head`) exits quietly with status 0, any other write error prints `erd: <error>` to stderr and exits non-zero. All fatal errors are now prefixed with `erd: `.
 - Windows: the `.erdtree.toml` lookup (`$ERDTREE_TOML_PATH`, then `%APPDATA%\erdtree\.erdtree.toml`) now compiles ([upstream #254](https://github.com/solidiquis/erdtree/issues/254)).
 - Windows: builds on stable Rust (no more nightly `windows_by_handle`), and hard-link de-duplication now works by querying `GetFileInformationByHandle` via `windows-sys`.
 - Owner/group lookup uses the thread-safe `getpwuid_r`/`getgrgid_r` instead of `getpwuid`/`getgrgid` ([upstream #226](https://github.com/solidiquis/erdtree/issues/226), [#179](https://github.com/solidiquis/erdtree/issues/179)).
