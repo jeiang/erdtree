@@ -1,3 +1,4 @@
+#[cfg(unix)]
 mod utils;
 
 #[cfg(unix)]
