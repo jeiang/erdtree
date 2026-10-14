@@ -197,15 +197,13 @@ Options:
 
           Possible values:
           - none:  Directories are ordered as if they were regular nodes
-          - first: Sort directories above files
-          - last:  Sort directories below files
+          - first: Directories above files in the regular and flat layouts, below files in the inverted and iflat layouts
+          - last:  Directories below files in the regular and flat layouts, above files in the inverted and iflat layouts
           
           [default: none]
 
   -T, --threads <THREADS>
-          Number of threads to use
-          
-          [default: 10]
+          Number of threads to use; defaults to the number of available CPU cores
 
   -u, --unit <UNIT>
           Report disk usage in binary or SI units
@@ -671,16 +669,16 @@ Various sorting methods are provided (`nameci`/`rnameci` fold case with full Uni
 
   --dir-order <DIR_ORDER>
       Sort directories before or after all other file types
-      
-      [default: none]
 
       Possible values:
       - none:  Directories are ordered as if they were regular nodes
-      - first: Sort directories above files
-      - last:  Sort directories below files
+      - first: Directories above files in the regular and flat layouts, below files in the inverted and iflat layouts
+      - last:  Directories below files in the regular and flat layouts, above files in the inverted and iflat layouts
+
+      [default: none]
 ```
 
-`--dir-order` and `--sort` acan be used independently of each other.
+`--dir-order` and `--sort` can be used independently of each other. `--dir-order` orders directories relative to the root: `first` puts them farthest from the root, so they appear above files when the root is at the bottom (`regular`, `flat`) and below files when the root is at the top (`inverted`, `iflat`).
 
 ### Directories only
 
@@ -827,7 +825,7 @@ If, however, the default behavior doesn't suit your needs you have control over 
 The amount of threads used by `erdtree` can be adjusted with the following:
 
 ```
--T, --threads <THREADS>          Number of threads to use [default: 3]
+-T, --threads <THREADS>          Number of threads to use; defaults to the number of available CPU cores
 ```
 
 #### Why parallelism

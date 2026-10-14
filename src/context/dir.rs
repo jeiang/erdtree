@@ -7,9 +7,11 @@ pub enum Order {
     #[default]
     None,
 
-    /// Sort directories above files
+    /// Directories above files in the regular and flat layouts, below files in the inverted and
+    /// iflat layouts
     First,
 
-    /// Sort directories below files
+    /// Directories below files in the regular and flat layouts, above files in the inverted and
+    /// iflat layouts
     Last,
 }

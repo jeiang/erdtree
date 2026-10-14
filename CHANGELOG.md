@@ -27,6 +27,10 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Owner/group lookup uses the thread-safe `getpwuid_r`/`getgrgid_r` instead of `getpwuid`/`getgrgid` ([upstream #226](https://github.com/solidiquis/erdtree/issues/226), [#179](https://github.com/solidiquis/erdtree/issues/179)).
 - The progress indicator restores the cursor on errors and panics and no longer panics on I/O or thread failures ([upstream #260](https://github.com/solidiquis/erdtree/issues/260)).
 
+### Documentation
+- `--dir-order` help now states the actual layout-dependent placement (`first`: directories above files in `regular`/`flat`, below files in `inverted`/`iflat`; `last` the opposite). Behavior is unchanged.
+- `--threads` help says it defaults to the number of available CPU cores instead of printing this machine's count.
+
 ### Internal
 - `--disk-usage line` and `--disk-usage word` stream each file through a fixed 64 KiB buffer (with incremental UTF-8 validation) instead of reading whole files into memory; results, including non-UTF-8 files being skipped, are unchanged. Peak memory no longer scales with file size times walker threads.
 - MSRV is now 1.88 and the crate uses the 2024 edition.
