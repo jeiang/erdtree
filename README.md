@@ -41,6 +41,7 @@ You can think of `erdtree` as a little bit of `du`, `tree`, `find`, `wc` and `ls
   - [Hidden files](#hidden-files)
   - [Excluding paths](#excluding-paths)
   - [Icons](#icons)
+  - [Entry indicators](#entry-indicators)
   - [Maximum depth](#maximum-depth)
   - [Hiding small entries](#hiding-small-entries)
   - [Pruning empty directories](#pruning-empty-directories)
@@ -102,6 +103,9 @@ Options:
 
   -f, --follow
           Follow symlinks
+
+  -F, --classify
+          Append an indicator to entry names: / directory, @ symlink, * executable, | FIFO, = socket
 
   -H, --human
           Print disk usage in human-readable format
@@ -617,6 +621,14 @@ If your icons look something like this:
 </p>
 
 this means that the font you are using doesn't include the relevant glyphs. To resolve this issue download a [NerdFont](https://www.nerdfonts.com/) and hook it up to your terminal emulator.
+
+### Entry indicators
+
+```
+-F, --classify                   Append an indicator to entry names: / directory, @ symlink, * executable, | FIFO, = socket
+```
+
+Like `ls -F`, `--classify` appends `/` to directories, `@` to symlinks (before the `→ target`), and on Unix `*` to executable files, `|` to FIFOs and `=` to sockets. It can also be set in `.erdtree.toml` as `classify = true`.
 
 ### Maximum depth
 

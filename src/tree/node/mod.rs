@@ -149,6 +149,39 @@ impl Node {
         self.symlink_target_path().map(Path::as_os_str)
     }
 
+    /// The `ls -F` style indicator for the kind of entry: `@` symlink, `/` directory and, on
+    /// Unix, `|` FIFO, `=` socket, `*` executable regular file.
+    pub fn indicator(&self) -> Option<&'static str> {
+        if self.is_symlink() {
+            return Some("@");
+        }
+
+        let ft = self.file_type()?;
+
+        if ft.is_dir() {
+            return Some("/");
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+
+            if ft.is_fifo() {
+                return Some("|");
+            }
+
+            if ft.is_socket() {
+                return Some("=");
+            }
+
+            if ft.is_file() && self.metadata.permissions().mode() & 0o111 != 0 {
+                return Some("*");
+            }
+        }
+
+        None
+    }
+
     /// Returns reference to underlying [`FileType`].
     pub fn file_type(&self) -> Option<FileType> {
         self.dir_entry.file_type()
