@@ -9,8 +9,8 @@ filesystem and disk usage utility that is aware of .gitignore and hidden file ru
 """
 categories = ["command-line-utilities"]
 documentation = "https://github.com/solidiquis/erdtree"
-homepage = "https://github.com/solidiquis/erdtree"
-repository = "https://github.com/solidiquis/erdtree"
+homepage = "https://github.com/jeiang/erdtree"
+repository = "https://github.com/jeiang/erdtree"
 keywords = ["tree", "find", "ls", "du", "commandline"]
 exclude = ["assets/*", "scripts/*", "example/*"]
 readme = "README.md"
@@ -52,3 +52,8 @@ winapi = "0.3.9"
 indoc = "2.0.0"
 strip-ansi-escapes = "0.1.1"
 tempfile = "3.4.0"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

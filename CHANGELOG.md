@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
  
 This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [Unreleased]
+
+### Build
+- Releases are built and published by a [cargo-dist](https://github.com/axodotdev/cargo-dist) generated workflow (`.github/workflows/release.yml`) with shell/PowerShell installers, SHA-256 checksums, and build attestations. Replaces `publish.yml` and `test.yml`.
+- `repository`/`homepage` in `Cargo.toml` point at the `jeiang/erdtree` fork.
+
 ## [3.1.2] - 2023-07-02
 
 ### Bug Fixes
