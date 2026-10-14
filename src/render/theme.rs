@@ -2,7 +2,7 @@ use crate::{
     styles::{self, ThemesMap},
     tree::node::Node,
 };
-use nu_ansi_term::{Color, Style};
+use nu_ansi_term::Color;
 use std::borrow::Cow;
 
 type Theme = Box<dyn FnMut(&Node) -> &'static ThemesMap>;
@@ -46,13 +46,9 @@ pub fn stylize_file_name(node: &Node) -> Cow<'_, str> {
     let style = node.style();
 
     let Some(target_name) = node.symlink_target_file_name() else {
-        if let Some(Style {
-            foreground: Some(ref fg),
-            ..
-        }) = style
-        {
+        if let Some(style) = style.filter(|style| !style.is_plain()) {
             let file_name = name.to_string_lossy();
-            let styled_name = fg.bold().paint(file_name).to_string();
+            let styled_name = style.bold().paint(file_name).to_string();
             return Cow::from(styled_name);
         }
 

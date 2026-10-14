@@ -2,11 +2,28 @@ use std::process::Command;
 use std::process::Stdio;
 use strip_ansi_escapes::strip as strip_ansi_escapes;
 
-/// Runs `erd` and returns stdout with ANSI escapes stripped but whitespace untouched, so tests
-/// can assert on leading and interior whitespace.
-// Each integration test target compiles this module separately; not all of them call this.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "not every test target uses this helper")]
+pub fn run_cmd(args: &[&str]) -> String {
+    run_cmd_untrimmed(args).trim().to_string()
+}
+
+/// Like [`run_cmd`] but leaves whitespace untouched, so tests can assert on leading and interior
+/// whitespace.
+#[allow(dead_code, reason = "not every test target uses this helper")]
 pub fn run_cmd_untrimmed(args: &[&str]) -> String {
+    let out = String::from_utf8(strip_ansi_escapes(run_cmd_raw(args, &[]))).unwrap();
+
+    // Expected trees are written with `/` separators.
+    #[cfg(windows)]
+    let out = out.replace('\\', "/");
+
+    out
+}
+
+/// Like [`run_cmd`] but keeps ANSI escapes, sets `envs`, and ignores `NO_COLOR` and `LS_COLORS`
+/// from the host environment unless given in `envs`.
+#[allow(dead_code, reason = "not every test target uses this helper")]
+pub fn run_cmd_raw(args: &[&str], envs: &[(&str, &str)]) -> Vec<u8> {
     let mut cmd = Command::new("cargo");
     cmd.args([
         "run",
@@ -24,6 +41,9 @@ pub fn run_cmd_untrimmed(args: &[&str]) -> String {
         cmd.arg(arg);
     }
 
+    cmd.env_remove("NO_COLOR").env_remove("LS_COLORS");
+    cmd.envs(envs.iter().copied());
+
     let output = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -38,15 +58,5 @@ pub fn run_cmd_untrimmed(args: &[&str]) -> String {
         panic!("{err_msg}");
     }
 
-    let out = String::from_utf8(strip_ansi_escapes(output.stdout)).unwrap();
-
-    // Expected trees are written with `/` separators.
-    #[cfg(windows)]
-    let out = out.replace('\\', "/");
-
-    out
-}
-
-pub fn run_cmd(args: &[&str]) -> String {
-    run_cmd_untrimmed(args).trim().to_string()
+    output.stdout
 }
