@@ -72,13 +72,14 @@ fn config_file_type_with_cli_pattern() {
 #[test]
 fn config_glob_without_pattern_errors() {
     let out = run_with_toml("glob = true\n", &["tests/data"]);
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(2));
     let err = stderr(&out);
     assert!(
         err.contains("required arguments were not provided"),
         "{err}"
     );
     assert!(err.contains("--pattern"), "{err}");
+    assert!(err.contains("Usage: erd"), "{err}");
 }
 
 #[test]
@@ -148,6 +149,9 @@ fn cli_only_missing_pattern_still_errors() {
         .args(["--glob", "tests/data"])
         .output()
         .unwrap();
-    assert!(!out.status.success());
-    assert!(stderr(&out).contains("--pattern"), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.starts_with("error: "), "{err}");
+    assert!(err.contains("--pattern"), "{err}");
+    assert!(err.contains("Usage: erd"), "{err}");
 }

@@ -71,6 +71,11 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
 
+        // Usage errors keep clap's own formatting and exit status.
+        if let Some(context::error::Error::ArgParse(clap_err)) = e.downcast_ref() {
+            clap_err.exit();
+        }
+
         eprintln!("erd: {e}");
         return ExitCode::FAILURE;
     }
