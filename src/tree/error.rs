@@ -16,6 +16,12 @@ pub enum Error {
     #[error("{0}")]
     DirNotFound(String),
 
+    #[error(
+        "The filesystem reported directory '{}' more than once; please report this at https://github.com/jeiang/erdtree/issues",
+        .0.display()
+    )]
+    DuplicateDirectory(std::path::PathBuf),
+
     #[error("File expected to have parent")]
     ExpectedParent,
 

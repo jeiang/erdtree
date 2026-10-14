@@ -175,7 +175,7 @@ impl Tree {
                     &mut inodes,
                     column_properties,
                     ctx,
-                );
+                )?;
 
                 if ctx.prune || ctx.pattern.is_some() {
                     Self::prune_directories(root_id, &mut tree);
@@ -224,10 +224,14 @@ impl Tree {
         inode_set: &mut HashSet<Inode>,
         column_properties: &mut column::Properties,
         ctx: &Context,
-    ) {
+    ) -> Result<()> {
         let current_node = tree[current_node_id].get_mut();
 
-        let mut children = branches.remove(current_node.path()).unwrap();
+        // Every directory gets exactly one branch entry, so a missing entry means the walker
+        // reported the same directory more than once (upstream #260).
+        let mut children = branches
+            .remove(current_node.path())
+            .ok_or_else(|| Error::DuplicateDirectory(current_node.path().to_path_buf()))?;
 
         let mut dir_size = FileSize::from(ctx);
 
@@ -243,7 +247,7 @@ impl Tree {
                     inode_set,
                     column_properties,
                     ctx,
-                );
+                )?;
             }
 
             let node = tree[index].get();
@@ -283,6 +287,8 @@ impl Tree {
         for child_id in children {
             current_node_id.append(child_id, tree);
         }
+
+        Ok(())
     }
 
     /// Function to remove empty directories.
@@ -495,5 +501,48 @@ impl TryFrom<&Context> for WalkParallel {
         }
 
         Ok(builder.build_parallel())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use clap::Parser;
+
+    /// A directory reported twice by the walker must produce an error naming it, not a panic
+    /// (upstream #260).
+    #[test]
+    fn duplicate_directory_is_an_error() {
+        let ctx = Context::try_parse_from(["erd", "--no-config", "tests/data"]).unwrap();
+        let mut entries = WalkBuilder::new("tests/data").max_depth(Some(1)).build();
+        let root_entry = entries.next().unwrap().unwrap();
+        let dir_entry = entries
+            .map(StdResult::unwrap)
+            .find(|e| e.path().ends_with("lipsum"))
+            .unwrap();
+
+        let mut tree = Arena::new();
+        let root = Node::try_from((root_entry, &ctx)).unwrap();
+        let root_path = root.path().to_path_buf();
+        let root_id = tree.new_node(root);
+        let dir = Node::try_from((dir_entry.clone(), &ctx)).unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let first = tree.new_node(dir);
+        let second = tree.new_node(Node::try_from((dir_entry, &ctx)).unwrap());
+
+        let mut branches = HashMap::from([(root_path, vec![first, second]), (dir_path, vec![])]);
+
+        let err = Tree::assemble_tree(
+            &mut tree,
+            root_id,
+            &mut branches,
+            &node::cmp::comparator(&ctx),
+            &mut HashSet::new(),
+            &mut column::Properties::from(&ctx),
+            &ctx,
+        )
+        .unwrap_err();
+
+        assert!(matches!(&err, Error::DuplicateDirectory(p) if p.ends_with("lipsum")));
     }
 }

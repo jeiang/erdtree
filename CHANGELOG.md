@@ -12,6 +12,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - `--exclude <GLOB>` (repeatable, or `exclude = [...]` in `.erdtree.toml`) skips entries matching a gitignore-style glob during traversal; excluded directories are not descended into and contribute nothing to sizes or counts ([upstream #262](https://github.com/solidiquis/erdtree/issues/262)). `.erdtree.toml` now accepts arrays of strings for repeatable options.
 
 ### Bug Fixes
+- A directory reported twice by the filesystem walk now fails with an error naming the directory instead of panicking in tree assembly ([upstream #260](https://github.com/solidiquis/erdtree/issues/260)); the underlying trigger is still unknown.
 - Negated and anchored globs (`--glob --pattern '!lipsum/**'`, or any glob containing a slash) now work when the root is a relative path (the default `.` or e.g. `tests/data`); the glob was previously matched against the relative root while entries are canonical, so it never matched.
 - `--layout flat`/`iflat` with `--long --suppress-size` no longer emits three spaces between the long fields and the path; a single separator is used, matching the tree layout.
 - `--level 1 --suppress-size` no longer silently limits the walk (which made the summary file count too small); `--level` is display-only. Use `--traversal-depth` for a shallow walk.
