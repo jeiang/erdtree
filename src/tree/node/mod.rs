@@ -131,7 +131,7 @@ impl Node {
 
     /// Returns `true` if node is a directory.
     pub fn is_dir(&self) -> bool {
-        self.file_type().map_or(false, |ft| ft.is_dir())
+        self.file_type().is_some_and(|ft| ft.is_dir())
     }
 
     /// Is the Node a symlink.

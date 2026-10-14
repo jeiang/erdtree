@@ -82,7 +82,7 @@ impl Default for Indicator<'_> {
 
 impl IndicatorHandle {
     /// The constructor for an [`IndicatorHandle`].
-    pub fn new(
+    pub const fn new(
         join_handle: Option<JoinHandle<Result<(), Error>>>,
         mailbox: SyncSender<Message>,
     ) -> Self {
@@ -123,7 +123,7 @@ impl IndicatorHandle {
     }
 }
 
-impl<'a> Indicator<'a> {
+impl Indicator<'_> {
     /// Initializes an [`Indicator`] returning an atomic reference counter of an [`IndicatorHandle`] if
     /// a progress indicator is enabled via [`Context`]. Upon initialization an interrupt handler is
     /// also registered. Sources of panic can come from [`IndicatorHandle::terminate`] or

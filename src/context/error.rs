@@ -24,10 +24,10 @@ pub enum Error {
     PatternNotProvided,
 
     #[error("{0}")]
-    ConfigError(#[from] TomlError),
+    Toml(#[from] TomlError),
 
     #[error("{0}")]
-    MatchError(#[from] MatchesError),
+    Matches(#[from] MatchesError),
 
     #[error("'--config' was specified but a `.erdtree.toml` file could not be found")]
     NoToml,

@@ -35,7 +35,7 @@ fn parse_toml() -> Result<(), Box<dyn std::error::Error>> {
     // TOP-LEVEL TABLE
     let mut toml = super::parse(config.clone(), None)?;
 
-    let expected = vec![
+    let expected = [
         OsString::from("--"),
         OsString::from("--icons"),
         OsString::from("--human"),
@@ -62,7 +62,7 @@ fn parse_toml() -> Result<(), Box<dyn std::error::Error>> {
     // NAMED-TABLE
     let mut toml = super::parse(config, Some("grogoroth"))?;
 
-    let expected = vec![
+    let expected = [
         OsString::from("--"),
         OsString::from("--disk-usage"),
         OsString::from("block"),

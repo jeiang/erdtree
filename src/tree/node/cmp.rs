@@ -63,9 +63,9 @@ fn base_comparator(sort_type: sort::Type) -> Box<NodeComparator> {
 }
 
 mod time_stamping {
-    pub(self) use crate::tree::node::Node;
-    pub(self) use core::cmp::Ordering;
-    pub(self) use std::time::SystemTime;
+    use crate::tree::node::Node;
+    use core::cmp::Ordering;
+    use std::time::SystemTime;
 
     pub mod accessed {
         use super::*;

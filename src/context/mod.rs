@@ -218,7 +218,7 @@ pub struct Context {
     #[clap(skip = usize::default())]
     pub max_size_width: usize,
 
-    /// Restricts column width of disk_usage units
+    /// Restricts column width of `disk_usage` units
     #[clap(skip = usize::default())]
     pub max_size_unit_width: usize,
 
@@ -331,7 +331,7 @@ impl Context {
 
         Ok(match file_type {
             file::Type::Dir => Box::new(move |dir_entry| {
-                let is_dir = dir_entry.file_type().map_or(false, |ft| ft.is_dir());
+                let is_dir = dir_entry.file_type().is_some_and(|ft| ft.is_dir());
                 if is_dir {
                     return Self::ancestor_regex_match(dir_entry.path(), &re, 0);
                 }
@@ -341,7 +341,7 @@ impl Context {
 
             _ => Box::new(move |dir_entry| {
                 let entry_type = dir_entry.file_type();
-                let is_dir = entry_type.map_or(false, |ft| ft.is_dir());
+                let is_dir = entry_type.is_some_and(|ft| ft.is_dir());
 
                 if is_dir {
                     return true;
@@ -391,7 +391,7 @@ impl Context {
 
         match file_type {
             file::Type::Dir => Ok(Box::new(move |dir_entry| {
-                let is_dir = dir_entry.file_type().map_or(false, |ft| ft.is_dir());
+                let is_dir = dir_entry.file_type().is_some_and(|ft| ft.is_dir());
 
                 if is_dir {
                     if negated_glob {
@@ -410,7 +410,7 @@ impl Context {
 
             _ => Ok(Box::new(move |dir_entry| {
                 let entry_type = dir_entry.file_type();
-                let is_dir = entry_type.map_or(false, |ft| ft.is_dir());
+                let is_dir = entry_type.is_some_and(|ft| ft.is_dir());
 
                 if is_dir {
                     return true;
@@ -495,6 +495,6 @@ impl Context {
 
     /// The default number of threads to use for disk-reads and parallel processing.
     fn num_threads() -> usize {
-        available_parallelism().map(NonZeroUsize::get).unwrap_or(3)
+        available_parallelism().map_or(3, NonZeroUsize::get)
     }
 }

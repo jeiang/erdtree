@@ -25,7 +25,7 @@ pub struct Tree;
 pub struct Flat;
 
 impl<'a, T> Row<'a, T> {
-    pub const fn new(node: &'a Node, ctx: &'a Context, prefix: Option<&'a str>) -> Row<'a, T> {
+    pub const fn new(node: &'a Node, ctx: &'a Context, prefix: Option<&'a str>) -> Self {
         Self {
             prefix,
             node,
@@ -59,8 +59,7 @@ impl Display for Row<'_, Tree> {
             format!("{size} {name}")
         };
 
-        if ctx.truncate && ctx.window_width.is_some() {
-            let window_width = ctx.window_width.unwrap();
+        if let (true, Some(window_width)) = (ctx.truncate, ctx.window_width) {
             let out = <str as Escaped>::truncate(&row, window_width);
             write!(f, "{out}")
         } else {
@@ -87,8 +86,7 @@ impl Display for Row<'_, Flat> {
             format!("{size}   {path}")
         };
 
-        if ctx.truncate && ctx.window_width.is_some() {
-            let window_width = ctx.window_width.unwrap();
+        if let (true, Some(window_width)) = (ctx.truncate, ctx.window_width) {
             let out = <str as Escaped>::truncate(&row, window_width);
             write!(f, "{out}")
         } else {

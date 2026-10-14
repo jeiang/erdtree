@@ -33,12 +33,7 @@ pub fn read_config_to_string() -> Option<String> {
 pub fn parse<'a>(config: &'a str) -> Vec<&'a str> {
     config
         .lines()
-        .filter(|line| {
-            line.trim_start()
-                .chars()
-                .next()
-                .map_or(true, |ch| ch != '#')
-        })
+        .filter(|line| !line.trim_start().starts_with('#'))
         .flat_map(str::split_whitespace)
         .collect::<Vec<&'a str>>()
 }

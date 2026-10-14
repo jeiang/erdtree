@@ -58,7 +58,7 @@ pub fn parse(config: Config, named_table: Option<&str>) -> Result<Vec<OsString>,
                 parsed_args.push(fmt_key);
             },
 
-            ArgInstructions::Pass => continue,
+            ArgInstructions::Pass => {},
         }
     }
 

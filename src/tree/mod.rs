@@ -262,22 +262,16 @@ impl Tree {
         let to_prune = root_id
             .descendants(tree)
             .skip(1)
-            .filter(|node_id| {
-                tree[*node_id]
-                    .get()
-                    .is_dir()
-                    .then(|| node_id.children(tree).count() == 0)
-                    .unwrap_or(false)
-            })
+            .filter(|node_id| tree[*node_id].get().is_dir() && node_id.children(tree).count() == 0)
             .collect::<Vec<_>>();
 
         if to_prune.is_empty() {
             return;
         }
 
-        to_prune
-            .iter()
-            .for_each(|node_id| node_id.remove_subtree(tree));
+        for node_id in &to_prune {
+            node_id.remove_subtree(tree);
+        }
 
         Self::prune_directories(root_id, tree);
     }
@@ -294,7 +288,9 @@ impl Tree {
             return;
         }
 
-        to_detach.iter().for_each(|node_id| node_id.detach(tree));
+        for node_id in &to_detach {
+            node_id.detach(tree);
+        }
     }
 
     /// Compute total number of files for a single directory without recurring into child
@@ -331,7 +327,7 @@ impl Tree {
                 if file_size_cols > col_props.max_size_width {
                     col_props.max_size_width = file_size_cols;
                 }
-            };
+            }
         }
 
         #[cfg(unix)]
