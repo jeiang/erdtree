@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased]
 
 ### Bug Fixes
+- Argument relations (`--glob`/`--iglob`/`--file-type` require `--pattern`, `--octal`/`--time`/`--time-format` require `--long`, `--no-git` requires `--hidden`, `--glob` and `--iglob` are exclusive) are validated once on the merged CLI and config arguments, so e.g. `glob = true` in the config now works with `--pattern` on the command line ([upstream #237](https://github.com/solidiquis/erdtree/issues/237)). Config files that fail to parse are reported as config errors instead of exiting from clap directly.
 - Windows: the `.erdtree.toml` lookup (`$ERDTREE_TOML_PATH`, then `%APPDATA%\erdtree\.erdtree.toml`) now compiles ([upstream #254](https://github.com/solidiquis/erdtree/issues/254)).
 - Windows: builds on stable Rust (no more nightly `windows_by_handle`), and hard-link de-duplication now works by querying `GetFileInformationByHandle` via `windows-sys`.
 - Owner/group lookup uses the thread-safe `getpwuid_r`/`getgrgid_r` instead of `getpwuid`/`getgrgid` ([upstream #226](https://github.com/solidiquis/erdtree/issues/226), [#179](https://github.com/solidiquis/erdtree/issues/179)).

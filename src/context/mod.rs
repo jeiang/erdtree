@@ -110,17 +110,17 @@ pub struct Context {
 
     /// Show permissions in numeric octal format instead of symbolic
     #[cfg(unix)]
-    #[arg(long, requires = "long")]
+    #[arg(long)]
     pub octal: bool,
 
     /// Which kind of timestamp to use; modified by default
     #[cfg(unix)]
-    #[arg(long, value_enum, requires = "long")]
+    #[arg(long, value_enum)]
     pub time: Option<time::Stamp>,
 
     /// Which format to use for the timestamp; default by default
     #[cfg(unix)]
-    #[arg(long = "time-format", value_enum, requires = "long")]
+    #[arg(long = "time-format", value_enum)]
     pub time_format: Option<time::Format>,
 
     /// Maximum depth to display
@@ -132,15 +132,15 @@ pub struct Context {
     pub pattern: Option<String>,
 
     /// Enables glob based searching
-    #[arg(group = "searching", long, requires = "pattern")]
+    #[arg(long)]
     pub glob: bool,
 
     /// Enables case-insensitive glob based searching
-    #[arg(group = "searching", long, requires = "pattern")]
+    #[arg(long)]
     pub iglob: bool,
 
     /// Restrict regex or glob search to a particular file-type
-    #[arg(short = 't', long, requires = "pattern", value_enum)]
+    #[arg(short = 't', long, value_enum)]
     pub file_type: Option<file::Type>,
 
     /// Remove empty directories from output
@@ -176,7 +176,7 @@ pub struct Context {
     pub hidden: bool,
 
     /// Disable traversal of .git directory when traversing hidden files
-    #[arg(long, requires = "hidden")]
+    #[arg(long)]
     pub no_git: bool,
 
     #[arg(long)]
