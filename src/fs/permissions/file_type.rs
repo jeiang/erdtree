@@ -31,6 +31,8 @@ impl FileType {
 impl TryFrom<u32> for FileType {
     type Error = Error;
 
+    // `libc::mode_t` is `u16` on macOS and `u32` on Linux.
+    #[allow(clippy::useless_conversion)]
     fn try_from(mode: u32) -> Result<Self, Self::Error> {
         let file_mask = mode & u32::from(libc::S_IFMT);
 
