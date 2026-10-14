@@ -18,6 +18,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - The progress indicator restores the cursor on errors and panics and no longer panics on I/O or thread failures ([upstream #260](https://github.com/solidiquis/erdtree/issues/260)).
 
 ### Internal
+- `--disk-usage line` and `--disk-usage word` stream each file through a fixed 64 KiB buffer (with incremental UTF-8 validation) instead of reading whole files into memory; results, including non-UTF-8 files being skipped, are unchanged. Peak memory no longer scales with file size times walker threads.
 - MSRV is now 1.88 and the crate uses the 2024 edition.
 - Replaced the unmaintained `ansi_term` ([RUSTSEC-2021-0139](https://rustsec.org/advisories/RUSTSEC-2021-0139)) with `nu-ansi-term`; removed `once_cell` in favor of `std::sync`; upgraded all direct dependencies (drops `time 0.1`, `proc-macro-error`, `instant` and their advisories). Rendered output is unchanged.
 - Added `cargo-deny` (`deny.toml`, `deny` CI job) and weekly Dependabot updates for Cargo and GitHub Actions.
