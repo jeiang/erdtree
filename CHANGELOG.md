@@ -19,7 +19,8 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Several directories can be given (`erd a b`, or a shell glob such as `erd tmp*`); each is shown as its own tree in argument order, separated by a blank line, followed by one combined summary line ([upstream #235](https://github.com/solidiquis/erdtree/issues/235), [#248](https://github.com/solidiquis/erdtree/issues/248)). With `--summarize` each directory gets one line. "No entries to show" is reported only when no tree has entries.
 
 ### Bug Fixes
-- A missing directory argument is named in the error (`erd: tests/missing: No such file or directory`) instead of only the OS error.
+- A missing directory argument is named in the error (`erd: tests/missing: No such file or directory`) instead of only the OS error, and a file argument fails with `erd: <path>: Not a directory` instead of `Failed to compute root node.`
+- `--level 0` and `--summarize` print the root even when it has no visible entries (e.g. everything in it is hidden or gitignored) instead of failing with "No entries to show"; this may explain [upstream #263](https://github.com/solidiquis/erdtree/issues/263) (`erd -H -L0 ~/~/`).
 - A directory reported twice by the filesystem walk now fails with an error naming the directory instead of panicking in tree assembly ([upstream #260](https://github.com/solidiquis/erdtree/issues/260)); the underlying trigger is still unknown.
 - Negated and anchored globs (`--glob --pattern '!lipsum/**'`, or any glob containing a slash) now work when the root is a relative path (the default `.` or e.g. `tests/data`); the glob was previously matched against the relative root while entries are canonical, so it never matched.
 - `--layout flat`/`iflat` with `--long --suppress-size` no longer emits three spaces between the long fields and the path; a single separator is used, matching the tree layout.

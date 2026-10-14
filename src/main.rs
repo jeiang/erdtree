@@ -97,6 +97,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     let no_report = ctx.no_report;
     // `--summarize` prints one line per root, like `du -s a b`.
     let separator = if ctx.summarize { "" } else { "\n" };
+    // At level 0 (and so with `--summarize`) only the roots are requested, so a root without
+    // visible entries is still worth printing.
+    let roots_only = ctx.level() == 0;
 
     let mut trees = vec![];
 
@@ -110,7 +113,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    if trees.iter().all(|(tree, _)| tree.is_stump()) {
+    if !roots_only && trees.iter().all(|(tree, _)| tree.is_stump()) {
         let _ = IndicatorHandle::try_terminate(indicator);
         return Err(Box::new(tree::error::Error::NoMatches));
     }
@@ -134,7 +137,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         .collect::<Vec<_>>()
         .join(separator);
 
-    if !no_report {
+    let file_count = file_count.to_string();
+
+    // The count is empty when no tree has any entries (only possible at level 0).
+    if !no_report && !file_count.is_empty() {
         output = format!("{output}\n{file_count}\n");
     }
 

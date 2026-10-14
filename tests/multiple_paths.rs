@@ -57,3 +57,20 @@ fn a_missing_root_is_named_in_the_error() {
     let stderr = erd_failure(&["tests/data", "tests/missing"]);
     assert!(stderr.starts_with("erd: tests/missing: "), "{stderr}");
 }
+
+#[test]
+fn a_file_root_is_named_in_the_error() {
+    let stderr = erd_failure(&["tests/data", "tests/data/nemesis.txt"]);
+    assert_eq!(stderr, "erd: tests/data/nemesis.txt: Not a directory\n");
+}
+
+#[test]
+fn level_zero_prints_a_root_without_visible_entries() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".hidden"), "x").unwrap();
+    let root = dir.path().to_str().unwrap();
+    let name = dir.path().file_name().unwrap().to_str().unwrap();
+
+    assert_eq!(utils::run_cmd(&["--summarize", root]), name);
+    assert!(erd_failure(&[root]).contains("No entries to show"));
+}
