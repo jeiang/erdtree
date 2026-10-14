@@ -3,7 +3,7 @@
 ///
 /// ```
 /// // "\u{1b}[1;31mHello World\u{1b}[0m"
-/// ansi_term::Color::Red.bold().paint("Hello")
+/// nu_ansi_term::Color::Red.bold().paint("Hello")
 /// ```
 ///
 /// Truncating the above to a length of 5 would result in:
@@ -54,7 +54,7 @@ impl Escaped for str {}
 
 #[test]
 fn truncate() {
-    use ansi_term::Color::Red;
+    use nu_ansi_term::Color::Red;
 
     let control = Red.bold().paint("Hello").to_string();
     let base = format!("{}!!!", Red.bold().paint("Hello World"));

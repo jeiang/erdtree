@@ -1,4 +1,4 @@
-use super::{class::PermissionsTriad, file_type::FileType, SymbolicNotation};
+use super::{SymbolicNotation, class::PermissionsTriad, file_type::FileType};
 use std::{error::Error, fs::File, os::unix::fs::PermissionsExt};
 
 #[test]

@@ -1,10 +1,10 @@
 use crate::hash;
-use ansi_term::Color;
-use once_cell::sync::Lazy;
+use nu_ansi_term::Color;
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
     fs::FileType,
+    sync::LazyLock,
 };
 
 /// Concerned with computing icons given filesystem parameters.
@@ -43,14 +43,14 @@ fn col(num: u8, code: &str) -> String {
 }
 
 /// Default fallback icon.
-static DEFAULT_ICON: Lazy<(u8, &str)> = Lazy::new(|| (66, "\u{f15b}"));
+static DEFAULT_ICON: LazyLock<(u8, &str)> = LazyLock::new(|| (66, "\u{f15b}"));
 
 /// Lazily evaluated static hash-map of special file-types and their corresponding styled icons.
 /// These icons will take on the color properties of their associated file which is based on
 /// `LS_COLORS`.
 ///
 /// Dev icons sourced from [`exa`](https://github.com/ogham/exa/blob/master/src/output/icons.rs)
-static FILE_TYPE_ICON_MAP: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
+static FILE_TYPE_ICON_MAP: LazyLock<HashMap<&str, &str>> = LazyLock::new(|| {
     hash!(
         "dir"     => "\u{f413}", // 
         "symlink" => "\u{f482}"  // 
@@ -61,7 +61,7 @@ static FILE_TYPE_ICON_MAP: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
 /// will take on the color properties of their associated file which is based on `LS_COLORS`.
 ///
 /// Dev icons sourced from [`exa`](https://github.com/ogham/exa/blob/master/src/output/icons.rs)
-static FILE_NAME_ICON_MAP: Lazy<HashMap<OsString, &str>> = Lazy::new(|| {
+static FILE_NAME_ICON_MAP: LazyLock<HashMap<OsString, &str>> = LazyLock::new(|| {
     hash!(
         OsString::from(".Trash")             => "\u{f1f8}", // 
         OsString::from(".atom")              => "\u{e764}", // 
@@ -115,7 +115,7 @@ static FILE_NAME_ICON_MAP: Lazy<HashMap<OsString, &str>> = Lazy::new(|| {
 /// as well as the Unicode scalar value for the corresponding icon.
 ///
 /// Dev icons and their color palettes sourced from [`nvim-web-devicons`](https://github.com/nvim-tree/nvim-web-devicons/blob/master/lua/nvim-web-devicons.lua).
-static EXT_ICON_MAP: Lazy<HashMap<OsString, (u8, &str)>> = Lazy::new(|| {
+static EXT_ICON_MAP: LazyLock<HashMap<OsString, (u8, &str)>> = LazyLock::new(|| {
     hash!(
         OsString::from("ai")            => (185, "\u{e7b4}"),   // 
         OsString::from("awk")           => (59, "\u{e795}"),    // 

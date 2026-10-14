@@ -1,6 +1,6 @@
 use std::sync::mpsc::Sender;
 
-use crate::{tree::node::Node, Context};
+use crate::{Context, tree::node::Node};
 use ignore::{DirEntry, Error as IgnoreError, ParallelVisitor, ParallelVisitorBuilder, WalkState};
 
 // Nearly every message is `Ongoing`, so boxing would only add an allocation per node.

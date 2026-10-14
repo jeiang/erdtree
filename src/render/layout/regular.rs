@@ -1,10 +1,11 @@
 use crate::{
     render::{
+        Engine, Regular,
         grid::{self, Row},
-        theme, Engine, Regular,
+        theme,
     },
     styles,
-    tree::{count::FileCount, Tree},
+    tree::{Tree, count::FileCount},
 };
 use indextree::NodeEdge;
 use std::fmt::{self, Display};

@@ -1,8 +1,7 @@
 use crate::{context::Context, tty};
 use crossterm::{
-    cursor,
+    ExecutableCommand, cursor,
     terminal::{self, ClearType},
-    ExecutableCommand,
 };
 use std::{
     io::{self, Write},

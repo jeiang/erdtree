@@ -1,10 +1,11 @@
 use crate::{
     render::{
+        Engine, Inverted,
         grid::{self, Row},
-        theme, Engine, Inverted,
+        theme,
     },
     styles,
-    tree::{count::FileCount, Tree},
+    tree::{Tree, count::FileCount},
 };
 use std::fmt::{self, Display};
 

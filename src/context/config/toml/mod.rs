@@ -98,7 +98,7 @@ fn toml_from_env() -> Result<Config, Error> {
 /// be processed into the ultimate arguments vector.
 fn parse_argument(keyword: &str, arg: &Value) -> Result<ArgInstructions, Error> {
     macro_rules! try_parse_num {
-        ($n:expr) => {
+        ($n:expr_2021) => {
             usize::try_from($n)
                 .map_err(|_e| Error::InvalidInteger(keyword.to_owned()))
                 .map(|num| {

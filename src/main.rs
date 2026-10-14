@@ -18,12 +18,12 @@
 )]
 
 use clap::CommandFactory;
-use context::{layout, Context};
+use context::{Context, layout};
 use progress::{Indicator, IndicatorHandle, Message};
 use render::{Engine, Flat, FlatInverted, Inverted, Regular};
 use std::{
     error::Error,
-    io::{stdout, Write},
+    io::{Write, stdout},
     process::ExitCode,
 };
 use tree::Tree;

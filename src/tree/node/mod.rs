@@ -1,14 +1,14 @@
 use crate::{
     context::Context,
-    disk_usage::file_size::{byte, line_count, word_count, DiskUsage, FileSize},
+    disk_usage::file_size::{DiskUsage, FileSize, byte, line_count, word_count},
     fs::inode::Inode,
     icons,
     styles::get_ls_colors,
     tree::error::Error,
 };
-use ansi_term::Style;
 use ignore::DirEntry;
 use lscolors::Style as LS_Style;
+use nu_ansi_term::Style;
 use std::{
     borrow::Cow,
     convert::TryFrom,
@@ -231,7 +231,7 @@ impl TryFrom<(DirEntry, &Context)> for Node {
         let style = get_ls_colors().ok().map(|ls_colors| {
             ls_colors
                 .style_for_path_with_metadata(path, Some(&metadata))
-                .map_or_else(Style::default, LS_Style::to_ansi_term_style)
+                .map_or_else(Style::default, LS_Style::to_nu_ansi_term_style)
         });
 
         let file_type = dir_entry.file_type();

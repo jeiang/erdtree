@@ -34,7 +34,7 @@ pub fn run_cmd(args: &[&str]) -> String {
         panic!("{err_msg}");
     }
 
-    let out = String::from_utf8(strip_ansi_escapes(output.stdout).unwrap())
+    let out = String::from_utf8(strip_ansi_escapes(output.stdout))
         .unwrap()
         .trim()
         .to_string();
