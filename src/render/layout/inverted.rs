@@ -5,7 +5,6 @@ use crate::{
         theme,
     },
     styles,
-    tree::{Tree, count::FileCount},
 };
 use std::fmt::{self, Display};
 
@@ -17,14 +16,11 @@ impl Display for Engine<Inverted> {
         let root_id = tree.root_id();
         let arena = tree.arena();
         let level = ctx.level();
-        let mut file_count_data = vec![];
 
         let mut descendants = root_id.descendants(arena).skip(1).peekable();
 
         let root = Row::<grid::Tree>::new(arena[root_id].get(), ctx, Some(""));
         writeln!(f, "{root}")?;
-
-        file_count_data.push(Tree::compute_file_count(root_id, arena));
 
         let mut get_theme = if ctx.follow {
             theme::link_theme_getter()
@@ -35,8 +31,6 @@ impl Display for Engine<Inverted> {
         let mut base_prefix_components = vec![""];
 
         while let Some(current_node_id) = descendants.next() {
-            file_count_data.push(Tree::compute_file_count(current_node_id, arena));
-
             let current_node = arena[current_node_id].get();
 
             let current_depth = current_node.depth();
@@ -82,14 +76,6 @@ impl Display for Engine<Inverted> {
                     base_prefix_components.truncate(base_prefix_components.len() - depth_delta);
                 }
             }
-        }
-
-        if !ctx.no_report && !file_count_data.is_empty() {
-            write!(
-                f,
-                "\n{}",
-                FileCount::from(file_count_data) + tree.hidden_count()
-            )?;
         }
 
         Ok(())

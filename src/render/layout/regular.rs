@@ -5,7 +5,6 @@ use crate::{
         theme,
     },
     styles,
-    tree::{Tree, count::FileCount},
 };
 use indextree::NodeEdge;
 use std::fmt::{self, Display};
@@ -17,7 +16,6 @@ impl Display for Engine<Regular> {
         let root_id = tree.root_id();
         let arena = tree.arena();
         let max_depth = ctx.level();
-        let mut file_count_data = vec![];
 
         let mut get_theme = if ctx.follow {
             theme::link_theme_getter()
@@ -53,8 +51,6 @@ impl Display for Engine<Regular> {
                     continue;
                 },
             };
-
-            file_count_data.push(Tree::compute_file_count(current_node_id, arena));
 
             let current_node = arena[current_node_id].get();
 
@@ -93,14 +89,6 @@ impl Display for Engine<Regular> {
                     base_prefix_components.pop();
                 }
             }
-        }
-
-        if !ctx.no_report && !file_count_data.is_empty() {
-            write!(
-                f,
-                "\n{}",
-                FileCount::from(file_count_data) + tree.hidden_count()
-            )?;
         }
 
         Ok(())

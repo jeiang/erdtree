@@ -30,6 +30,7 @@ You can think of `erdtree` as a little bit of `du`, `tree`, `find`, `wc` and `ls
   - [Configuration file](#configuration-file)
       - [Toml file](#toml-file)
       - [.erdtreerc](#erdtreerc)
+  - [Multiple directories](#multiple-directories)
   - [Hardlinks](#hardlinks)
   - [Symlinks](#symlinks)
   - [Disk usage](#disk-usage)
@@ -69,11 +70,11 @@ You can think of `erdtree` as a little bit of `du`, `tree`, `find`, `wc` and `ls
 $ erd --help
 erdtree (erd) is a cross-platform, multi-threaded, and general purpose filesystem and disk usage utility.
 
-Usage: erd [OPTIONS] [DIR]
+Usage: erd [OPTIONS] [DIR]...
 
 Arguments:
-  [DIR]
-          Directory to traverse; defaults to current working directory
+  [DIR]...
+          Directories to traverse, each shown as its own tree; defaults to current working directory
 
 Options:
   -c, --config <CONFIG>
@@ -237,6 +238,9 @@ Options:
 
       --exclude <GLOB>
           Exclude entries matching a gitignore-style glob (matched relative to the root); excluded directories are not descended into and do not count towards sizes. Can be repeated
+
+      --include <GLOB>
+          Show hidden entries matching a gitignore-style glob (matched relative to the root) without '--hidden'; hidden entries inside a hidden directory need that directory included too. Does not show gitignored entries ('--no-ignore' does). Can be repeated
 
       --no-git
           Disable traversal of .git directory when traversing hidden files
@@ -445,6 +449,25 @@ Arguments passed to `erdtree` on the command-line will override those found in `
 [Click here](example/.erdtreerc) for an example `.erdtreerc`.
 
 **If you have a config that you would like to ignore without deleting you can use `--no-config`.**
+
+### Multiple directories
+
+Several directories (or a shell glob such as `erd tmp*`) can be given at once. Each is shown as its own tree, in argument order, with a blank line
+between trees and one summary line covering all of them:
+
+```
+$ erd --suppress-size --layout iflat src tests
+src
+main.rs
+
+tests
+cli.rs
+
+2 files
+```
+
+Flat layouts show paths relative to each tree's root, and every tree sizes its own columns. With `--summarize` each directory gets one line,
+like `du -s a b`. The command fails if any path does not exist; it reports "No entries to show" only when no tree has entries.
 
 ### Hardlinks
 
