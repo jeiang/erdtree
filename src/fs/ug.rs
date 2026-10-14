@@ -50,10 +50,9 @@ fn with_buffer(
 
         match code {
             0 if found => return Ok(Some(buf)),
-            0 => return Ok(None),
             libc::ERANGE if len < MAX_BUF_LEN => len *= 2,
-            // Some libcs report a missing entry through the return code.
-            libc::ENOENT | libc::ESRCH | libc::EBADF | libc::EPERM => return Ok(None),
+            // Code 0 without a result, or one of these codes on some libcs, means no such entry.
+            0 | libc::ENOENT | libc::ESRCH | libc::EBADF | libc::EPERM => return Ok(None),
             code => return Err(Errno(code)),
         }
     }

@@ -1,4 +1,3 @@
-#![cfg_attr(windows, feature(windows_by_handle))]
 #![warn(
     clippy::all,
     clippy::cargo,
@@ -82,13 +81,13 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     styles::init(ctx.no_color());
 
-    let indicator = Indicator::maybe_init(&ctx);
+    let indicator = Indicator::maybe_init(&ctx)?;
 
     let (tree, ctx) = {
         match Tree::try_init(ctx, indicator.as_ref()) {
             Ok(res) => res,
             Err(err) => {
-                IndicatorHandle::terminate(indicator);
+                let _ = IndicatorHandle::try_terminate(indicator);
                 return Err(Box::new(err));
             },
         }
@@ -114,11 +113,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             .send(Message::RenderReady)
             .map_err(|_e| tree::error::Error::Terminated)?;
 
-        progress
-            .join_handle
-            .take()
-            .map(|h| h.join().unwrap())
-            .transpose()?;
+        progress.join()?;
     }
 
     #[cfg(debug_assertions)]
