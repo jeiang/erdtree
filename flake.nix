@@ -60,6 +60,14 @@
               inherit cargoArtifacts;
               # Tests run in the separate `test` check.
               doCheck = false;
+              nativeBuildInputs = [ pkgs.installShellFiles ];
+              # Completions come from the built binary, so skip them when it cannot run here.
+              postInstall = lib.optionalString (pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform) ''
+                installShellCompletion --cmd erd \
+                  --bash <($out/bin/erd --no-config --completions bash) \
+                  --fish <($out/bin/erd --no-config --completions fish) \
+                  --zsh <($out/bin/erd --no-config --completions zsh)
+              '';
               meta.mainProgram = "erd";
             }
           );
