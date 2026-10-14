@@ -40,31 +40,37 @@ pub fn link_theme_getter() -> Theme {
 
 /// Stylizes the input `file_name` with the provided `style`. If `None` is provided then the
 /// underlying `String` is returned unmodified as a [Cow]. If the provided [Node] is a symlink then
-/// it will be styled accordingly.
-pub fn stylize_file_name(node: &Node) -> Cow<'_, str> {
-    let name = node.file_name();
+/// it will be styled accordingly. With `classify`, the [`Node::indicator`] follows the name.
+pub fn stylize_file_name(node: &Node, classify: bool) -> Cow<'_, str> {
+    let name = node.file_name().to_string_lossy();
     let style = node.style();
+    let ind = if classify {
+        node.indicator().unwrap_or_default()
+    } else {
+        ""
+    };
 
     let Some(target_name) = node.symlink_target_file_name() else {
         if let Some(style) = style.filter(|style| !style.is_plain()) {
-            let file_name = name.to_string_lossy();
-            let styled_name = style.bold().paint(file_name).to_string();
-            return Cow::from(styled_name);
+            return Cow::from(format!("{}{ind}", style.bold().paint(name)));
         }
 
-        return name.to_string_lossy();
+        if ind.is_empty() {
+            return name;
+        }
+
+        return Cow::from(format!("{name}{ind}"));
     };
 
     if let Some(color) = style {
-        let styled_name = color.paint(name.to_string_lossy());
+        let styled_name = color.paint(name);
         let target_name = Color::Red.paint(format!("\u{2192} {}", target_name.to_string_lossy()));
 
-        return Cow::from(format!("{styled_name} {target_name}"));
+        return Cow::from(format!("{styled_name}{ind} {target_name}"));
     }
 
-    let link = name.to_string_lossy();
     let target = target_name.to_string_lossy();
-    Cow::from(format!("{link} \u{2192} {target}"))
+    Cow::from(format!("{name}{ind} \u{2192} {target}"))
 }
 
 /// Styles the symbolic notation of file permissions.

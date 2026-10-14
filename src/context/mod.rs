@@ -80,6 +80,10 @@ pub struct Context {
     #[arg(short = 'f', long)]
     pub follow: bool,
 
+    /// Append an indicator to entry names: / directory, @ symlink, * executable, | FIFO, = socket
+    #[arg(short = 'F', long)]
+    pub classify: bool,
+
     /// Print disk usage in human-readable format
     #[arg(short = 'H', long)]
     pub human: bool,

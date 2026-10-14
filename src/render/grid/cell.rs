@@ -72,7 +72,7 @@ impl<'a> Cell<'a> {
         match self.kind {
             Kind::FileName { prefix } => {
                 let pre = prefix.unwrap_or_default();
-                let name = theme::stylize_file_name(node);
+                let name = theme::stylize_file_name(node, ctx.classify);
 
                 if !ctx.icons {
                     return write!(f, "{pre}{name}");
@@ -107,14 +107,19 @@ impl<'a> Cell<'a> {
             || path.to_string(),
             |style| format!("{}", style.paint(path.to_string())),
         );
+        let ind = if ctx.classify {
+            node.indicator().unwrap_or_default()
+        } else {
+            ""
+        };
 
         if !ctx.icons {
-            return write!(f, "{formatted_path}");
+            return write!(f, "{formatted_path}{ind}");
         }
 
         let icon = node.compute_icon(ctx.no_color());
 
-        write!(f, "{icon} {formatted_path}")
+        write!(f, "{icon} {formatted_path}{ind}")
     }
 
     /// Rules on how to render the file size.
