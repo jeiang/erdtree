@@ -1,0 +1,2 @@
+# Keep test fixtures byte-exact: expected sizes and line counts assume LF.
+tests/** -text

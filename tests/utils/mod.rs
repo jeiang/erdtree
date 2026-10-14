@@ -34,8 +34,14 @@ pub fn run_cmd(args: &[&str]) -> String {
         panic!("{err_msg}");
     }
 
-    String::from_utf8(strip_ansi_escapes(output.stdout).unwrap())
+    let out = String::from_utf8(strip_ansi_escapes(output.stdout).unwrap())
         .unwrap()
         .trim()
-        .to_string()
+        .to_string();
+
+    // Expected trees are written with `/` separators.
+    #[cfg(windows)]
+    let out = out.replace('\\', "/");
+
+    out
 }

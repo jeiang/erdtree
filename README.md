@@ -266,26 +266,12 @@ Options:
 
 ## Installation
 
-### crates.io (non-Windows)
+### crates.io
 
-Make sure you have [Rust and its toolchain](https://www.rust-lang.org/tools/install) installed.
+Make sure you have [Rust and its toolchain](https://www.rust-lang.org/tools/install) installed. A stable toolchain is sufficient on all platforms, including Windows.
 
 ```
 $ cargo install erdtree
-```
-
-### crates.io (Windows)
-
-The Windows version relies on some experimental features in order to properly support hard-link detection. If you want to build from `crates.io` you'll first need to install the nightly toolchain before installing `erdtree`:
-
-```
-$ rustup toolchain install nightly-2023-06-11
-```
-
-Thereafter:
-
-```
-$ cargo +nightly-2023-06-11 install erdtree
 ```
 
 ### Homebrew-core
