@@ -15,6 +15,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - `-F`/`--classify` appends an `ls -F` style indicator to entry names: `/` directory, `@` symlink, and on Unix `*` executable, `|` FIFO, `=` socket ([upstream #236](https://github.com/solidiquis/erdtree/issues/236)). Also available as `classify` in `.erdtree.toml`.
 - `--summarize` prints only the root and its total, like `du -s`; it is the same as `--level 0 --no-report` and overrides `--level` ([upstream #182](https://github.com/solidiquis/erdtree/issues/182)). Also available as `summarize` in `.erdtree.toml`.
 - `--include <GLOB>` (repeatable, or `include = [...]` in `.erdtree.toml`) shows hidden entries matching a gitignore-style glob without `--hidden`, e.g. `--include .github` ([upstream #188](https://github.com/solidiquis/erdtree/issues/188)). Gitignored entries still need `--no-ignore`.
+- `--report-ignored` adds `N ignored` to the summary line: entries in walked directories skipped by hidden, `.gitignore`, `--exclude` or `--no-git` rules, with an ignored directory counted once ([upstream #244](https://github.com/solidiquis/erdtree/issues/244)). Opt-in because it reads each walked directory again; conflicts with `--pattern`. Also available as `report-ignored` in `.erdtree.toml`.
 
 ### Bug Fixes
 - A directory reported twice by the filesystem walk now fails with an error naming the directory instead of panicking in tree assembly ([upstream #260](https://github.com/solidiquis/erdtree/issues/260)); the underlying trigger is still unknown.

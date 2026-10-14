@@ -12,6 +12,8 @@ pub struct FileCount {
     pub num_dirs: usize,
     pub num_files: usize,
     pub num_links: usize,
+    /// Entries skipped by the walk (`--report-ignored`); see [`crate::tree::Tree`].
+    pub num_ignored: usize,
 }
 
 impl AddAssign<&Node> for FileCount {
@@ -55,6 +57,7 @@ impl AddAssign for FileCount {
         self.num_dirs += rhs.num_dirs;
         self.num_links += rhs.num_links;
         self.num_files += rhs.num_files;
+        self.num_ignored += rhs.num_ignored;
     }
 }
 impl Add for FileCount {
@@ -65,6 +68,7 @@ impl Add for FileCount {
             num_dirs: self.num_dirs + rhs.num_dirs,
             num_links: self.num_links + rhs.num_links,
             num_files: self.num_files + rhs.num_files,
+            num_ignored: self.num_ignored + rhs.num_ignored,
         }
     }
 }
@@ -112,6 +116,10 @@ impl Display for FileCount {
             );
 
             components.push(output);
+        }
+
+        if self.num_ignored > 0 {
+            components.push(format!("{} ignored", self.num_ignored));
         }
 
         write!(f, "{}", components.join(", "))

@@ -133,6 +133,7 @@ fn with_relations(cmd: Command) -> Command {
         .mut_arg("file_type", |a| a.requires("pattern"))
         .mut_arg("no_git", |a| a.requires("hidden"))
         .mut_arg("min_size", |a| a.conflicts_with("suppress_size"))
+        .mut_arg("report_ignored", |a| a.conflicts_with("pattern"))
         .group(ArgGroup::new("searching").args(["glob", "iglob"]))
 }
 

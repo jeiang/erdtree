@@ -231,6 +231,11 @@ pub struct Context {
     #[arg(long)]
     pub no_report: bool,
 
+    /// Add the number of entries skipped by hidden, gitignore, '--exclude' and '--no-git' rules
+    /// to the summary; an ignored directory counts once. Reads each walked directory again
+    #[arg(long)]
+    pub report_ignored: bool,
+
     /// Print only the root and its total disk usage, like 'du -s'; same as '--level 0
     /// --no-report' and overrides '--level'
     #[arg(long)]

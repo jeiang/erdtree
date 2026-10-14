@@ -238,9 +238,6 @@ Options:
       --exclude <GLOB>
           Exclude entries matching a gitignore-style glob (matched relative to the root); excluded directories are not descended into and do not count towards sizes. Can be repeated
 
-      --include <GLOB>
-          Show hidden entries matching a gitignore-style glob (matched relative to the root) without '--hidden'; hidden entries inside a hidden directory need that directory included too. Does not show gitignored entries ('--no-ignore' does). Can be repeated
-
       --no-git
           Disable traversal of .git directory when traversing hidden files
 
@@ -260,6 +257,12 @@ Options:
 
       --no-report
           Omit the directory and file count summary from output
+
+      --report-ignored
+          Add the number of entries skipped by hidden, gitignore, '--exclude' and '--no-git' rules to the summary; an ignored directory counts once. Reads each walked directory again
+
+      --summarize
+          Print only the root and its total disk usage, like 'du -s'; same as '--level 0 --no-report' and overrides '--level'
 
       --suppress-size
           Omit disk usage from output
@@ -580,6 +583,17 @@ Additionally, the word and line-count of directories are the summation of all of
 every directory that is encountered during traversal that has a `.gitignore` will also be considered.
 
 If `.gitignore` is respected any file that is ignored will not be included in the total disk usage.
+
+To see how much the walk skipped, add `--report-ignored`. The summary then ends with the number of entries in walked directories that were
+skipped by hidden, `.gitignore`, `--exclude` or `--no-git` rules; an ignored directory counts once, as its contents are not read:
+
+```
+$ erd --report-ignored --suppress-size
+...
+2 directories, 1 file, 5 ignored
+```
+
+This reads each walked directory a second time. It cannot be combined with `--pattern`, which filters most entries.
 
 ### Hidden files
 
