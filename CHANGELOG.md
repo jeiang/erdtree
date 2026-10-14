@@ -14,6 +14,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - The TOML config can also be named `erdtree.toml` or `config.toml` inside an `erdtree` config directory (`$XDG_CONFIG_HOME/erdtree/`, `$HOME/.config/erdtree/`, `%APPDATA%\erdtree\`); `.erdtree.toml` is still checked first ([upstream #250](https://github.com/solidiquis/erdtree/issues/250)).
 - `-F`/`--classify` appends an `ls -F` style indicator to entry names: `/` directory, `@` symlink, and on Unix `*` executable, `|` FIFO, `=` socket ([upstream #236](https://github.com/solidiquis/erdtree/issues/236)). Also available as `classify` in `.erdtree.toml`.
 - `--summarize` prints only the root and its total, like `du -s`; it is the same as `--level 0 --no-report` and overrides `--level` ([upstream #182](https://github.com/solidiquis/erdtree/issues/182)). Also available as `summarize` in `.erdtree.toml`.
+- `--include <GLOB>` (repeatable, or `include = [...]` in `.erdtree.toml`) shows hidden entries matching a gitignore-style glob without `--hidden`, e.g. `--include .github` ([upstream #188](https://github.com/solidiquis/erdtree/issues/188)). Gitignored entries still need `--no-ignore`.
 
 ### Bug Fixes
 - A directory reported twice by the filesystem walk now fails with an error naming the directory instead of panicking in tree assembly ([upstream #260](https://github.com/solidiquis/erdtree/issues/260)); the underlying trigger is still unknown.

@@ -238,6 +238,9 @@ Options:
       --exclude <GLOB>
           Exclude entries matching a gitignore-style glob (matched relative to the root); excluded directories are not descended into and do not count towards sizes. Can be repeated
 
+      --include <GLOB>
+          Show hidden entries matching a gitignore-style glob (matched relative to the root) without '--hidden'; hidden entries inside a hidden directory need that directory included too. Does not show gitignored entries ('--no-ignore' does). Can be repeated
+
       --no-git
           Disable traversal of .git directory when traversing hidden files
 
@@ -257,9 +260,6 @@ Options:
 
       --no-report
           Omit the directory and file count summary from output
-
-      --summarize
-          Print only the root and its total disk usage, like 'du -s'; same as '--level 0 --no-report' and overrides '--level'
 
       --suppress-size
           Omit disk usage from output
@@ -595,6 +595,17 @@ Hidden files ignored by default but can be included with `-., --hidden`. If opti
 it use `--no-git`.
 
 If hidden files are ignored it will not be included in the total disk usage.
+
+To show only some hidden entries, use `--include <GLOB>` (repeatable, or `include = [...]` in `.erdtree.toml`). It takes a gitignore-style glob
+matched relative to the root, like `--exclude`:
+
+```
+$ erd --include .github --include .env
+```
+
+An included directory shows its non-hidden contents; hidden entries inside it need their own match (e.g. `--include '.github/**'`), and a
+hidden entry inside a hidden directory needs that directory included too. `--include` does not show gitignored entries; use `--no-ignore` for those.
+While `--include` is in effect, a hidden entry that a `.gitignore` rule re-includes (e.g. `!.env`) also needs an `--include` match.
 
 ### Excluding paths
 

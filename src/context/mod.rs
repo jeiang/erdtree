@@ -201,6 +201,12 @@ pub struct Context {
     #[arg(long, value_name = "GLOB", action = clap::ArgAction::Append)]
     pub exclude: Vec<String>,
 
+    /// Show hidden entries matching a gitignore-style glob (matched relative to the root) without
+    /// '--hidden'; hidden entries inside a hidden directory need that directory included too.
+    /// Does not show gitignored entries ('--no-ignore' does). Can be repeated
+    #[arg(long, value_name = "GLOB", action = clap::ArgAction::Append)]
+    pub include: Vec<String>,
+
     /// Disable traversal of .git directory when traversing hidden files
     #[arg(long)]
     pub no_git: bool,
@@ -507,6 +513,27 @@ impl Context {
         Ok(builder.build()?)
     }
 
+    /// Hides hidden entries except those matching `--include`. Used instead of the walker's own
+    /// hidden-entry filter, which cannot make exceptions, when `--include` is given without
+    /// `--hidden`.
+    pub fn include_predicate(&self) -> Predicate {
+        let mut builder = OverrideBuilder::new(self.dir_canonical());
+
+        for glob in &self.include {
+            builder.add(glob.trim_start_matches('!'))?;
+        }
+
+        let include = builder.build()?;
+
+        Ok(Box::new(move |dir_entry: &DirEntry| {
+            let is_dir = dir_entry.file_type().is_some_and(|ft| ft.is_dir());
+
+            dir_entry.depth() == 0
+                || !is_hidden(dir_entry)
+                || include.matched(dir_entry.path(), is_dir).is_whitelist()
+        }))
+    }
+
     /// Update column width properties.
     pub const fn update_column_properties(&mut self, col_props: &column::Properties) {
         self.max_size_width = col_props.max_size_width;
@@ -556,4 +583,24 @@ impl Context {
     fn num_threads() -> usize {
         available_parallelism().map_or(3, NonZeroUsize::get)
     }
+}
+
+/// Whether the walker's hidden-entry filter would skip `dir_entry`: its name starts with `.` or,
+/// on Windows, it has the hidden attribute.
+fn is_hidden(dir_entry: &DirEntry) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+
+        if dir_entry
+            .metadata()
+            .is_ok_and(|md| md.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0)
+        {
+            return true;
+        }
+    }
+
+    dir_entry.file_name().as_encoded_bytes().first() == Some(&b'.')
 }

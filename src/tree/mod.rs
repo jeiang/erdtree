@@ -477,11 +477,15 @@ impl TryFrom<&Context> for WalkParallel {
 
         let mut builder = WalkBuilder::new(root_id);
 
+        // With `--include`, hidden entries are filtered by `include_predicate` instead, as the
+        // walker's own filter cannot make exceptions.
+        let include_hidden = !ctx.hidden && !ctx.include.is_empty();
+
         builder
             .follow_links(ctx.follow)
             .git_ignore(!ctx.no_ignore)
             .git_global(!ctx.no_ignore)
-            .hidden(!ctx.hidden)
+            .hidden(!ctx.hidden && !include_hidden)
             .overrides(ctx.no_git_override()?)
             .same_file_system(ctx.same_fs)
             .threads(ctx.threads);
@@ -492,12 +496,22 @@ impl TryFrom<&Context> for WalkParallel {
             builder.max_depth(Some(depth));
         }
 
+        let mut filters = vec![];
+
+        if include_hidden {
+            filters.push(ctx.include_predicate()?);
+        }
+
         if ctx.pattern.is_some() {
             if ctx.glob || ctx.iglob {
-                builder.filter_entry(ctx.glob_predicate()?);
+                filters.push(ctx.glob_predicate()?);
             } else {
-                builder.filter_entry(ctx.regex_predicate()?);
+                filters.push(ctx.regex_predicate()?);
             }
+        }
+
+        if !filters.is_empty() {
+            builder.filter_entry(move |dir_entry| filters.iter().all(|keep| keep(dir_entry)));
         }
 
         Ok(builder.build_parallel())
