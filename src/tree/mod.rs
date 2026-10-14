@@ -38,7 +38,8 @@ pub struct Tree {
     arena: Arena<Node>,
     root_id: NodeId,
 
-    /// Entries removed from `arena` by `--min-size`, which the summary file count still includes.
+    /// Counts added to the summary: entries removed from `arena` by `--min-size`, and entries
+    /// skipped by the walk (`--report-ignored`).
     hidden: FileCount,
 }
 
@@ -54,7 +55,7 @@ impl Tree {
         }
     }
 
-    /// File count of the entries hidden by `--min-size`.
+    /// File count of the entries hidden by `--min-size` or skipped by the walk.
     pub const fn hidden_count(&self) -> FileCount {
         self.hidden
     }
@@ -123,6 +124,7 @@ impl Tree {
                 let mut tree = Arena::new();
                 let mut branches: HashMap<PathBuf, Vec<NodeId>> = HashMap::new();
                 let mut root_id = None;
+                let mut walked_dirs = vec![];
 
                 while let Ok(TraversalState::Ongoing(node)) = rx.recv() {
                     if let Some(ref mailbox) = progress_indicator_mailbox
@@ -136,6 +138,13 @@ impl Tree {
 
                         if !branches.contains_key(node_path) {
                             branches.insert(node_path.to_owned(), vec![]);
+                        }
+
+                        // Directories at the traversal limit were not read by the walk.
+                        if ctx.report_ignored
+                            && ctx.traversal_depth.is_none_or(|max| node.depth() < max)
+                        {
+                            walked_dirs.push(node_path.to_owned());
                         }
 
                         if node.depth() == 0 {
@@ -164,6 +173,17 @@ impl Tree {
                 }
 
                 let root_id = root_id.ok_or(Error::MissingRoot)?;
+
+                // Every on-disk entry of a walked directory that the walk did not report was
+                // skipped by its filtering rules.
+                let num_ignored = walked_dirs
+                    .iter()
+                    .map(|dir| {
+                        let on_disk = fs::read_dir(dir).map_or(0, Iterator::count);
+                        on_disk.saturating_sub(branches.get(dir).map_or(0, Vec::len))
+                    })
+                    .sum();
+
                 let node_comparator = node::cmp::comparator(ctx);
                 let mut inodes = HashSet::new();
 
@@ -199,6 +219,8 @@ impl Tree {
                         Self::update_column_properties(column_properties, tree[node_id].get(), ctx);
                     }
                 }
+
+                hidden.num_ignored = num_ignored;
 
                 Ok((tree, root_id, hidden))
             });
