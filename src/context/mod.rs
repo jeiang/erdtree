@@ -172,8 +172,8 @@ pub struct Context {
     #[arg(long, value_enum, default_value_t)]
     pub dir_order: dir::Order,
 
-    /// Number of threads to use
-    #[arg(short = 'T', long, default_value_t = Context::num_threads())]
+    /// Number of threads to use; defaults to the number of available CPU cores
+    #[arg(short = 'T', long, default_value_t = Context::num_threads(), hide_default_value = true)]
     pub threads: usize,
 
     /// Report disk usage in binary or SI units
