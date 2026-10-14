@@ -94,7 +94,7 @@ impl Display for Row<'_, Flat> {
             let size = size.to_string();
 
             if size.is_empty() {
-                format!("{long_display}   {path}")
+                format!("{long_display} {path}")
             } else {
                 format!("{long_display}   {size} {path}")
             }
