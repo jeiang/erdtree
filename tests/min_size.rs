@@ -179,10 +179,10 @@ fn flat_layout() {
         out,
         indoc!(
             "
-             308 B   dream_cycle/polaris.txt
              161 B   nemesis.txt
              446 B   lipsum/lipsum.txt
              446 B   lipsum
+             308 B   dream_cycle/polaris.txt
              308 B   dream_cycle
             1241 B   data
 

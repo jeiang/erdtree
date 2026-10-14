@@ -90,13 +90,14 @@ fn nameci_differs_from_name() {
 }
 
 #[test]
-fn rnameci_is_exact_reverse_of_nameci_in_flat_layouts() {
+fn flat_layouts_follow_tree_order_for_name_sorts() {
     let dir = fixture();
-    for layout in ["flat", "iflat"] {
-        let mut fwd = names(dir.path(), None, &["--sort", "nameci", "--layout", layout]);
-        let rev = names(dir.path(), None, &["--sort", "rnameci", "--layout", layout]);
-        fwd.reverse();
-        assert_eq!(fwd, rev, "layout {layout}");
+    for sort in ["nameci", "rnameci"] {
+        for (flat, tree) in [("flat", "regular"), ("iflat", "inverted")] {
+            let flat_names = names(dir.path(), None, &["--sort", sort, "--layout", flat]);
+            let tree_names = names(dir.path(), None, &["--sort", sort, "--layout", tree]);
+            assert_eq!(flat_names, tree_names, "--sort {sort} --layout {flat}");
+        }
     }
 }
 

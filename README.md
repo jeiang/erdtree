@@ -543,7 +543,7 @@ Additionally, the word and line-count of directories are the summation of all of
 
 * The `inverted` layout a more traditional `tree`-like layout where the root node is at the very top of the output.
 * The `regular` layout is a tree with the root node at the bottom of the output for quick information about total disk usage.
-* The `flat` layout is a tree-less output that more closely resembles `du`. Its entries are sorted globally (by `--sort` and `--dir-order`) rather than per directory; the root is always last, or first with `iflat`.
+* The `flat` layout is a tree-less output that more closely resembles `du`. With name sorts (`name`, `rname`, `nameci`, `rnameci`) it keeps each directory's contents together, ordered as in the tree layouts; with every other sort, entries are sorted globally (by `--sort` and `--dir-order`) rather than per directory. The root is always last, or first with `iflat`.
 
 ### gitignore
 

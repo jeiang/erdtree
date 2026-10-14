@@ -45,3 +45,13 @@ pub enum Type {
     #[value(alias("rmtime"))]
     Rmod,
 }
+
+impl Type {
+    /// Whether this sorts by file name, in any case mode or direction.
+    pub const fn is_name(self) -> bool {
+        matches!(
+            self,
+            Self::Name | Self::Rname | Self::Nameci | Self::Rnameci
+        )
+    }
+}

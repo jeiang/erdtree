@@ -7,15 +7,15 @@ fn flat() {
     assert_eq!(
         utils::run_cmd(&["--layout", "flat", "tests/data"]),
         indoc!(
-            "143 B   the_yellow_king
- 308 B   dream_cycle/polaris.txt
+            "143 B   the_yellow_king/cassildas_song.md
+ 143 B   the_yellow_king
  100 B   nylarlathotep.txt
  161 B   nemesis.txt
   83 B   necronomicon.txt
  446 B   lipsum/lipsum.txt
  446 B   lipsum
+ 308 B   dream_cycle/polaris.txt
  308 B   dream_cycle
- 143 B   the_yellow_king/cassildas_song.md
 1241 B   data
 
 3 directories, 6 files"
@@ -28,15 +28,15 @@ fn flat_human() {
     assert_eq!(
         utils::run_cmd(&["--layout", "flat", "--human", "tests/data"]),
         indoc!(
-            "143   B   the_yellow_king
- 308   B   dream_cycle/polaris.txt
+            "143   B   the_yellow_king/cassildas_song.md
+ 143   B   the_yellow_king
  100   B   nylarlathotep.txt
  161   B   nemesis.txt
   83   B   necronomicon.txt
  446   B   lipsum/lipsum.txt
  446   B   lipsum
+ 308   B   dream_cycle/polaris.txt
  308   B   dream_cycle
- 143   B   the_yellow_king/cassildas_song.md
  1.2 KiB   data
  
  3 directories, 6 files"
@@ -183,5 +183,44 @@ fn flat_long_suppress_size_has_single_separator() {
                 "{layout}: bad separator before path in {row:?}"
             );
         }
+    }
+}
+
+#[test]
+fn flat_name_sorts_keep_directory_contents_together() {
+    let expected = [
+        "flat_data",
+        "a",
+        "a/a1.txt",
+        "a/c",
+        "a/c/c1.txt",
+        "b",
+        "b/b1.txt",
+    ];
+
+    for sort in ["name", "nameci"] {
+        let iflat = utils::run_cmd(&[
+            "--layout",
+            "iflat",
+            "--sort",
+            sort,
+            "--suppress-size",
+            "tests/flat_data",
+        ]);
+        let rows = iflat.lines().take(expected.len()).collect::<Vec<_>>();
+        assert_eq!(rows, expected, "iflat --sort {sort}");
+
+        // `flat` is the same list reversed, with the root last.
+        let flat = utils::run_cmd(&[
+            "--layout",
+            "flat",
+            "--sort",
+            sort,
+            "--suppress-size",
+            "tests/flat_data",
+        ]);
+        let rows = flat.lines().take(expected.len()).collect::<Vec<_>>();
+        let reversed = expected.iter().rev().copied().collect::<Vec<_>>();
+        assert_eq!(rows, reversed, "flat --sort {sort}");
     }
 }
