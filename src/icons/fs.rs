@@ -54,11 +54,8 @@ pub fn compute_with_color(
         .map(Cow::from);
 
     let paint_icon = |icon| match style {
-        Some(Style {
-            foreground: Some(fg),
-            ..
-        }) => {
-            let ansi_string: AnsiGenericString<str> = fg.bold().paint(icon);
+        Some(style) if !style.is_plain() => {
+            let ansi_string: AnsiGenericString<str> = style.bold().paint(icon);
             let styled_icon = ansi_string.to_string();
             Cow::from(styled_icon)
         },
