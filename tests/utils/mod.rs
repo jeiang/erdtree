@@ -4,8 +4,14 @@ use strip_ansi_escapes::strip as strip_ansi_escapes;
 
 #[allow(dead_code, reason = "not every test target uses this helper")]
 pub fn run_cmd(args: &[&str]) -> String {
+    run_cmd_untrimmed(args).trim().to_string()
+}
+
+/// Like [`run_cmd`] but leaves whitespace untouched, so tests can assert on leading and interior
+/// whitespace.
+#[allow(dead_code, reason = "not every test target uses this helper")]
+pub fn run_cmd_untrimmed(args: &[&str]) -> String {
     let out = String::from_utf8(strip_ansi_escapes(run_cmd_raw(args, &[]))).unwrap();
-    let out = out.trim().to_string();
 
     // Expected trees are written with `/` separators.
     #[cfg(windows)]
