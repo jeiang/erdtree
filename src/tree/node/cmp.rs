@@ -51,6 +51,8 @@ fn base_comparator(sort_type: sort::Type) -> Box<NodeComparator> {
     Box::new(match sort_type {
         sort::Type::Name => naming::comparator,
         sort::Type::Rname => naming::rev_comparator,
+        sort::Type::Nameci => naming::ci_comparator,
+        sort::Type::Rnameci => naming::rev_ci_comparator,
         sort::Type::Size => sizing::comparator,
         sort::Type::Rsize => sizing::rev_comparator,
         sort::Type::Access => time_stamping::accessed::comparator,
@@ -145,5 +147,22 @@ mod naming {
     /// Comparator based on [Node] file names in reversed lexicographical order.
     pub fn rev_comparator(a: &Node, b: &Node) -> Ordering {
         comparator(b, a)
+    }
+
+    /// Comparator based on [Node] file names in case-insensitive lexicographical order. Names
+    /// are lowercased with full Unicode case mapping (lossily, for non-UTF-8 names) and ties
+    /// are broken by the case-sensitive [`comparator`] so the order is deterministic.
+    pub fn ci_comparator(a: &Node, b: &Node) -> Ordering {
+        let a_name = a.file_name().to_string_lossy();
+        let b_name = b.file_name().to_string_lossy();
+        let a_folded = a_name.chars().flat_map(char::to_lowercase);
+        let b_folded = b_name.chars().flat_map(char::to_lowercase);
+
+        a_folded.cmp(b_folded).then_with(|| comparator(a, b))
+    }
+
+    /// Exact reverse of [`ci_comparator`].
+    pub fn rev_ci_comparator(a: &Node, b: &Node) -> Ordering {
+        ci_comparator(b, a)
     }
 }

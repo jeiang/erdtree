@@ -8,6 +8,12 @@ pub enum Type {
     /// Sort entries by file name in reversed lexicographical order.
     Rname,
 
+    /// Sort entries by file name in case-insensitive lexicographical order
+    Nameci,
+
+    /// Sort entries by file name in reversed case-insensitive lexicographical order
+    Rnameci,
+
     /// Sort entries by size smallest to largest, top to bottom
     #[default]
     Size,
