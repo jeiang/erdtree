@@ -111,10 +111,14 @@ impl Reconciler for Context {}
 /// other (e.g. `glob = true` in the config with `--pattern` on the command-line). Relations are
 /// therefore only enforced by [`validate`], once, on the merged arguments.
 fn with_relations(cmd: Command) -> Command {
-    cmd.mut_arg("octal", |a| a.requires("long"))
+    // These arguments only exist on Unix; `mut_arg` panics on unknown ids.
+    #[cfg(unix)]
+    let cmd = cmd
+        .mut_arg("octal", |a| a.requires("long"))
         .mut_arg("time", |a| a.requires("long"))
-        .mut_arg("time_format", |a| a.requires("long"))
-        .mut_arg("glob", |a| a.requires("pattern"))
+        .mut_arg("time_format", |a| a.requires("long"));
+
+    cmd.mut_arg("glob", |a| a.requires("pattern"))
         .mut_arg("iglob", |a| a.requires("pattern"))
         .mut_arg("file_type", |a| a.requires("pattern"))
         .mut_arg("no_git", |a| a.requires("hidden"))
