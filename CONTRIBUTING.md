@@ -8,7 +8,7 @@ The following are the general rules for contributing code:
   * Every function, struct, traits, etc. no matter how trivial, should be documented in `cargo doc` fashion.
   * When adding or amending a new feature and if warranted, the `usage` as well as the `documentation` section of the README should be updated appropriately.
   * Integration is usually required when adding or amending a feature that alters the output.
-  * All existing tests must pass.
+  * All existing tests must pass, and CI must be green: `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`, and `cargo test --locked`. With Nix, `nix develop` provides the toolchain.
   * Unit testing is encouraged but not required.
 
 **Note**: Before you take the time to open a pull request, please open an issue first to open the floor for discussion.

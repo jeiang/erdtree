@@ -47,19 +47,22 @@ Pitfalls:
 
 ## Development Commands
 
+Run commands inside the Nix dev shell (`flake.nix`, nixpkgs Rust toolchain): `nix develop -c <cmd>`, or `nix develop` once.
+
 ```sh
 cargo build                     # debug build
 cargo run -- --threads 1 tests/data   # run erd on fixtures
-cargo check && cargo test       # exactly what CI runs
-cargo fmt --check               # rustfmt.toml: match_block_trailing_comma = true
-cargo clippy                    # advisory; lint groups set in src/main.rs
+cargo fmt --all -- --check      # CI gate; rustfmt.toml: match_block_trailing_comma = true
+cargo clippy --all-targets --locked -- -D warnings   # CI gate
+cargo test --locked             # CI gate (Linux + macOS)
 cargo build --release --locked  # release build as in publish.yml
+nix fmt                         # format flake.nix
 ```
 
 ## Code Conventions & Common Patterns
 
 - Rust 2021, MSRV 1.70.0 (`Cargo.toml`). Do not use std APIs newer than 1.70.
-- Lints: `src/main.rs` enables `clippy::all`, `pedantic`, `nursery`, `cargo`, and more as warnings; it allows only `cast_precision_loss`, `struct_excessive_bools`, `wildcard_imports`. Keep new code free of new clippy warnings.
+- Lints: `src/main.rs` enables `clippy::all`, `pedantic`, `nursery`, `cargo`, and more; CI denies all warnings. Fix lints instead of adding allows; a narrow `#[allow]` needs a comment with the reason (see `src/tree/visitor.rs`).
 - Errors: per-subsystem `thiserror` enums (`src/context/error.rs`, `src/context/config/toml/error.rs`, `src/tree/error.rs`) with `From` conversions and `?`. Only `main` prints errors (stderr, once) and sets the exit code.
 - Platform code: gate with `#[cfg(unix)]` / `#[cfg(windows)]` at module, field, and match-arm level (see `src/fs/`, `src/tree/node/unix.rs`). Windows needs nightly (`windows_by_handle` feature in `src/main.rs`); do not break the stable Unix build.
 - Options are `Copy` + clap `ValueEnum` enums where practical. Global immutable state uses `OnceLock`; no other shared mutable state.
@@ -73,13 +76,14 @@ cargo build --release --locked  # release build as in publish.yml
 - `src/context/args.rs`: CLI/config reconciliation.
 - `src/context/config/toml/mod.rs`: TOML discovery. Unix order: `$ERDTREE_TOML_PATH`, `$XDG_CONFIG_HOME/erdtree/.erdtree.toml`, `$XDG_CONFIG_HOME/.erdtree.toml`, `$HOME/.config/erdtree/.erdtree.toml`, `$HOME/.erdtree.toml`. Windows: `%APPDATA%\erdtree\.erdtree.toml`. Legacy rc uses `$ERDTREE_CONFIG_PATH`.
 - `src/tree/mod.rs`, `src/tree/visitor.rs`: walk and tree assembly.
-- `.github/workflows/ci.yml` (check + test, Ubuntu, stable), `publish.yml` (tag-triggered release, 7 targets, Windows on `nightly-2023-06-11`), `test.yml` (manual prerelease).
+- `.github/workflows/ci.yml`: fmt, clippy, tests on Linux/macOS, MSRV `cargo check` on 1.70.0, aggregated into the `ci-pass` job (the required check for `master`). `publish.yml` (tag-triggered release, 7 targets, Windows on `nightly-2023-06-11`), `test.yml` (manual prerelease).
+- `flake.nix` / `flake.lock`: dev shell. Update with `nix flake update`.
 - `CHANGELOG.md`: SemVer release notes.
 
 ## Runtime/Tooling Preferences
 
-- Cargo only; no workspace, no Cargo features, no profile overrides, no toolchain pin.
-- Stable Rust for Unix/macOS. Windows requires nightly (hard-link support).
+- Cargo; no workspace, no Cargo features, no profile overrides. Local toolchain comes from the flake (current stable); CI uses `dtolnay/rust-toolchain@stable` plus a 1.70.0 MSRV job. When raising `rust-version` in `Cargo.toml`, update the `msrv` job in `ci.yml`.
+- Windows requires nightly (hard-link support) and is not built in CI yet; the Windows-only config code in `src/context/config/toml/mod.rs` does not compile.
 - `Cargo.lock` is committed; releases build with `--locked`. Do not hand-edit it.
 
 ## Testing & QA
@@ -94,4 +98,4 @@ cargo build --release --locked  # release build as in publish.yml
   ```
 - Adding a CLI test: new or existing `tests/<area>.rs` with `mod utils;`, use `tests/data/` fixtures, keep ordering explicit, use logical sizes (physical sizes differ by filesystem), gate Unix-only cases with `#[cfg(unix)]` (see `tests/symlink.rs`), use `tempfile::TempDir` for custom setups.
 - Fixture caveats: changing anything in `tests/data/` changes expected sizes and trees across many tests. `tests/hardlink.rs` creates and removes `tests/hardlinks/curwin.hpl`; a panic can leave it behind. Permission tests write fixed names to the system temp dir and expect mode `644` (umask-sensitive).
-- No coverage target. CI requires `cargo check` and `cargo test` to pass; it does not enforce fmt or clippy.
+- No coverage target. PRs merge only when `ci-pass` succeeds (fmt, clippy `-D warnings`, tests on Linux/macOS, MSRV check).
