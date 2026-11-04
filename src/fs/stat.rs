@@ -8,7 +8,7 @@ use std::{
 };
 
 /// What an entry is. Mirrors [`std::fs::FileType`], with the same method names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
     File,
     Dir,
@@ -71,6 +71,38 @@ impl Kind {
     )]
     pub const fn is_char_device(self) -> bool {
         matches!(self, Self::CharDevice)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Kind {
+    /// The kind encoded in the `S_IFMT` bits of a Unix mode.
+    pub const fn from_mode(mode: u32) -> Self {
+        match mode & 0o170_000 {
+            0o100_000 => Self::File,
+            0o040_000 => Self::Dir,
+            0o120_000 => Self::Symlink,
+            0o010_000 => Self::Fifo,
+            0o140_000 => Self::Socket,
+            0o060_000 => Self::BlockDevice,
+            0o020_000 => Self::CharDevice,
+            _ => Self::Other,
+        }
+    }
+
+    /// The kind given by a `d_type` value of a directory entry, or `None` for `DT_UNKNOWN` and
+    /// values this code does not know.
+    pub const fn from_dtype(d_type: u8) -> Option<Self> {
+        Some(match d_type {
+            1 => Self::Fifo,
+            2 => Self::CharDevice,
+            4 => Self::Dir,
+            6 => Self::BlockDevice,
+            8 => Self::File,
+            10 => Self::Symlink,
+            12 => Self::Socket,
+            _ => return None,
+        })
     }
 }
 
@@ -179,5 +211,22 @@ impl Stat {
             accessed: fields.accessed.then(|| md.accessed().ok()).flatten(),
             created: fields.created.then(|| md.created().ok()).flatten(),
         }
+    }
+}
+
+/// A timestamp as the kernel reports it: seconds since the epoch (negative before it) and
+/// nanoseconds.
+#[cfg(target_os = "linux")]
+pub fn system_time(secs: i64, nanos: u32) -> Option<SystemTime> {
+    use std::time::Duration;
+
+    let nanos = Duration::from_nanos(u64::from(nanos));
+
+    match u64::try_from(secs) {
+        Ok(secs) => SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs) + nanos),
+        // Same as `std`: a negative time is the epoch minus the seconds, plus the nanoseconds.
+        Err(_) => SystemTime::UNIX_EPOCH
+            .checked_sub(Duration::from_secs(secs.unsigned_abs()))?
+            .checked_add(nanos),
     }
 }

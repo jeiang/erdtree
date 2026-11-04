@@ -1,6 +1,10 @@
 /// Operations pertaining to underlying inodes of files.
 pub mod inode;
 
+/// Linux system calls relative to a directory file descriptor.
+#[cfg(target_os = "linux")]
+pub mod at;
+
 /// Platform-neutral entry metadata read by the walk.
 pub mod stat;
 

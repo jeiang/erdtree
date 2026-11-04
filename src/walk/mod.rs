@@ -6,11 +6,16 @@
 //! rules ([`rules`]), hidden-file handling, `--exclude`/`--no-git` overrides, entry filter,
 //! depth limit, same-file-system check and symlink loop detection. Entries whose metadata cannot
 //! be read are dropped, and so are their contents.
+//!
+//! On Linux a directory is opened relative to its parent's file descriptor, read with
+//! `getdents64` into a [`Listing`] and each entry is stat'ed with `statx` relative to the open
+//! directory (see [`crate::fs::at`]). Elsewhere the walk uses `std::fs::read_dir`.
 
+use crate::fs::stat::{Fields, Kind, Stat};
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs, mem,
-    path::{Path, PathBuf},
+    path::{MAIN_SEPARATOR, Path, PathBuf},
     sync::{
         Condvar, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -18,10 +23,23 @@ use std::{
     thread,
 };
 
+#[cfg(target_os = "linux")]
+use crate::fs::at::{self, At};
+#[cfg(target_os = "linux")]
+use std::{
+    os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::ffi::OsStrExt,
+    },
+    sync::Arc,
+};
+
+/// The entries of one directory.
+mod listing;
 /// Ignore rules per directory, adapted from the `ignore` crate.
 pub mod rules;
 
-use crate::fs::stat::{Fields, Kind, Stat};
+use listing::Listing;
 use rules::{Found, Rules};
 
 /// Identifies a record: the index of the sink that holds it and its index in that sink.
@@ -78,6 +96,21 @@ pub struct Record<'a> {
     pub stat: &'a Stat,
     /// Whether the entry is a symlink (followed or not).
     pub is_symlink: bool,
+    /// Where to find the entry relative to its open directory; `None` for the root.
+    #[cfg(target_os = "linux")]
+    pub at: Option<At<'a>>,
+}
+
+impl Record<'_> {
+    /// The target of the entry, which must be a symlink.
+    pub fn read_link(&self) -> std::io::Result<PathBuf> {
+        #[cfg(target_os = "linux")]
+        if let Some(at) = self.at {
+            return at::read_link(at);
+        }
+
+        fs::read_link(self.path)
+    }
 }
 
 /// Receives the records of one worker.
@@ -108,15 +141,35 @@ pub struct Walker {
     pub fields: Fields,
 }
 
+/// Where the record of a queued directory is.
+#[derive(Clone, Copy)]
+enum Me {
+    /// Already stored, at this reference.
+    Pushed(NodeRef),
+    /// Not stored yet: whoever reads the directory stores it, below this parent. Reading the
+    /// directory first gives its metadata for free (`statx` of the open directory), instead of
+    /// a second lookup of its name.
+    #[cfg(target_os = "linux")]
+    Deferred(NodeRef),
+}
+
 /// A directory waiting to be read.
 struct Job {
     path: PathBuf,
-    id: NodeRef,
+    me: Me,
+    /// Depth of the directory itself.
     depth: usize,
     /// Rules of the parent directory.
     rules: Rules,
-    /// Whether the directory is on another file system than the root (`-x`).
+    /// Whether the directory is on another file system than the root (`-x`). Only known for
+    /// [`Me::Pushed`].
     foreign: bool,
+    /// The parent directory, which the directory is opened relative to.
+    #[cfg(target_os = "linux")]
+    parent: Option<Arc<OwnedFd>>,
+    /// Whether the directory is a followed symlink, so opening it follows the link.
+    #[cfg(target_os = "linux")]
+    follow: bool,
 }
 
 /// Work shared between workers.
@@ -148,6 +201,10 @@ impl Walker {
         let Some(root) = self.root_job(&mut sinks[threads], root_sink_index) else {
             return sinks;
         };
+
+        // Parent directories stay open while their subdirectories wait, so allow many files.
+        #[cfg(target_os = "linux")]
+        at::raise_open_file_limit();
 
         let shared = Shared {
             queue: Mutex::new(Vec::new()),
@@ -181,6 +238,11 @@ impl Walker {
                             sink,
                             local,
                             progress,
+                            root_device: None,
+                            listing: Listing::default(),
+                            #[cfg(target_os = "linux")]
+                            dirent_buf: Vec::new(),
+                            path_buf: Vec::new(),
                         };
                         worker.run();
                         mem::forget(guard);
@@ -215,6 +277,8 @@ impl Walker {
             path: &self.root,
             stat: &stat,
             is_symlink: stat.kind.is_symlink(),
+            #[cfg(target_os = "linux")]
+            at: None,
         })?;
 
         if !stat.kind.is_dir() || self.max_depth == Some(0) {
@@ -223,13 +287,17 @@ impl Walker {
 
         Some(Job {
             path: self.root.clone(),
-            id: NodeRef {
+            me: Me::Pushed(NodeRef {
                 sink: sink_index,
                 index,
-            },
+            }),
             depth: 0,
             rules: self.rules.add_parents(&self.root),
             foreign: false,
+            #[cfg(target_os = "linux")]
+            parent: None,
+            #[cfg(target_os = "linux")]
+            follow: true,
         })
     }
 }
@@ -245,6 +313,31 @@ impl Drop for QuitOnPanic<'_> {
     }
 }
 
+/// A directory being walked: its entries and what its entries are judged by.
+struct Dir {
+    listing: Listing,
+    path: PathBuf,
+    /// The rules for the entries of the directory.
+    rules: Rules,
+    /// The record of the directory.
+    id: NodeRef,
+    /// Depth of the directory itself.
+    depth: usize,
+}
+
+/// An entry the walk kept.
+struct Kept {
+    /// Its index in the worker's sink; `None` for a directory whose record the job that reads it
+    /// stores.
+    index: Option<u32>,
+    kind: Kind,
+    /// Whether it is a directory on another file system than the root (`-x`).
+    foreign: bool,
+    /// Whether it is a symlink that was followed.
+    #[cfg(target_os = "linux")]
+    followed: bool,
+}
+
 struct Worker<'a, S> {
     walker: &'a Walker,
     sink_index: u32,
@@ -252,18 +345,25 @@ struct Worker<'a, S> {
     sink: S,
     local: Vec<Job>,
     progress: Option<&'a AtomicU64>,
+    /// Device of the root, with `--one-file-system`.
+    root_device: Option<u64>,
+    /// Buffers reused from directory to directory.
+    listing: Listing,
+    #[cfg(target_os = "linux")]
+    dirent_buf: Vec<u8>,
+    path_buf: Vec<u8>,
 }
 
 impl<S: Sink> Worker<'_, S> {
     fn run(&mut self) {
-        let root_device = if self.walker.same_file_system {
+        self.root_device = if self.walker.same_file_system {
             device_num(&self.walker.root)
         } else {
             None
         };
 
         while let Some(job) = self.next_job() {
-            let kept = self.read_dir(job, root_device);
+            let kept = self.read_dir(job);
 
             if let Some(progress) = self.progress {
                 progress.fetch_add(kept, Ordering::Relaxed);
@@ -338,105 +438,237 @@ impl<S: Sink> Worker<'_, S> {
 
     /// Reads one directory, records its kept entries and queues its subdirectories. Returns the
     /// number of kept entries.
-    fn read_dir(&mut self, job: Job, root_device: Option<u64>) -> u64 {
-        let walker = self.walker;
-
-        if job.foreign {
-            if walker.count_ignored {
-                let listed = fs::read_dir(&job.path).map_or(0, Iterator::count);
-                self.sink.add_ignored(listed);
-            }
-            return 0;
-        }
-
-        let Ok(read_dir) = fs::read_dir(&job.path) else {
+    fn read_dir(&mut self, job: Job) -> u64 {
+        let Some((id, listing, found)) = self.open(&job) else {
             return 0;
         };
 
-        let mut listed = 0;
-        let mut entries = Vec::new();
-        let mut found = Found::default();
-
-        for entry in read_dir {
-            listed += 1;
-            if let Ok(entry) = entry {
-                let name = entry.file_name();
-                found.note(&name);
-                entries.push((entry, name));
-            }
-        }
-
         let rules = job.rules.add_child(&job.path, Some(&found));
-        let depth = job.depth + 1;
-        let mut path = job.path;
-        let mut kept = 0;
+        let mut dir = Dir {
+            listing,
+            path: job.path,
+            rules,
+            id,
+            depth: job.depth,
+        };
 
-        for (entry, name) in &entries {
-            path.push(name);
+        let kept = self.walk_entries(&dir, 0, dir.listing.len());
 
-            if let Some((index, stat)) = self.visit(entry, name, &path, &rules, job.id, depth) {
-                kept += 1;
-
-                if stat.kind.is_dir() && walker.max_depth.is_none_or(|max| depth < max) {
-                    let foreign = root_device
-                        .is_some_and(|root| device_of(&stat, &path).is_some_and(|dev| dev != root));
-
-                    self.shared.pending.fetch_add(1, Ordering::AcqRel);
-                    self.local.push(Job {
-                        path: path.clone(),
-                        id: NodeRef {
-                            sink: self.sink_index,
-                            index,
-                        },
-                        depth,
-                        rules: rules.clone(),
-                        foreign,
-                    });
-                }
-            }
-
-            path.pop();
-        }
-
-        if walker.count_ignored {
+        if self.walker.count_ignored {
+            let listed = dir.listing.unusable + dir.listing.len();
             self.sink
                 .add_ignored(listed - usize::try_from(kept).unwrap_or(listed));
         }
 
+        // Keep the buffers for the next directory, but not the directory's file descriptor.
+        dir.listing.clear();
+        self.listing = dir.listing;
+
         kept
     }
 
-    /// Applies the walk rules to one entry and records it. Returns its index in this worker's
-    /// sink and its metadata when kept.
-    fn visit(
-        &mut self,
-        entry: &fs::DirEntry,
-        name: &OsStr,
-        path: &Path,
-        rules: &Rules,
-        parent: NodeRef,
-        depth: usize,
-    ) -> Option<(u32, Stat)> {
+    /// Opens and lists the directory of `job`, storing its record if that is still to do.
+    /// Returns its record, listing and which ignore files it has; `None` when it cannot be read
+    /// or is not walked.
+    #[cfg(target_os = "linux")]
+    fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found)> {
         let walker = self.walker;
-        let mut file_type = Kind::from(entry.file_type().ok()?);
-        let is_symlink = file_type.is_symlink();
-        let followed = if walker.follow_links && is_symlink {
-            let stat = Stat::from_metadata(&fs::metadata(path).ok()?, walker.fields);
-            file_type = stat.kind;
+        let fd = open_dir(job);
 
-            if file_type.is_dir() && is_loop(rules, path) {
+        let (id, foreign) = match job.me {
+            Me::Pushed(id) => (id, job.foreign),
+            Me::Deferred(parent) => {
+                let from_fd = fd
+                    .as_ref()
+                    .and_then(|fd| at::stat_fd(fd.as_raw_fd(), walker.fields).ok());
+                let stat = from_fd.or_else(|| lstat_in_parent(job, walker.fields))?;
+
+                let foreign = self.root_device.is_some_and(|root| stat.dev != root);
+                let index = self.store_dir(job, parent, &stat)?;
+
+                (
+                    NodeRef {
+                        sink: self.sink_index,
+                        index,
+                    },
+                    foreign,
+                )
+            },
+        };
+
+        let fd = fd?;
+
+        if foreign && !walker.count_ignored {
+            return None;
+        }
+
+        let mut listing = mem::take(&mut self.listing);
+        let mut found = Found::default();
+        listing.clear();
+        listing.fill(Arc::new(fd), &mut self.dirent_buf, &mut found);
+
+        if foreign {
+            // Contents of another file system are not walked, only counted.
+            self.sink.add_ignored(listing.len() + listing.unusable);
+            listing.clear();
+            self.listing = listing;
+            return None;
+        }
+
+        Some((id, listing, found))
+    }
+
+    /// Opens and lists the directory of `job`.
+    #[cfg(not(target_os = "linux"))]
+    fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found)> {
+        let Me::Pushed(id) = job.me;
+
+        if job.foreign && !self.walker.count_ignored {
+            return None;
+        }
+
+        let mut listing = mem::take(&mut self.listing);
+        let mut found = Found::default();
+        listing.clear();
+        let readable = listing.fill(&job.path, &mut found);
+
+        if job.foreign {
+            // Contents of another file system are not walked, only counted.
+            if readable {
+                self.sink.add_ignored(listing.len() + listing.unusable);
+            }
+            listing.clear();
+            self.listing = listing;
+            return None;
+        }
+
+        if !readable {
+            self.listing = listing;
+            return None;
+        }
+
+        Some((id, listing, found))
+    }
+
+    /// Stores the record of the directory of `job`, whose records are stored by its own job.
+    #[cfg(target_os = "linux")]
+    fn store_dir(&mut self, job: &Job, parent: NodeRef, stat: &Stat) -> Option<u32> {
+        let name = job.path.file_name()?;
+        let parent_fd = job.parent.as_deref().map(AsRawFd::as_raw_fd);
+
+        at::with_cstr(name.as_bytes(), |cname| {
+            Ok(self.sink.push(&Record {
+                parent: Some(parent),
+                depth: job.depth,
+                name,
+                path: &job.path,
+                stat,
+                is_symlink: false,
+                at: parent_fd.map(|dir| At { dir, name: cname }),
+            }))
+        })
+        .ok()
+        .flatten()
+    }
+
+    /// Visits the entries `lo..hi` of `dir`: records the kept ones and queues the subdirectories.
+    /// Returns how many entries were kept.
+    fn walk_entries(&mut self, dir: &Dir, lo: usize, hi: usize) -> u64 {
+        let walker = self.walker;
+        let depth = dir.depth + 1;
+        let may_descend = walker.max_depth.is_none_or(|max| depth < max);
+
+        let mut buf = mem::take(&mut self.path_buf);
+        buf.clear();
+        buf.extend_from_slice(dir.path.as_os_str().as_encoded_bytes());
+        if buf.last() != Some(&(MAIN_SEPARATOR as u8)) {
+            buf.push(MAIN_SEPARATOR as u8);
+        }
+        let dir_len = buf.len();
+
+        let mut kept = 0;
+
+        for i in lo..hi {
+            buf.truncate(dir_len);
+            buf.extend_from_slice(dir.listing.name(i));
+
+            // SAFETY: `buf` is the encoded directory path, an ASCII separator and an encoded
+            // name, so it is valid as an `OsStr`.
+            let path = Path::new(unsafe { OsStr::from_encoded_bytes_unchecked(&buf) });
+
+            let Some(entry) = self.visit(dir, i, path, may_descend) else {
+                continue;
+            };
+            kept += 1;
+
+            if !(entry.kind.is_dir() && may_descend) {
+                continue;
+            }
+
+            let me = match entry.index {
+                Some(index) => Me::Pushed(NodeRef {
+                    sink: self.sink_index,
+                    index,
+                }),
+                #[cfg(target_os = "linux")]
+                None => Me::Deferred(dir.id),
+                #[cfg(not(target_os = "linux"))]
+                None => continue,
+            };
+
+            self.shared.pending.fetch_add(1, Ordering::AcqRel);
+            self.local.push(Job {
+                // SAFETY: as above.
+                path: PathBuf::from(unsafe { OsString::from_encoded_bytes_unchecked(buf.clone()) }),
+                me,
+                depth,
+                rules: dir.rules.clone(),
+                foreign: entry.foreign,
+                #[cfg(target_os = "linux")]
+                parent: dir.listing.dir.clone(),
+                #[cfg(target_os = "linux")]
+                follow: entry.followed,
+            });
+        }
+
+        self.path_buf = buf;
+        kept
+    }
+
+    /// Applies the walk rules to entry `i` of `dir` and records it. Returns what is needed to
+    /// descend into it when kept.
+    fn visit(&mut self, dir: &Dir, i: usize, path: &Path, may_descend: bool) -> Option<Kept> {
+        let walker = self.walker;
+        let listing = &dir.listing;
+        let fields = walker.fields;
+        let depth = dir.depth + 1;
+
+        // The type the directory reported; where it did not, one metadata call settles it.
+        let mut stat = None;
+        let reported = match listing.kind(i) {
+            Some(kind) => kind,
+            None => stat.insert(listing.lstat(i, path, fields)?).kind,
+        };
+
+        let is_symlink = reported.is_symlink();
+        let mut file_type = reported;
+
+        let followed = if walker.follow_links && is_symlink {
+            let target = listing.stat(i, path, fields)?;
+            file_type = target.kind;
+
+            if file_type.is_dir() && is_loop(&dir.rules, path) {
                 return None;
             }
 
-            Some(stat)
+            Some(target)
         } else {
             None
         };
 
         let is_dir = file_type.is_dir();
-        let hidden = || is_hidden(name, entry);
 
-        if rules.is_ignored(path, is_dir, hidden) {
+        if dir.rules.is_ignored(path, is_dir, || listing.is_hidden(i)) {
             return None;
         }
 
@@ -445,7 +677,7 @@ impl<S: Sink> Worker<'_, S> {
                 path,
                 file_type,
                 depth,
-                hidden: is_hidden(name, entry),
+                hidden: listing.is_hidden(i),
             };
 
             if !filter(&candidate) {
@@ -453,22 +685,91 @@ impl<S: Sink> Worker<'_, S> {
             }
         }
 
-        let stat = match followed {
+        // A directory that will be read is stored by the job that reads it.
+        #[cfg(target_os = "linux")]
+        if reported.is_dir() && may_descend && stat.is_none() && followed.is_none() {
+            return Some(Kept {
+                index: None,
+                kind: Kind::Dir,
+                foreign: false,
+                followed: false,
+            });
+        }
+
+        let stat = match followed.or(stat) {
             Some(stat) => stat,
-            None => Stat::from_metadata(&entry.metadata().ok()?, walker.fields),
+            None => listing.lstat(i, path, fields)?,
         };
 
         let index = self.sink.push(&Record {
-            parent: Some(parent),
+            parent: Some(dir.id),
             depth,
-            name,
+            name: listing.os_name(i),
             path,
             stat: &stat,
             is_symlink,
+            #[cfg(target_os = "linux")]
+            at: listing.at(i),
         })?;
 
-        Some((index, stat))
+        let foreign = may_descend
+            && stat.kind.is_dir()
+            && self
+                .root_device
+                .is_some_and(|root| device_of(&stat, path).is_some_and(|dev| dev != root));
+
+        Some(Kept {
+            index: Some(index),
+            kind: stat.kind,
+            foreign,
+            #[cfg(target_os = "linux")]
+            followed: is_symlink && walker.follow_links,
+        })
     }
+}
+
+/// Metadata of the directory of `job` looked up by name in its parent.
+#[cfg(target_os = "linux")]
+fn lstat_in_parent(job: &Job, fields: Fields) -> Option<Stat> {
+    let dir = job.parent.as_ref()?.as_raw_fd();
+    let name = job.path.file_name()?.as_bytes();
+
+    at::with_cstr(name, |name| at::stat_at(At { dir, name }, false, fields)).ok()
+}
+
+/// Opens the directory of `job`: relative to its parent when it has one.
+#[cfg(target_os = "linux")]
+fn open_dir(job: &Job) -> Option<OwnedFd> {
+    if let Some(parent) = &job.parent {
+        let name = job.path.file_name()?.as_bytes();
+        let opened = at::with_cstr(name, |name| {
+            at::open_dir_at(parent.as_raw_fd(), name, job.follow)
+        });
+
+        match opened {
+            Ok(fd) => return Some(fd),
+            // Another lookup cannot fix these.
+            Err(e)
+                if matches!(
+                    e.raw_os_error(),
+                    Some(
+                        libc::ENOENT
+                            | libc::EACCES
+                            | libc::ENOTDIR
+                            | libc::ELOOP
+                            | libc::EPERM
+                            | libc::EMFILE
+                            | libc::ENFILE
+                    )
+                ) =>
+            {
+                return None;
+            },
+            Err(_) => {},
+        }
+    }
+
+    at::open_dir_path(&job.path).ok()
 }
 
 /// Whether the directory at `path` is one of the walked directories that lead to it.
@@ -481,29 +782,6 @@ fn is_loop(rules: &Rules, path: &Path) -> bool {
     rules
         .walked_dirs()
         .any(|dir| same_file::Handle::from_path(dir).map_or(true, |ancestor| ancestor == child))
-}
-
-/// Whether `name` is hidden: it starts with `.` or, on Windows, has the hidden attribute.
-fn is_hidden(name: &OsStr, entry: &fs::DirEntry) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-
-        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-
-        // Free on Windows: the attributes come with the directory listing.
-        if entry
-            .metadata()
-            .is_ok_and(|md| md.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0)
-        {
-            return true;
-        }
-    }
-
-    #[cfg(not(windows))]
-    let _ = entry;
-
-    name.as_encoded_bytes().first() == Some(&b'.')
 }
 
 /// Device number of the file system `path` is on.

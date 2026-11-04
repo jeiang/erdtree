@@ -237,7 +237,7 @@ impl Columns {
         let size = size(probe, record, file_type);
 
         if record.is_symlink
-            && let Ok(target) = std::fs::read_link(path)
+            && let Ok(target) = record.read_link()
         {
             self.link_target.push((index, target));
         }
