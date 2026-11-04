@@ -38,6 +38,12 @@ pub mod widths;
 /// Trees with at least this many nodes compute column widths while the child lists are sorted.
 const OVERLAP_MIN: usize = 1 << 16;
 
+/// Factor by which the walk may add workers when it waits for the file system.
+const WALK_GROWTH: usize = 8;
+
+/// Most walk workers when the walk adds workers.
+const WALK_MAX_THREADS: usize = 64;
+
 /// Counts of at least this many nodes use all threads.
 const PAR_COUNT_MIN: usize = 1 << 18;
 
@@ -593,6 +599,8 @@ fn walker(ctx: &Context) -> Result<Walker> {
         }))
     };
 
+    let threads = thread_count(ctx);
+
     Ok(Walker {
         root,
         rules,
@@ -601,10 +609,12 @@ fn walker(ctx: &Context) -> Result<Walker> {
         // `--level` is display-only; only `--traversal-depth` limits the walk. Both count the
         // root as depth 0, so `--level N --traversal-depth N` shows the same entries.
         max_depth: ctx.traversal_depth,
-        threads: if ctx.threads == 0 {
-            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        threads,
+        // Without `--threads`, workers that wait for the file system get company.
+        max_threads: if ctx.threads_explicit {
+            threads
         } else {
-            ctx.threads
+            (threads * WALK_GROWTH).min(WALK_MAX_THREADS).max(threads)
         },
         filter,
         count_ignored: ctx.report_ignored,

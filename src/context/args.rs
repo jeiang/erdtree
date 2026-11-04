@@ -105,6 +105,13 @@ fn reconcile(
                 }
             });
 
+        // A default stays a default, so that the merged matches can tell that it was not given.
+        if id_str == "threads"
+            && argument_source.value_source(id_str) == Some(ValueSource::DefaultValue)
+        {
+            continue;
+        }
+
         let Some(key) = arg.get_long().map(|l| format!("--{l}")).map(OsString::from) else {
             continue;
         };

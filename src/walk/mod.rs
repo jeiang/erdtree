@@ -21,6 +21,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread,
+    time::Instant,
 };
 
 #[cfg(target_os = "linux")]
@@ -31,6 +32,8 @@ use std::os::{
     unix::ffi::OsStrExt,
 };
 
+/// Detects workers that wait for the file system.
+mod adaptive;
 /// The entries of one directory.
 mod listing;
 /// Ignore rules per directory, adapted from the `ignore` crate.
@@ -162,6 +165,10 @@ pub struct Walker {
     pub same_file_system: bool,
     pub max_depth: Option<usize>,
     pub threads: usize,
+    /// Most workers the walk may have. It starts with `threads` and adds workers while they wait
+    /// for the file system (a cold cache, a network file system). `threads` or less keeps the
+    /// number fixed.
+    pub max_threads: usize,
     pub filter: Option<Filter>,
     /// Count ignored entries per directory (`--report-ignored`).
     pub count_ignored: bool,
@@ -181,6 +188,10 @@ pub struct Tuning {
     pub split_min: usize,
     /// Number of times a directory was split; for tests.
     pub splits: AtomicUsize,
+    /// When workers count as waiting for the file system.
+    pub policy: adaptive::Policy,
+    /// Number of workers added; for tests.
+    pub grown: AtomicUsize,
 }
 
 impl Default for Tuning {
@@ -188,6 +199,8 @@ impl Default for Tuning {
         Self {
             split_min: SPLIT_MIN,
             splits: AtomicUsize::new(0),
+            policy: adaptive::Policy::default(),
+            grown: AtomicUsize::new(0),
         }
     }
 }
@@ -249,13 +262,78 @@ struct Shared {
     quit: AtomicBool,
 }
 
+/// Everything the workers of one walk share, including what an extra worker needs to start.
+struct Run<'a, S, F> {
+    walker: &'a Walker,
+    shared: Shared,
+    progress: Option<&'a AtomicU64>,
+    make_sink: F,
+    /// Number of workers started, the first `threads` of them at the start.
+    workers: AtomicUsize,
+    /// Sinks of the extra workers, once they are done.
+    extras: Mutex<Vec<(u32, S)>>,
+}
+
+/// Starts the worker with sink index `sink_index`.
+fn spawn_worker<'scope, 'env, S, F>(
+    scope: &'scope thread::Scope<'scope, 'env>,
+    run: &'env Run<'env, S, F>,
+    sink_index: usize,
+    sink: S,
+    local: Vec<Task>,
+) -> std::io::Result<thread::ScopedJoinHandle<'scope, Option<S>>>
+where
+    S: Sink + 'env,
+    F: Fn(u32) -> S + Sync + 'env,
+{
+    let extra = sink_index > run.walker.threads.max(1);
+
+    thread::Builder::new().spawn_scoped(scope, move || {
+        let guard = QuitOnPanic(&run.shared);
+        let mut worker = Worker {
+            walker: run.walker,
+            sink_index: u32::try_from(sink_index).unwrap_or(u32::MAX),
+            shared: &run.shared,
+            run,
+            scope,
+            meter: adaptive::Meter::new(run.walker.tuning.policy),
+            sink,
+            local,
+            progress: run.progress,
+            root_device: None,
+            listing: Listing::default(),
+            #[cfg(target_os = "linux")]
+            dirent_buf: Vec::new(),
+            path_buf: Vec::new(),
+        };
+        worker.run();
+        mem::forget(guard);
+
+        if extra {
+            run.extras
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((worker.sink_index, worker.sink));
+            None
+        } else {
+            Some(worker.sink)
+        }
+    })
+}
+
 impl Walker {
+    /// Most workers a walk may have.
+    fn max_workers(&self) -> usize {
+        self.threads.max(1).max(self.max_threads)
+    }
+
     /// Walks the tree. `make_sink(i)` creates the sink with index `i`; the root record goes to
-    /// the sink with index `threads`. Returns every sink, in index order. `progress` counts
-    /// kept entries.
-    pub fn run<S: Sink>(
+    /// the sink with index `threads`. Returns every sink, in index order: the workers' first,
+    /// then the root's, then those of extra workers (see [`Walker::max_threads`]). `progress`
+    /// counts kept entries.
+    pub fn run<S: Sink, F: Fn(u32) -> S + Sync>(
         &self,
-        make_sink: impl Fn(u32) -> S,
+        make_sink: F,
         progress: Option<&AtomicU64>,
     ) -> Vec<S> {
         let threads = self.threads.max(1);
@@ -272,12 +350,19 @@ impl Walker {
         #[cfg(target_os = "linux")]
         at::raise_open_file_limit();
 
-        let shared = Shared {
-            queue: Mutex::new(Vec::new()),
-            wake: Condvar::new(),
-            pending: AtomicUsize::new(1),
-            idle: AtomicUsize::new(0),
-            quit: AtomicBool::new(false),
+        let run = Run {
+            walker: self,
+            shared: Shared {
+                queue: Mutex::new(Vec::new()),
+                wake: Condvar::new(),
+                pending: AtomicUsize::new(1),
+                idle: AtomicUsize::new(0),
+                quit: AtomicBool::new(false),
+            },
+            progress,
+            make_sink,
+            workers: AtomicUsize::new(threads),
+            extras: Mutex::new(Vec::new()),
         };
 
         let mut root = Some(root);
@@ -294,36 +379,24 @@ impl Walker {
                     } else {
                         vec![]
                     };
-                    let shared = &shared;
-                    s.spawn(move || {
-                        let guard = QuitOnPanic(shared);
-                        let mut worker = Worker {
-                            walker: self,
-                            sink_index: u32::try_from(i).unwrap_or(u32::MAX),
-                            shared,
-                            sink,
-                            local,
-                            progress,
-                            root_device: None,
-                            listing: Listing::default(),
-                            #[cfg(target_os = "linux")]
-                            dirent_buf: Vec::new(),
-                            path_buf: Vec::new(),
-                        };
-                        worker.run();
-                        mem::forget(guard);
-                        worker.sink
-                    })
+                    spawn_worker(s, &run, i, sink, local).expect("failed to spawn a walk worker")
                 })
                 .collect();
 
             handles
                 .into_iter()
-                .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+                .filter_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
                 .collect()
         });
 
         sinks.extend(root_sink);
+
+        let mut extras = run
+            .extras
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
+        extras.sort_unstable_by_key(|(index, _)| *index);
+        sinks.extend(extras.into_iter().map(|(_, sink)| sink));
         sinks
     }
 
@@ -404,13 +477,16 @@ struct Kept {
     followed: bool,
 }
 
-struct Worker<'a, S> {
-    walker: &'a Walker,
+struct Worker<'scope, 'env, S, F> {
+    walker: &'env Walker,
     sink_index: u32,
-    shared: &'a Shared,
+    shared: &'env Shared,
+    run: &'env Run<'env, S, F>,
+    scope: &'scope thread::Scope<'scope, 'env>,
+    meter: adaptive::Meter,
     sink: S,
     local: Vec<Task>,
-    progress: Option<&'a AtomicU64>,
+    progress: Option<&'env AtomicU64>,
     /// Device of the root, with `--one-file-system`.
     root_device: Option<u64>,
     /// Buffers reused from directory to directory.
@@ -420,7 +496,11 @@ struct Worker<'a, S> {
     path_buf: Vec<u8>,
 }
 
-impl<S: Sink> Worker<'_, S> {
+impl<'env, S, F> Worker<'_, 'env, S, F>
+where
+    S: Sink + 'env,
+    F: Fn(u32) -> S + Sync + 'env,
+{
     fn run(&mut self) {
         self.root_device = if self.walker.same_file_system {
             device_num(&self.walker.root)
@@ -429,10 +509,15 @@ impl<S: Sink> Worker<'_, S> {
         };
 
         while let Some(task) = self.next_job() {
+            let started = Instant::now();
             let kept = match task {
                 Task::Dir(job) => self.read_dir(job),
                 Task::Chunk(chunk) => self.walk_chunk(&chunk.dir, chunk.lo, chunk.hi),
             };
+
+            if self.meter.task(started.elapsed()) {
+                self.grow();
+            }
 
             if let Some(progress) = self.progress {
                 progress.fetch_add(kept, Ordering::Relaxed);
@@ -444,6 +529,43 @@ impl<S: Sink> Worker<'_, S> {
                 // Last job done: wake everyone so they observe completion.
                 let _guard = self.shared.queue.lock();
                 self.shared.wake.notify_all();
+            }
+        }
+    }
+
+    /// Doubles the number of workers, up to the limit, because the workers wait for the file
+    /// system. The new workers start idle, so the busy ones hand them directories.
+    fn grow(&self) {
+        let run = self.run;
+        let cap = self.walker.max_workers();
+        let mut have = run.workers.load(Ordering::Relaxed);
+
+        loop {
+            if have >= cap {
+                return;
+            }
+
+            let want = (have * 2).min(cap);
+            match run
+                .workers
+                .compare_exchange(have, want, Ordering::AcqRel, Ordering::Relaxed)
+            {
+                Ok(_) => break,
+                Err(now) => have = now,
+            }
+        }
+
+        let want = (have * 2).min(cap);
+        for k in have..want {
+            // Sink `threads` is the root's, so the extra workers follow it.
+            let index = k + 1;
+            let sink = (run.make_sink)(u32::try_from(index).unwrap_or(u32::MAX));
+            self.walker.tuning.grown.fetch_add(1, Ordering::Relaxed);
+
+            // A refused thread leaves the walk with the workers it has.
+            if spawn_worker(self.scope, run, index, sink, vec![]).is_err() {
+                run.workers.store(cap, Ordering::Relaxed);
+                return;
             }
         }
     }
@@ -496,6 +618,7 @@ impl<S: Sink> Worker<'_, S> {
             }
 
             self.shared.idle.fetch_add(1, Ordering::Relaxed);
+            self.meter.waited();
             queue = self
                 .shared
                 .wake
@@ -529,7 +652,7 @@ impl<S: Sink> Worker<'_, S> {
             self.sink.add_ignored(dir.listing.unusable);
         }
 
-        if len >= self.walker.tuning.split_min && self.walker.threads > 1 {
+        if len >= self.walker.tuning.split_min && self.walker.max_workers() > 1 {
             // Idle workers may take over parts of a directory this large.
             let dir = Arc::new(dir);
             let kept = self.walk_chunk(&dir, 0, len);
@@ -1030,6 +1153,24 @@ mod test {
     /// Every record as (path, kind, size, parent's path), the ignored count and how often a
     /// directory was split.
     fn walk(root: &Path, threads: usize, split_min: usize) -> (BTreeSet<String>, usize, usize) {
+        walk_with(
+            root,
+            threads,
+            threads,
+            split_min,
+            adaptive::Policy::default(),
+        )
+        .0
+    }
+
+    /// Like [`walk`] with up to `max_threads` workers; also returns how many were added.
+    fn walk_with(
+        root: &Path,
+        threads: usize,
+        max_threads: usize,
+        split_min: usize,
+        policy: adaptive::Policy,
+    ) -> ((BTreeSet<String>, usize, usize), usize) {
         let walker = Walker {
             root: root.to_path_buf(),
             rules: Rules::root(rules::Options::new(true, true), Override::empty(), None),
@@ -1037,12 +1178,15 @@ mod test {
             same_file_system: false,
             max_depth: None,
             threads,
+            max_threads,
             filter: None,
             count_ignored: true,
             fields: Fields::default(),
             tuning: Tuning {
                 split_min,
                 splits: AtomicUsize::new(0),
+                policy,
+                grown: AtomicUsize::new(0),
             },
         };
 
@@ -1076,9 +1220,12 @@ mod test {
         );
 
         (
-            records,
-            ignored,
-            walker.tuning.splits.load(Ordering::Relaxed),
+            (
+                records,
+                ignored,
+                walker.tuning.splits.load(Ordering::Relaxed),
+            ),
+            walker.tuning.grown.load(Ordering::Relaxed),
         )
     }
 
@@ -1112,5 +1259,32 @@ mod test {
         // With a threshold above every directory size, nothing is split.
         let (records, ignored, splits) = walk(&root, 4, usize::MAX);
         assert_eq!((records, ignored, splits), (expected, expected_ignored, 0));
+    }
+
+    #[test]
+    fn adding_workers_changes_nothing() {
+        let dir = tree(300, 60, 20);
+        let root = dir.path().canonicalize().unwrap();
+        let (expected, _) = walk_with(&root, 1, 1, SPLIT_MIN, adaptive::Policy::default());
+
+        // Every task counts as blocked, so the walk grows to the limit.
+        let always = adaptive::Policy {
+            window: std::time::Duration::ZERO,
+            min_switches: 0,
+            min_blocked: 0.0,
+        };
+
+        let mut grown = 0;
+        for _ in 0..20 {
+            let (got, added) = walk_with(&root, 2, 16, 32, always);
+            assert_eq!(got.0, expected.0);
+            assert_eq!(got.1, expected.1);
+            grown = grown.max(added);
+        }
+        assert!(grown > 0 && grown <= 14, "added {grown} workers");
+
+        // A fixed number of workers never grows, whatever the policy says.
+        let (got, added) = walk_with(&root, 2, 2, 32, always);
+        assert_eq!((got.0, added), (expected.0, 0));
     }
 }

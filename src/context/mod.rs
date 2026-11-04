@@ -6,7 +6,9 @@ use super::disk_usage::{
 
 use crate::walk::Entry;
 use args::Reconciler;
-use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum, error::ErrorKind};
+use clap::{
+    CommandFactory, FromArgMatches, Parser, ValueEnum, error::ErrorKind, parser::ValueSource,
+};
 use color::Coloring;
 use error::Error;
 use ignore::overrides::{Override, OverrideBuilder};
@@ -292,6 +294,11 @@ pub struct Context {
     #[clap(skip)]
     pub window_width: Option<usize>,
 
+    /// Whether `--threads` was given on the command line or in the config, which fixes the number
+    /// of walk workers. Otherwise the walk may add workers when the file system is slow.
+    #[clap(skip)]
+    pub threads_explicit: bool,
+
     /// Canonical form of the root, computed on first use by [`Context::dir_canonical`].
     #[clap(skip)]
     canonical_dir: OnceLock<PathBuf>,
@@ -305,7 +312,9 @@ impl Context {
     pub fn try_init() -> Result<Self, Error> {
         Self::compute_args().and_then(|mut args| {
             color::no_color_env();
+            let threads_explicit = args.value_source("threads") == Some(ValueSource::CommandLine);
             let mut ctx = Self::from_arg_matches_mut(&mut args).map_err(Error::Config)?;
+            ctx.threads_explicit = threads_explicit;
             ctx.validate_min_size()?;
 
             if ctx.summarize {
