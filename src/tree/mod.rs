@@ -465,6 +465,18 @@ impl Tree {
         &self.order
     }
 
+    /// Hints that the columns of the row of `i` are needed soon (see [`Self::prefetch_name`]).
+    #[inline]
+    pub fn prefetch_cols(&self, i: u32) {
+        self.cols.prefetch_cols(ix(i));
+    }
+
+    /// Hints that the name of `i` is needed soon; call it after [`Self::prefetch_cols`].
+    #[inline]
+    pub fn prefetch_name(&self, i: u32) {
+        self.cols.prefetch_name(ix(i));
+    }
+
     /// View of node `i`.
     #[inline]
     pub const fn node(&self, i: u32) -> Node<'_> {

@@ -84,6 +84,28 @@ pub fn push_str_padded(out: &mut Vec<u8>, s: &str, width: usize) {
     out.extend_from_slice(s.as_bytes());
 }
 
+/// Hints the CPU to load the cache line of `item`, if there is one. Rows of the flat layouts are
+/// in the order of a sort, so their data is scattered and each load waits for memory unless it is
+/// requested early.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn prefetch<T>(item: Option<&T>) {
+    if let Some(item) = item {
+        // SAFETY: a prefetch never faults and has no effect on memory.
+        #[allow(unused_unsafe)] // The intrinsic is safe to call from Rust 1.86 on.
+        unsafe {
+            std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(
+                std::ptr::from_ref(item).cast(),
+            );
+        }
+    }
+}
+
+/// Does nothing: only x86-64 has a stable prefetch.
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+pub const fn prefetch<T>(_item: Option<&T>) {}
+
 /// Appends `name` as [`OsStr::to_string_lossy`] shows it.
 #[inline]
 pub fn push_lossy(out: &mut Vec<u8>, name: &OsStr) {

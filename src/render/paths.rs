@@ -1,0 +1,67 @@
+//! Paths of directories for the flat layouts, built once so that a row is a copy of its parent's
+//! path and its own name.
+
+use super::bytes::push_lossy;
+use crate::tree::{Tree, topo::ix};
+use std::path::MAIN_SEPARATOR;
+
+/// For every shown directory, its path below the root followed by a separator, converted
+/// lossily. Converting a path component by component gives the same bytes as converting the
+/// whole path, because the separator is ASCII and never part of a multi-byte sequence.
+pub struct DirPaths {
+    arena: Vec<u8>,
+
+    /// Start and end in `arena` of the prefix of each node; zero (empty) for the root and for
+    /// nodes that are not directories.
+    spans: Vec<(usize, usize)>,
+}
+
+impl DirPaths {
+    /// The prefixes of the directories of `tree` down to `level`.
+    pub fn new(tree: &Tree, level: usize) -> Self {
+        let order = tree.order();
+        let mut arena = Vec::new();
+        let nodes = order.iter().map(|&id| ix(id) + 1).max().unwrap_or(0);
+        let mut spans = vec![(0, 0); nodes];
+
+        // Parents come before their children in pre-order.
+        for &id in order.iter().skip(1) {
+            let node = tree.node(id);
+            let kind = node.file_type();
+
+            if node.depth() >= level || !(kind.is_dir() || kind.is_symlink()) {
+                continue;
+            }
+
+            let (start, end) = spans[ix(tree.parent(id))];
+            let begin = arena.len();
+            arena.extend_from_within(start..end);
+            push_lossy(&mut arena, node.file_name());
+            arena.push(MAIN_SEPARATOR as u8);
+            spans[ix(id)] = (begin, arena.len());
+        }
+
+        Self { arena, spans }
+    }
+
+    /// Hints that the span of directory `id` is needed soon.
+    #[inline]
+    pub fn prefetch_span(&self, id: u32) {
+        super::bytes::prefetch(self.spans.get(ix(id)));
+    }
+
+    /// Hints that the prefix of directory `id` is needed soon; after [`Self::prefetch_span`].
+    #[inline]
+    pub fn prefetch_prefix(&self, id: u32) {
+        if let Some(&(start, _)) = self.spans.get(ix(id)) {
+            super::bytes::prefetch(self.arena.get(start));
+        }
+    }
+
+    /// The prefix of the entries of directory `id`.
+    #[inline]
+    pub fn prefix(&self, id: u32) -> &[u8] {
+        let (start, end) = self.spans[ix(id)];
+        &self.arena[start..end]
+    }
+}

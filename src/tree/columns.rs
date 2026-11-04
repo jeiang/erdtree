@@ -203,6 +203,24 @@ impl Columns {
         self.name_end.len()
     }
 
+    /// Hints that the columns that a row of entry `i` reads are needed soon.
+    #[inline]
+    pub fn prefetch_cols(&self, i: usize) {
+        use crate::render::bytes::prefetch;
+
+        prefetch(self.name_end.get(i));
+        prefetch(self.parent.get(i));
+        prefetch(self.size.get(i));
+    }
+
+    /// Hints that the name of entry `i` is needed soon; after [`Self::prefetch_cols`].
+    #[inline]
+    pub fn prefetch_name(&self, i: usize) {
+        if let Some(&end) = self.name_end.get(i) {
+            crate::render::bytes::prefetch(self.names.get(end as usize - 1));
+        }
+    }
+
     /// Name of entry `i`.
     #[inline]
     pub fn name(&self, i: usize) -> &OsStr {

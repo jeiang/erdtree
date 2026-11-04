@@ -14,6 +14,9 @@ pub mod bytes;
 /// Module containing all of the layout variants.
 pub mod layout;
 
+/// Directory paths of the flat layouts.
+pub mod paths;
+
 /// Box-drawing prefixes of tree rows.
 pub mod prefix;
 
@@ -59,6 +62,9 @@ pub struct Plan {
     /// for flat layouts.
     prefixes: String,
     prefix_end: Vec<usize>,
+
+    /// The directory paths that flat rows are made of.
+    paths: Option<paths::DirPaths>,
 }
 
 impl Plan {
@@ -69,7 +75,15 @@ impl Plan {
             // Most prefixes are a few box-drawing segments of 3 to 9 bytes.
             prefixes: String::with_capacity(if prefixed { rows * 24 } else { 0 }),
             prefix_end: Vec::with_capacity(if prefixed { rows } else { 0 }),
+            paths: None,
         }
+    }
+
+    /// Makes the rows flat rows whose paths are made from the directories of `tree` down to
+    /// `level`.
+    pub fn with_paths(mut self, tree: &Tree, level: usize) -> Self {
+        self.paths = Some(paths::DirPaths::new(tree, level));
+        self
     }
 
     /// Adds a flat row.
@@ -84,6 +98,27 @@ impl Plan {
             .into_iter()
             .for_each(|part| self.prefixes.push_str(part));
         self.prefix_end.push(self.prefixes.len());
+    }
+
+    /// Requests the data of the rows after `k` in stages, the rows further ahead first, so that
+    /// the dependent loads of a flat row (name, parent, parent's path) overlap.
+    #[inline]
+    fn prefetch(&self, tree: &Tree, k: usize) {
+        const AHEAD: usize = 16;
+
+        let Some(paths) = &self.paths else { return };
+        let at = |d: usize| self.ids.get(k + d).copied();
+
+        if let Some(id) = at(AHEAD) {
+            tree.prefetch_cols(id);
+        }
+        if let Some(id) = at(AHEAD / 2) {
+            tree.prefetch_name(id);
+            paths.prefetch_span(tree.parent(id));
+        }
+        if let Some(id) = at(AHEAD / 4) {
+            paths.prefetch_prefix(tree.parent(id));
+        }
     }
 
     fn prefix(&self, k: usize) -> Option<&str> {
@@ -128,13 +163,14 @@ impl Rows {
         match self {
             Self::Plan(plan) => {
                 for k in positions {
+                    plan.prefetch(tree, k);
                     let id = plan.ids[k];
 
                     match plan.prefix(k) {
                         Some(prefix) => fmt.tree_row(scratch, id, out, |_, out| {
                             out.extend_from_slice(prefix.as_bytes());
                         }),
-                        None => fmt.flat_row(scratch, id, out),
+                        None => fmt.flat_row(scratch, plan.paths.as_ref(), id, out),
                     }
                 }
             },

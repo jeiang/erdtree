@@ -3,6 +3,7 @@
 
 use super::{
     bytes::{push_lossy, push_spaces, push_str_padded, push_u64_padded},
+    paths::DirPaths,
     prefix,
     theme::{Esc, StyleCache},
 };
@@ -15,9 +16,9 @@ use crate::{
     },
     icons::{self, fs::Paint},
     styles,
-    tree::{Tree, node::Node, topo::NONE},
+    tree::{Tree, node::Node},
 };
-use std::path::{MAIN_SEPARATOR, Path};
+use std::path::Path;
 
 #[cfg(unix)]
 use super::long;
@@ -91,7 +92,6 @@ const fn unit_index(unit: &str) -> usize {
 pub struct Scratch {
     styles: StyleCache,
     pub cursor: prefix::Cursor,
-    ancestors: Vec<u32>,
 
     #[cfg(unix)]
     long: long::State,
@@ -163,7 +163,13 @@ impl<'a> RowFmt<'a> {
     }
 
     /// Appends the row of node `id` of a flat layout.
-    pub fn flat_row(&self, scratch: &mut Scratch, id: u32, out: &mut Vec<u8>) {
+    pub fn flat_row(
+        &self,
+        scratch: &mut Scratch,
+        paths: Option<&DirPaths>,
+        id: u32,
+        out: &mut Vec<u8>,
+    ) {
         let start = out.len();
         let node = self.tree.node(id);
 
@@ -180,7 +186,7 @@ impl<'a> RowFmt<'a> {
                 out.truncate(mark);
             }
             out.push(b' ');
-            return self.finish_flat(scratch, id, node, out, start);
+            return self.finish_flat(scratch, paths, id, node, out, start);
         }
 
         let sized = out.len();
@@ -189,13 +195,14 @@ impl<'a> RowFmt<'a> {
             out.extend_from_slice(b"   ");
         }
 
-        self.finish_flat(scratch, id, node, out, start);
+        self.finish_flat(scratch, paths, id, node, out, start);
     }
 
     /// The path column of a flat row, and the end of the row.
     fn finish_flat(
         &self,
         scratch: &mut Scratch,
+        paths: Option<&DirPaths>,
         id: u32,
         node: Node<'_>,
         out: &mut Vec<u8>,
@@ -211,7 +218,7 @@ impl<'a> RowFmt<'a> {
             out.extend_from_slice(&scratch.styles.get(style).plain.pre);
         }
 
-        self.write_relative_path(&mut scratch.ancestors, id, out);
+        self.write_relative_path(paths, id, out);
 
         if let Some(style) = style {
             out.extend_from_slice(&scratch.styles.get(style).plain.suf);
@@ -237,29 +244,16 @@ impl<'a> RowFmt<'a> {
         out.push(b'\n');
     }
 
-    /// The path of `node` below the root, or the name of the root for the root. Components are
-    /// converted one by one, which is the same as converting the whole path.
-    fn write_relative_path(&self, ancestors: &mut Vec<u32>, id: u32, out: &mut Vec<u8>) {
+    /// The path of `node` below the root, or the name of the root for the root: the path of its
+    /// parent directory and its name. Without `paths` only the name is written.
+    fn write_relative_path(&self, paths: Option<&DirPaths>, id: u32, out: &mut Vec<u8>) {
         let tree = self.tree;
-        let root = tree.root();
-        if id == root {
-            push_lossy(out, tree.node(id).file_name());
-            return;
+
+        if let Some(paths) = paths.filter(|_| id != tree.root()) {
+            out.extend_from_slice(paths.prefix(tree.parent(id)));
         }
 
-        ancestors.clear();
-        let mut cur = id;
-        while cur != root && cur != NONE {
-            ancestors.push(cur);
-            cur = tree.parent(cur);
-        }
-
-        for (k, &ancestor) in ancestors.iter().rev().enumerate() {
-            if k > 0 {
-                out.push(MAIN_SEPARATOR as u8);
-            }
-            push_lossy(out, tree.node(ancestor).file_name());
-        }
+        push_lossy(out, tree.node(id).file_name());
     }
 
     /// The icon of `node` in its colors.
