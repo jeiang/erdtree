@@ -81,37 +81,31 @@ impl<'a> SortKeys<'a> {
         let name = || node.file_name();
         let plain = || naming::prefix(name());
 
-        let clamp = |value: u64| {
-            if value >= MAX63 {
-                self.clamped.store(true, AtomicOrdering::Relaxed);
-            }
-            value.min(MAX63)
-        };
-        let stamp = |stamp| {
-            let (key, exact) = time_stamping::key(stamp);
-            if !exact {
-                self.clamped.store(true, AtomicOrdering::Relaxed);
-            }
-            key
+        let sized = |value: Option<u64>| {
+            let value = value.unwrap_or(0);
+            (value.min(MAX63), value < MAX63)
         };
 
-        let (primary, lo) = match self.sort {
-            sort::Type::Name => (0, plain()),
-            sort::Type::Rname => (0, !plain()),
-            sort::Type::Nameci => (0, naming::ci_prefix(name())),
-            sort::Type::Rnameci => (0, !naming::ci_prefix(name())),
-            sort::Type::Size => (
-                MAX63 - clamp(node.size_value().unwrap_or(0)),
-                self.tie(name),
-            ),
-            sort::Type::Rsize => (clamp(node.size_value().unwrap_or(0)), self.tie(name)),
-            sort::Type::Access => (MAX63 - stamp(node.accessed()), self.tie(name)),
-            sort::Type::Raccess => (stamp(node.accessed()), self.tie(name)),
-            sort::Type::Create => (MAX63 - stamp(node.created()), self.tie(name)),
-            sort::Type::Rcreate => (stamp(node.created()), self.tie(name)),
-            sort::Type::Mod => (MAX63 - stamp(node.modified()), self.tie(name)),
-            sort::Type::Rmod => (stamp(node.modified()), self.tie(name)),
+        // `ascending` keys grow with the value, the others shrink.
+        let (value, ascending) = match self.sort {
+            sort::Type::Name => return (class << 63, plain()),
+            sort::Type::Rname => return (class << 63, !plain()),
+            sort::Type::Nameci => return (class << 63, naming::ci_prefix(name())),
+            sort::Type::Rnameci => return (class << 63, !naming::ci_prefix(name())),
+            sort::Type::Size => (sized(node.size_value()), false),
+            sort::Type::Rsize => (sized(node.size_value()), true),
+            sort::Type::Access => (time_stamping::key(node.accessed()), false),
+            sort::Type::Raccess => (time_stamping::key(node.accessed()), true),
+            sort::Type::Create => (time_stamping::key(node.created()), false),
+            sort::Type::Rcreate => (time_stamping::key(node.created()), true),
+            sort::Type::Mod => (time_stamping::key(node.modified()), false),
+            sort::Type::Rmod => (time_stamping::key(node.modified()), true),
         };
+        let (primary, lo, exact) = value_key(value, ascending, || self.tie(name));
+
+        if !exact {
+            self.clamped.store(true, AtomicOrdering::Relaxed);
+        }
 
         (class << 63 | primary, lo)
     }
@@ -124,6 +118,22 @@ impl<'a> SortKeys<'a> {
             0
         }
     }
+}
+
+/// Key words for a value that the sort type orders by, ascending or descending. `value` is a
+/// number of at most 63 bits with a flag that tells whether it is exact, as opposed to clamped.
+/// `tie` gives the low word that breaks ties between exact values.
+///
+/// A clamped value ties with every other value clamped to the same number, so the tie-break
+/// stays out of its key: only the comparator can order those nodes. The flag of the result
+/// tells whether the key is exact.
+fn value_key(
+    (value, exact): (u64, bool),
+    ascending: bool,
+    tie: impl FnOnce() -> u64,
+) -> (u64, u64, bool) {
+    let primary = if ascending { value } else { MAX63 - value };
+    (primary, if exact { tie() } else { 0 }, exact)
 }
 
 /// Orders directories first. Provides a fallback if inputs are not directories.
@@ -356,5 +366,95 @@ mod naming {
     /// Exact reverse of [`ci_comparator`].
     pub fn rev_ci_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
         ci_comparator(b, a)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{MAX63, time_stamping, value_key};
+    use std::{
+        cmp::Ordering,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    /// A value and the name that breaks its ties, as the comparator sees them.
+    type Entry = (Option<SystemTime>, u64, u64);
+
+    /// Whether `key` ever puts a before b although the comparator `cmp` puts a after b.
+    fn contradicts(entries: &[Entry], ascending: bool, by_time: bool) -> bool {
+        let key = |&(t, size, name): &Entry| {
+            let value = if by_time {
+                time_stamping::key(t)
+            } else {
+                (size.min(MAX63), size < MAX63)
+            };
+            let (hi, lo, _) = value_key(value, ascending, || name);
+            (hi, lo)
+        };
+        let cmp = |a: &Entry, b: &Entry| {
+            let by_value = if by_time {
+                a.0.cmp(&b.0)
+            } else {
+                a.1.cmp(&b.1)
+            };
+            let by_value = if ascending {
+                by_value
+            } else {
+                by_value.reverse()
+            };
+            by_value.then(a.2.cmp(&b.2))
+        };
+
+        entries.iter().any(|a| {
+            entries
+                .iter()
+                .any(|b| key(a).cmp(&key(b)) == Ordering::Less && cmp(a, b) == Ordering::Greater)
+        })
+    }
+
+    /// Keys of times and sizes, including extremes that clamp, never order nodes against the
+    /// comparator, which breaks ties by name.
+    #[test]
+    fn keys_agree_with_comparator() {
+        let mut seed = 0x9e37_79b9_u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            seed >> 11
+        };
+        let times = [
+            Duration::from_secs(0),
+            Duration::from_secs(1),
+            Duration::from_secs(4_000_000_000),
+            Duration::from_secs(5_000_000_000),
+            Duration::from_secs(9_000_000_000),
+            Duration::from_secs(10_000_000_000),
+            Duration::from_secs(11_000_000_000),
+        ];
+        let sizes = [0, 1, MAX63 - 1, MAX63, MAX63 + 1, u64::MAX];
+
+        for round in 0..2000 {
+            let entries: Vec<Entry> = (0..6)
+                .map(|_| {
+                    let base = times[usize::try_from(next()).unwrap_or(0) % times.len()];
+                    let jitter = Duration::from_nanos(next() % 3);
+                    let t = match next() % 3 {
+                        0 => UNIX_EPOCH.checked_add(base + jitter),
+                        1 => UNIX_EPOCH.checked_sub(base + jitter),
+                        _ => UNIX_EPOCH.checked_add(Duration::from_nanos(next() % 5)),
+                    };
+                    let size = sizes[usize::try_from(next()).unwrap_or(0) % sizes.len()];
+                    (t, size.saturating_sub(next() % 2), next() % 3)
+                })
+                .collect();
+
+            for ascending in [false, true] {
+                for by_time in [false, true] {
+                    assert!(
+                        !contradicts(&entries, ascending, by_time),
+                        "round {round}: {entries:?}"
+                    );
+                }
+            }
+        }
     }
 }
