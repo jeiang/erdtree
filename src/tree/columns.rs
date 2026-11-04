@@ -121,7 +121,7 @@ struct ParentRun {
 #[derive(Default)]
 pub struct Columns {
     names: Vec<u8>,
-    name_end: Vec<u32>,
+    name_end: Vec<usize>,
     /// The parents of a sink's entries. Entries of one directory are stored together, so there
     /// are about as many runs as directories instead of one reference per entry.
     parent_runs: Vec<ParentRun>,
@@ -217,19 +217,15 @@ impl Columns {
     #[inline]
     pub fn prefetch_name(&self, i: usize) {
         if let Some(&end) = self.name_end.get(i) {
-            crate::render::bytes::prefetch(self.names.get(end as usize - 1));
+            crate::render::bytes::prefetch(self.names.get(end - 1));
         }
     }
 
     /// Name of entry `i`.
     #[inline]
     pub fn name(&self, i: usize) -> &OsStr {
-        let start = if i == 0 {
-            0
-        } else {
-            self.name_end[i - 1] as usize
-        };
-        let bytes = &self.names[start..self.name_end[i] as usize];
+        let start = if i == 0 { 0 } else { self.name_end[i - 1] };
+        let bytes = &self.names[start..self.name_end[i]];
 
         // SAFETY: `names` only holds bytes from `OsStr::as_encoded_bytes`, split at the
         // boundaries they were appended with.
@@ -279,7 +275,7 @@ impl Columns {
     fn push(&mut self, record: &Record<'_>) -> Option<u32> {
         let probe = self.probe?;
         let index = u32::try_from(self.len()).ok().filter(|&i| i != NONE)?;
-        let name_end = u32::try_from(self.names.len() + record.name.len()).ok()?;
+        let name_end = self.names.len() + record.name.len();
         let stat = record.stat;
         let path = record.path;
         let file_type = stat.kind;
@@ -426,11 +422,11 @@ impl Columns {
             .iter()
             .map(|&i| std::mem::take(&mut sinks[i].parent_runs))
             .collect();
-        let name_offsets: Vec<u32> = order
+        let name_offsets: Vec<usize> = order
             .iter()
-            .scan(0_u32, |at, &i| {
+            .scan(0, |at, &i| {
                 let offset = *at;
-                *at = at.saturating_add(u32::try_from(sinks[i].names.len()).unwrap_or(NONE));
+                *at += sinks[i].names.len();
                 Some(offset)
             })
             .collect();
@@ -666,7 +662,7 @@ mod test {
             names: (0..len)
                 .map(|k| b'a' + u8::try_from(k % 26).unwrap_or(0))
                 .collect(),
-            name_end: (1..=u32::try_from(len).unwrap_or(0)).collect(),
+            name_end: (1..=len).collect(),
             parent_runs: vec![ParentRun {
                 start: 0,
                 parent: Some(NodeRef { sink: 0, index: 0 }),
