@@ -513,11 +513,17 @@ mod spec {
 
     /// Each key group keeps exactly one counted member, the least by rank (here the index);
     /// nodes without a key are counted.
-    pub fn dedupe_counts_each_inode_once(key: &[Option<u8>]) {
-        let n = key.len();
-        let mut linked: Vec<(u32, u8)> =
-            (0..n).filter_map(|i| key[i].map(|k| (id(i), k))).collect();
-        let counted = dedupe(n, &mut linked, |a, b| a.cmp(&b));
+    ///
+    /// `linked` lists the nodes with a key, in increasing node order, as production builds it
+    /// from its sparse list of multiply-linked inodes.
+    pub fn dedupe_counts_each_inode_once(n: usize, linked: &[(u32, u8)]) {
+        let mut key = vec![None; n];
+        for &(i, k) in linked {
+            key[ix(i)] = Some(k);
+        }
+
+        let mut work = linked.to_vec();
+        let counted = dedupe(n, &mut work, |a, b| a.cmp(&b));
 
         for i in 0..n {
             match key[i] {
@@ -877,17 +883,18 @@ mod test {
     #[test]
     fn exhaustive_dedupe() {
         for n in 0..=spec::MAX_TEST {
-            // Every assignment of no key or one of 3 keys to each node.
-            for code in 0..4_usize.pow(u32::try_from(n).unwrap()) {
-                let key: Vec<Option<u8>> = (0..n)
-                    .map(
-                        |i| match code / 4_usize.pow(u32::try_from(i).unwrap()) % 4 {
-                            0 => None,
-                            k => Some(u8::try_from(k).unwrap()),
-                        },
-                    )
+            // Every assignment of no key or one of `n` keys to each node; `n` keys allow every
+            // grouping, including all distinct.
+            let choices = n + 1;
+            for code in 0..choices.pow(u32::try_from(n).unwrap()) {
+                let linked: Vec<(u32, u8)> = (0..n)
+                    .filter_map(|i| {
+                        let choice = code / choices.pow(u32::try_from(i).unwrap()) % choices;
+                        (choice > 0)
+                            .then(|| (u32::try_from(i).unwrap(), u8::try_from(choice - 1).unwrap()))
+                    })
                     .collect();
-                spec::dedupe_counts_each_inode_once(&key);
+                spec::dedupe_counts_each_inode_once(n, &linked);
             }
         }
     }
@@ -958,11 +965,20 @@ mod proofs {
         spec::last_child_is_unique(&parent, root, &alive);
     }
 
-    fn dedupe_counts_each_inode_once<const N: usize>() {
-        let key: [Option<u8>; N] = kani::any();
-        // Keys are only compared, so values below N cover every grouping.
-        kani::assume(key.iter().all(|k| k.is_none_or(|k| usize::from(k) < N)));
-        spec::dedupe_counts_each_inode_once(&key);
+    /// `M` of the `N` nodes are linked: their ids are symbolic and strictly increasing, their
+    /// keys symbolic. The harnesses for `M` from 0 to `N` together cover every key assignment,
+    /// and the concrete length keeps std's sort from being unrolled over every possible length.
+    fn dedupe_counts_each_inode_once<const N: usize, const M: usize>() {
+        let mut linked = [(0_u32, 0_u8); M];
+        for j in 0..M {
+            let node: u8 = kani::any();
+            // Keys are only compared, so values below N cover every grouping.
+            let key: u8 = kani::any();
+            kani::assume(usize::from(node) < N && usize::from(key) < N);
+            kani::assume(j == 0 || u32::from(node) > linked[j - 1].0);
+            linked[j] = (u32::from(node), key);
+        }
+        spec::dedupe_counts_each_inode_once(N, &linked);
     }
 
     /// Any order of all nodes with each parent first (what `aggregate`, `prune` and
@@ -1017,42 +1033,58 @@ mod proofs {
     /// bound is the smallest that passes the unwinding checks, which stay enabled, so a bound
     /// that is too small fails instead of passing silently.
     macro_rules! harnesses {
-        ($($name:ident: $check:ident, $u1:literal, $u2:literal, $u3:literal;)*) => {
+        ($($name:ident: $check:ident, [$($size:ident = $n:literal, unwind $u:literal);*];)*) => {
             $(
                 mod $name {
                     use super::*;
 
-                    #[kani::proof]
-                    #[kani::unwind($u1)]
-                    fn n1() {
-                        $check::<1>();
-                    }
-
-                    #[kani::proof]
-                    #[kani::unwind($u2)]
-                    fn n2() {
-                        $check::<2>();
-                    }
-
-                    #[kani::proof]
-                    #[kani::unwind($u3)]
-                    fn n3() {
-                        $check::<3>();
-                    }
+                    $(
+                        #[kani::proof]
+                        #[kani::unwind($u)]
+                        fn $size() {
+                            $check::<$n>();
+                        }
+                    )*
                 }
             )*
         };
     }
 
+    // `preorder` and `last_child` take only a tree shape and a set of alive nodes, which the
+    // exhaustive tests enumerate completely up to `spec::MAX_TEST` nodes. Under Kani their
+    // pre-order has a symbolic length, which costs about 8 GB at 2 nodes, so they keep a
+    // 1-node harness as a smoke check of the real code paths only.
     harnesses! {
-        children: children_partition_nodes, 3, 4, 5;
-        preorder: preorder_is_a_valid_preorder, 3, 4, 5;
-        last_child: last_child_is_unique, 3, 4, 5;
-        dedupe: dedupe_counts_each_inode_once, 3, 4, 5;
-        aggregate: aggregate_sums_counted_files, 3, 4, 5;
-        prune: prune_removes_exactly_empty_dirs, 3, 4, 5;
-        dirs_only: dirs_only_keeps_connected_dirs, 3, 4, 5;
-        hide_small: hide_small_keeps_large_and_their_ancestors, 3, 4, 5;
+        children: children_partition_nodes, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
+        preorder: preorder_is_a_valid_preorder, [n1 = 1, unwind 3];
+        last_child: last_child_is_unique, [n1 = 1, unwind 3];
+        aggregate: aggregate_sums_counted_files, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
+        prune: prune_removes_exactly_empty_dirs, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
+        dirs_only: dirs_only_keeps_connected_dirs, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
+        hide_small: hide_small_keeps_large_and_their_ancestors, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
+    }
+
+    /// `dedupe` for `N` nodes of which `M` are linked.
+    mod dedupe {
+        use super::*;
+
+        macro_rules! cases {
+            ($($name:ident = $n:literal, $m:literal;)*) => {
+                $(
+                    #[kani::proof]
+                    #[kani::unwind(5)]
+                    fn $name() {
+                        dedupe_counts_each_inode_once::<$n, $m>();
+                    }
+                )*
+            };
+        }
+
+        cases! {
+            n1_m0 = 1, 0; n1_m1 = 1, 1;
+            n2_m0 = 2, 0; n2_m1 = 2, 1; n2_m2 = 2, 2;
+            n3_m0 = 3, 0; n3_m1 = 3, 1; n3_m2 = 3, 2; n3_m3 = 3, 3;
+        }
     }
 
     #[kani::proof]
