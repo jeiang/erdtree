@@ -476,7 +476,7 @@ like `du -s a b`. The command fails if any path does not exist; it reports "No e
 
 ### Hardlinks
 
-If multiple hardlinks that point to the same inode are in the same file-tree, all will be included in the output but only one is considered when computing overall disk usage.
+If multiple hardlinks that point to the same inode are in the same file-tree, all will be included in the output but only one is considered when computing overall disk usage: the one with the least path, so its directory gets the size and the other directories do not.
 
 ### Symlinks
 
@@ -486,7 +486,7 @@ If multiple hardlinks that point to the same inode are in the same file-tree, al
 ```
 
 Symlinks when followed will have their targets (and descendants) counted towards total disk usage, otherwise the size of the symlink itself will be reported.
-If a symlink's target happens to be in the same file-tree as the symlink itself, the target and its descendants will not be double-counted towards the total disk-usage.
+If a symlink's target happens to be in the same file-tree as the symlink itself, the target and its descendants will not be double-counted towards the total disk-usage; they count towards the target's own location, not the symlink's.
 When a symlink to a directory is followed all of the box-drawing characters of its descendants will be painted in a different color for better visual feedback:
 
 <p align="center">
@@ -923,6 +923,8 @@ in between requests. Additionally these threads aren't just parallelizing disk r
 
 It should be noted however that performance, as a function of thread-count, is asymptotic in nature (see [Amdahl's Law](https://en.wikipedia.org/wiki/Amdahl%27s_law))
 so you'll quickly reach a point of dimishing returns after a certain thread-count threshold as you'd be paying the cost of managing a larger threadpool with no added benefit.
+
+The same threads also sort the tree and format the output. On a cold cache (files not read recently), a thread count above the number of CPU cores, such as twice that number, can shorten the walk because more disk requests are in flight at once.
 
 For empirical data on the subject checkout [this article](https://pkolaczk.github.io/disk-parallelism/).
 

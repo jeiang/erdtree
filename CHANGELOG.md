@@ -5,6 +5,20 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+### Performance
+- The filesystem walk, tree assembly and output are rewritten for speed; output is unchanged except as listed below. Measured on 4 CPU cores with a warm cache: 48,000 entries 0.16 s to 0.06 s, 974,000 small files 3.1 s to 0.85 s (cold cache 8.1 s to 3.1 s). Entries are stat'ed relative to their open directory instead of by full path, workers no longer send each entry through a channel, the tree is stored as flat arrays instead of a node arena, and rows are formatted in parallel and streamed to stdout.
+
+### Changed
+- An inode reached more than once (hard links, or a directory reached again through `--follow`) now always counts towards the directory of the entry not reached through a symlink, then of the entry with the least path. Before, the directory that got the size depended on the order in which directories were read. Totals are unchanged.
+- Entries that tie in a size or time sort are ordered by name; before, their order depended on the order in which directories were read.
+- The progress indicator no longer shows "Preparing output..."; output is streamed as soon as the walk finishes.
+
+### Bug Fixes
+- Checking for extended attributes in the long view (`--long`) passed the path to `listxattr` without a terminating NUL byte, which could read past the path.
+
+### Verification
+- The tree algorithms (child lists, pre-order, size totals, hard-link deduplication, `--prune`, `--dirs-only`, `--min-size`) have written specifications that `cargo test` checks for every tree of up to 5 entries and that Kani proofs check symbolically, for all sizes and thresholds, for every tree of up to 4 entries; CI runs both. The walk is tested against the `ignore` crate's walker on handcrafted and randomly generated trees with ignore files.
+
 ## [4.0.0] - 2026-10-14
 
 First release of the [jeiang/erdtree](https://github.com/jeiang/erdtree) fork of [solidiquis/erdtree](https://github.com/solidiquis/erdtree), which is no longer actively developed. The major version marks changes to existing output and behavior:

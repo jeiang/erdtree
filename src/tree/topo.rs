@@ -261,45 +261,50 @@ pub const fn global_index(offsets: &[u32], sink: u32, index: u32) -> u32 {
     offsets[ix(sink)] + index
 }
 
-#[cfg(kani)]
-mod proofs {
-    //! Bounded proofs: every property holds for every tree with up to `N` nodes, every size
-    //! assignment and every hard-link grouping.
-
+/// Specifications of the functions above, checked two ways: exhaustively for every tree of up
+/// to [`spec::MAX_TEST`] nodes by `cargo test`, and symbolically by Kani (`cargo kani`, see
+/// `proofs`) for every tree of up to 4 nodes and every size, threshold and inode grouping.
+#[cfg(any(test, kani))]
+// The specifications index several per-node arrays by node number.
+#[allow(clippy::needless_range_loop)]
+mod spec {
     use super::*;
 
-    const N: usize = 5;
+    /// Largest tree checked by the exhaustive tests.
+    pub const MAX_TEST: usize = 5;
 
-    /// An arbitrary tree with `n <= N` nodes rooted at 0: every parent is a valid index and
-    /// every node reaches the root.
-    fn any_tree() -> Vec<u32> {
-        let n: usize = kani::any();
-        kani::assume(n >= 1 && n <= N);
-
-        let mut parent = vec![NONE; n];
-        for i in 1..n {
-            let p: u32 = kani::any();
-            kani::assume(ix(p) < n && ix(p) != i);
-            parent[i] = p;
-        }
-
-        for i in 0..n {
-            let mut cur = i;
-            let mut steps = 0;
-            while cur != 0 && steps < n {
-                cur = ix(parent[cur]);
-                steps += 1;
-            }
-            kani::assume(cur == 0);
-        }
-
-        parent
+    /// Node index from a position.
+    fn id(i: usize) -> u32 {
+        u32::try_from(i).unwrap_or(NONE)
     }
 
-    fn any_vec<T: kani::Arbitrary>(n: usize) -> Vec<T> {
-        (0..n).map(|_| kani::any()).collect()
+    /// Whether `parent` is a tree rooted at 0: every parent is another valid node and every
+    /// node reaches the root.
+    pub fn is_tree(parent: &[u32]) -> bool {
+        let n = parent.len();
+
+        if n == 0 || parent[0] != NONE {
+            return false;
+        }
+
+        (1..n).all(|i| ix(parent[i]) < n && ix(parent[i]) != i)
+            && (0..n).all(|i| {
+                let mut cur = i;
+                let mut steps = 0;
+                while cur != 0 && steps < n {
+                    cur = ix(parent[cur]);
+                    steps += 1;
+                }
+                cur == 0
+            })
     }
 
+    /// Whether only directories have children.
+    pub fn only_dirs_have_children(parent: &[u32], is_dir: &[bool]) -> bool {
+        (1..parent.len()).all(|i| is_dir[ix(parent[i])])
+    }
+
+    /// Whether `a` is `node` or one of its ancestors.
     fn is_ancestor(parent: &[u32], a: u32, mut node: u32) -> bool {
         for _ in 0..parent.len() {
             if node == a {
@@ -313,34 +318,32 @@ mod proofs {
         node == a
     }
 
-    /// Every non-root node is listed exactly once, under its parent.
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn children_partition_nodes() {
-        let parent = any_tree();
-        let children = Children::build(&parent);
+    fn all_alive(n: usize) -> Vec<bool> {
+        vec![true; n]
+    }
 
-        for p in 0..parent.len() {
-            for &c in children.of(p as u32) {
-                assert_eq!(parent[ix(c)], p as u32);
+    /// Every non-root node is listed exactly once, under its parent.
+    pub fn children_partition_nodes(parent: &[u32]) {
+        let children = Children::build(parent);
+        let n = parent.len();
+
+        for p in 0..n {
+            for &c in children.of(id(p)) {
+                assert_eq!(parent[ix(c)], id(p));
             }
         }
 
-        let listed: usize = (0..parent.len()).map(|p| children.of(p as u32).len()).sum();
-        assert_eq!(listed, parent.len() - 1);
+        let listed: usize = (0..n).map(|p| children.of(id(p)).len()).sum();
+        assert_eq!(listed, n - 1);
     }
 
     /// The pre-order lists exactly the alive nodes whose ancestors are all alive, each once,
-    /// root first, every node after its parent, and every subtree contiguous.
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn preorder_is_a_valid_preorder() {
-        let parent = any_tree();
+    /// root first, every node after its parent, siblings in child-list order, and every subtree
+    /// contiguous.
+    pub fn preorder_is_a_valid_preorder(parent: &[u32], alive: &[bool]) {
         let n = parent.len();
-        let alive: Vec<bool> = any_vec(n);
-        kani::assume(alive[0]);
-        let children = Children::build(&parent);
-        let order = preorder(&children, 0, &alive);
+        let children = Children::build(parent);
+        let order = preorder(&children, 0, alive);
 
         let mut pos = vec![usize::MAX; n];
         for (k, &node) in order.iter().enumerate() {
@@ -351,7 +354,7 @@ mod proofs {
         assert_eq!(order[0], 0);
 
         for i in 0..n {
-            let reachable = (0..n).all(|a| !is_ancestor(&parent, a as u32, i as u32) || alive[a]);
+            let reachable = (0..n).all(|a| !is_ancestor(parent, id(a), id(i)) || alive[a]);
             assert_eq!(pos[i] != usize::MAX, reachable);
 
             if pos[i] != usize::MAX && i != 0 {
@@ -359,31 +362,35 @@ mod proofs {
             }
         }
 
-        // Subtrees are contiguous: everything between a node and one of its listed
-        // descendants is also its descendant.
+        // Siblings keep their child-list order.
+        for p in 0..n {
+            let listed: Vec<usize> = children
+                .of(id(p))
+                .iter()
+                .map(|&c| pos[ix(c)])
+                .filter(|&k| k != usize::MAX)
+                .collect();
+            assert!(listed.windows(2).all(|w| w[0] < w[1]));
+        }
+
+        // Everything between a node and one of its listed descendants is its descendant.
         for (k, &a) in order.iter().enumerate() {
             for (m, &d) in order.iter().enumerate().skip(k) {
-                if is_ancestor(&parent, a, d) {
+                if is_ancestor(parent, a, d) {
                     for &between in &order[k..=m] {
-                        assert!(is_ancestor(&parent, a, between));
+                        assert!(is_ancestor(parent, a, between));
                     }
                 }
             }
         }
     }
 
-    /// Exactly one alive child per parent with alive children is marked last, and it is the
-    /// last alive one.
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn last_child_is_unique() {
-        let parent = any_tree();
-        let n = parent.len();
-        let alive: Vec<bool> = any_vec(n);
-        kani::assume(alive[0]);
-        let children = Children::build(&parent);
-        let order = preorder(&children, 0, &alive);
-        let last = last_alive_child(&children, &order, &alive);
+    /// Exactly one alive child of each listed node with alive children is marked last, and it
+    /// is the last alive one.
+    pub fn last_child_is_unique(parent: &[u32], alive: &[bool]) {
+        let children = Children::build(parent);
+        let order = preorder(&children, 0, alive);
+        let last = last_alive_child(&children, &order, alive);
 
         for &p in &order {
             let alive_children: Vec<u32> = children
@@ -400,64 +407,39 @@ mod proofs {
         }
     }
 
-    /// Each key group keeps exactly one counted member, the least by rank; unkeyed nodes are
-    /// counted.
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn dedupe_counts_each_inode_once() {
-        let n: usize = kani::any();
-        kani::assume(n <= N);
-        let key: Vec<Option<u8>> = (0..n)
-            .map(|_| {
-                let k: Option<u8> = kani::any();
-                kani::assume(k.is_none_or(|k| k < 3));
-                k
-            })
-            .collect();
-
-        let mut linked: Vec<(u32, u8)> = (0..n)
-            .filter_map(|i| key[i].map(|k| (i as u32, k)))
-            .collect();
+    /// Each key group keeps exactly one counted member, the least by rank (here the index);
+    /// nodes without a key are counted.
+    pub fn dedupe_counts_each_inode_once(key: &[Option<u8>]) {
+        let n = key.len();
+        let mut linked: Vec<(u32, u8)> =
+            (0..n).filter_map(|i| key[i].map(|k| (id(i), k))).collect();
         let counted = dedupe(n, &mut linked, |a, b| a.cmp(&b));
 
         for i in 0..n {
             match key[i] {
                 None => assert!(counted[i]),
                 Some(k) => {
-                    let first = (0..n).find(|&j| key[j] == Some(k)).unwrap();
-                    assert_eq!(counted[i], i == first);
+                    let first = (0..n).find(|&j| key[j] == Some(k));
+                    assert_eq!(counted[i], first == Some(i));
                 },
             }
         }
     }
 
     /// A directory's size is the sum of the sizes of the files below it that reach it through
-    /// counted nodes only (or `None` when zero); files keep their sizes.
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn aggregate_sums_counted_files() {
-        let parent = any_tree();
+    /// counted nodes only, or `None` when that sum is zero; files keep their sizes. Requires
+    /// sizes below 2^60 so the expected sum cannot overflow.
+    pub fn aggregate_sums_counted_files(
+        parent: &[u32],
+        counted: &[bool],
+        is_dir: &[bool],
+        files: &[Option<u64>],
+    ) {
         let n = parent.len();
-        let counted: Vec<bool> = any_vec(n);
-        let is_dir: Vec<bool> = any_vec(n);
-        let files: Vec<Option<u64>> = any_vec(n);
-
-        // Files have no children; directories start without a size.
-        for i in 0..n {
-            if i != 0 {
-                kani::assume(is_dir[ix(parent[i])]);
-            }
-            if is_dir[i] {
-                kani::assume(files[i].is_none());
-            } else {
-                kani::assume(files[i].is_none_or(|s| s < 1 << 60));
-            }
-        }
-
-        let children = Children::build(&parent);
-        let order = preorder(&children, 0, &vec![true; n]);
-        let mut size = files.clone();
-        aggregate(&order, &parent, &counted, &is_dir, &mut size);
+        let children = Children::build(parent);
+        let order = preorder(&children, 0, &all_alive(n));
+        let mut size = files.to_vec();
+        aggregate(&order, parent, counted, is_dir, &mut size);
 
         for d in 0..n {
             if !is_dir[d] {
@@ -467,16 +449,16 @@ mod proofs {
 
             let mut expected = 0_u64;
             for f in 0..n {
-                if is_dir[f] || f == d || !is_ancestor(&parent, d as u32, f as u32) {
+                if is_dir[f] || f == d || !is_ancestor(parent, id(d), id(f)) {
                     continue;
                 }
                 let mut cur = f;
-                let mut ok = true;
+                let mut reaches = true;
                 while cur != d {
-                    ok &= counted[cur];
+                    reaches &= counted[cur];
                     cur = ix(parent[cur]);
                 }
-                if ok {
+                if reaches {
                     expected += files[f].unwrap_or(0);
                 }
             }
@@ -485,44 +467,27 @@ mod proofs {
         }
     }
 
-    /// After pruning, the alive non-root directories are exactly those with an alive file
-    /// below them, and no file is removed.
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn prune_removes_exactly_empty_dirs() {
-        let parent = any_tree();
+    /// After pruning, the alive non-root nodes are exactly the files and the directories with
+    /// a file below them.
+    pub fn prune_removes_exactly_empty_dirs(parent: &[u32], is_dir: &[bool]) {
         let n = parent.len();
-        let is_dir: Vec<bool> = any_vec(n);
-        for i in 1..n {
-            kani::assume(is_dir[ix(parent[i])]);
-        }
-
-        let children = Children::build(&parent);
-        let before = vec![true; n];
-        let order = preorder(&children, 0, &before);
-        let mut alive = before.clone();
-        prune(&order, &parent, &is_dir, &mut alive);
+        let children = Children::build(parent);
+        let order = preorder(&children, 0, &all_alive(n));
+        let mut alive = all_alive(n);
+        prune(&order, parent, is_dir, &mut alive);
 
         assert!(alive[0]);
         for i in 1..n {
-            let has_file = (0..n).any(|f| !is_dir[f] && is_ancestor(&parent, i as u32, f as u32));
+            let has_file = (0..n).any(|f| !is_dir[f] && is_ancestor(parent, id(i), id(f)));
             assert_eq!(alive[i], has_file);
         }
     }
 
     /// `--dirs-only` keeps the root and the directories, and the kept set stays connected.
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn dirs_only_keeps_connected_dirs() {
-        let parent = any_tree();
+    pub fn dirs_only_keeps_connected_dirs(parent: &[u32], is_dir: &[bool]) {
         let n = parent.len();
-        let is_dir: Vec<bool> = any_vec(n);
-        for i in 1..n {
-            kani::assume(is_dir[ix(parent[i])]);
-        }
-
-        let mut alive = vec![true; n];
-        dirs_only(&parent, &is_dir, &mut alive);
+        let mut alive = all_alive(n);
+        dirs_only(parent, is_dir, &mut alive);
 
         for i in 0..n {
             assert_eq!(alive[i], i == 0 || is_dir[i]);
@@ -532,46 +497,288 @@ mod proofs {
         }
     }
 
-    /// `--min-size` keeps exactly the nodes that reach the threshold or have a kept
-    /// descendant, plus the root, and reports every other node as hidden.
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn hide_small_keeps_large_and_their_ancestors() {
-        let parent = any_tree();
+    /// `--min-size` keeps the root and exactly the nodes with a node of at least `threshold`
+    /// in their subtree, and reports every other node as hidden.
+    pub fn hide_small_keeps_large_and_their_ancestors(
+        parent: &[u32],
+        size: &[Option<u64>],
+        threshold: u64,
+    ) {
         let n = parent.len();
-        let size: Vec<Option<u64>> = any_vec(n);
-        let threshold: u64 = kani::any();
-
-        let children = Children::build(&parent);
-        let before = vec![true; n];
-        let order = preorder(&children, 0, &before);
-        let mut alive = before.clone();
-        let hidden = hide_small(&order, &parent, &size, threshold, &mut alive);
+        let children = Children::build(parent);
+        let order = preorder(&children, 0, &all_alive(n));
+        let mut alive = all_alive(n);
+        let hidden = hide_small(&order, parent, size, threshold, &mut alive);
 
         assert!(alive[0]);
         for i in 1..n {
-            let large_below = (0..n).any(|d| {
-                size[d].unwrap_or(0) >= threshold && is_ancestor(&parent, i as u32, d as u32)
-            });
+            let large_below = (0..n)
+                .any(|d| size[d].unwrap_or(0) >= threshold && is_ancestor(parent, id(i), id(d)));
             assert_eq!(alive[i], large_below);
-            assert_eq!(hidden.contains(&(i as u32)), !large_below);
+            assert_eq!(hidden.contains(&(id(i))), !large_below);
         }
     }
 
     /// Sink offsets map every record to a distinct global index below the total.
+    pub fn global_indices_are_distinct(lens: [u32; 3], a: (u32, u32), b: (u32, u32)) {
+        let offsets = [0, lens[0], lens[0] + lens[1]];
+        let total: u32 = lens.iter().sum();
+        let g1 = global_index(&offsets, a.0, a.1);
+        let g2 = global_index(&offsets, b.0, b.1);
+        assert!(g1 < total);
+        assert_eq!(g1 == g2, a == b);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{NONE, spec};
+
+    /// Every tree with `n` nodes rooted at 0, as parent arrays.
+    fn trees(n: usize) -> Vec<Vec<u32>> {
+        let mut out = vec![];
+        let combos = n.pow(u32::try_from(n.saturating_sub(1)).unwrap());
+
+        for mut code in 0..combos {
+            let mut parent = vec![NONE; n];
+            for p in parent.iter_mut().skip(1) {
+                *p = u32::try_from(code % n).unwrap();
+                code /= n;
+            }
+            if spec::is_tree(&parent) {
+                out.push(parent);
+            }
+        }
+
+        out
+    }
+
+    /// The `n` low bits of `mask`.
+    fn bits(mask: usize, n: usize) -> Vec<bool> {
+        (0..n).map(|i| mask >> i & 1 == 1).collect()
+    }
+
+    #[test]
+    fn exhaustive_small_trees() {
+        for n in 1..=spec::MAX_TEST {
+            for parent in trees(n) {
+                spec::children_partition_nodes(&parent);
+
+                for mask in 0..1 << n {
+                    let flags = bits(mask, n);
+
+                    if flags[0] {
+                        spec::preorder_is_a_valid_preorder(&parent, &flags);
+                        spec::last_child_is_unique(&parent, &flags);
+                    }
+
+                    let is_dir = &flags;
+                    if !spec::only_dirs_have_children(&parent, is_dir) {
+                        continue;
+                    }
+
+                    spec::prune_removes_exactly_empty_dirs(&parent, is_dir);
+                    spec::dirs_only_keeps_connected_dirs(&parent, is_dir);
+
+                    // Distinct powers of two make every subset sum distinct.
+                    let files: Vec<Option<u64>> =
+                        (0..n).map(|i| (!is_dir[i]).then_some(1 << i)).collect();
+
+                    for counted in 0..1 << n {
+                        spec::aggregate_sums_counted_files(
+                            &parent,
+                            &bits(counted, n),
+                            is_dir,
+                            &files,
+                        );
+                    }
+
+                    let sizes: Vec<Option<u64>> = (0..n).map(|i| Some(1 << i)).collect();
+                    for threshold in 0..=1 << n {
+                        spec::hide_small_keeps_large_and_their_ancestors(
+                            &parent, &sizes, threshold,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_dedupe() {
+        for n in 0..=spec::MAX_TEST {
+            // Every assignment of no key or one of 3 keys to each node.
+            for code in 0..4_usize.pow(u32::try_from(n).unwrap()) {
+                let key: Vec<Option<u8>> = (0..n)
+                    .map(
+                        |i| match code / 4_usize.pow(u32::try_from(i).unwrap()) % 4 {
+                            0 => None,
+                            k => Some(u8::try_from(k).unwrap()),
+                        },
+                    )
+                    .collect();
+                spec::dedupe_counts_each_inode_once(&key);
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_global_indices() {
+        for lens in [[0, 2, 3], [3, 0, 1], [1, 1, 1], [4, 4, 4]] {
+            for a in (0..3).flat_map(|s| (0..lens[s as usize]).map(move |i| (s, i))) {
+                for b in (0..3).flat_map(|s| (0..lens[s as usize]).map(move |i| (s, i))) {
+                    spec::global_indices_are_distinct(lens, a, b);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    //! Kani harnesses: the [`spec`] properties for symbolic inputs, one concrete tree size at a
+    //! time so allocations have concrete lengths.
+
+    use super::{NONE, spec};
+
+    /// Runs `$check::<N>()` for every size from 1 to 4; larger bounds exhaust memory or time.
+    macro_rules! for_each_size {
+        ($check:ident) => {
+            $check::<1>();
+            $check::<2>();
+            $check::<3>();
+            $check::<4>();
+        };
+    }
+
+    /// An arbitrary tree with `N` nodes rooted at 0.
+    fn any_tree<const N: usize>() -> Vec<u32> {
+        let mut parent = vec![NONE; N];
+        for p in parent.iter_mut().skip(1) {
+            *p = u32::from(kani::any::<u8>());
+        }
+        kani::assume(spec::is_tree(&parent));
+        parent
+    }
+
+    fn any_vec<T: kani::Arbitrary, const N: usize>() -> Vec<T> {
+        (0..N).map(|_| kani::any()).collect()
+    }
+
+    fn children_partition_nodes<const N: usize>() {
+        spec::children_partition_nodes(&any_tree::<N>());
+    }
+
+    fn preorder_is_a_valid_preorder<const N: usize>() {
+        let alive = any_vec::<bool, N>();
+        kani::assume(alive[0]);
+        spec::preorder_is_a_valid_preorder(&any_tree::<N>(), &alive);
+    }
+
+    fn last_child_is_unique<const N: usize>() {
+        let alive = any_vec::<bool, N>();
+        kani::assume(alive[0]);
+        spec::last_child_is_unique(&any_tree::<N>(), &alive);
+    }
+
+    fn dedupe_counts_each_inode_once<const N: usize>() {
+        let key = any_vec::<Option<u8>, N>();
+        kani::assume(key.iter().all(|k| k.is_none_or(|k| k < 3)));
+        spec::dedupe_counts_each_inode_once(&key);
+    }
+
+    fn aggregate_sums_counted_files<const N: usize>() {
+        let parent = any_tree::<N>();
+        let counted = any_vec::<bool, N>();
+        let is_dir = any_vec::<bool, N>();
+        let files = any_vec::<Option<u64>, N>();
+        kani::assume(spec::only_dirs_have_children(&parent, &is_dir));
+        for i in 0..N {
+            kani::assume(if is_dir[i] {
+                files[i].is_none()
+            } else {
+                files[i].is_none_or(|s| s < 1 << 60)
+            });
+        }
+        spec::aggregate_sums_counted_files(&parent, &counted, &is_dir, &files);
+    }
+
+    fn prune_removes_exactly_empty_dirs<const N: usize>() {
+        let parent = any_tree::<N>();
+        let is_dir = any_vec::<bool, N>();
+        kani::assume(spec::only_dirs_have_children(&parent, &is_dir));
+        spec::prune_removes_exactly_empty_dirs(&parent, &is_dir);
+    }
+
+    fn dirs_only_keeps_connected_dirs<const N: usize>() {
+        let parent = any_tree::<N>();
+        let is_dir = any_vec::<bool, N>();
+        kani::assume(spec::only_dirs_have_children(&parent, &is_dir));
+        spec::dirs_only_keeps_connected_dirs(&parent, &is_dir);
+    }
+
+    fn hide_small_keeps_large_and_their_ancestors<const N: usize>() {
+        let parent = any_tree::<N>();
+        let size = any_vec::<Option<u64>, N>();
+        spec::hide_small_keeps_large_and_their_ancestors(&parent, &size, kani::any());
+    }
+
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn children() {
+        for_each_size!(children_partition_nodes);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn preorder() {
+        for_each_size!(preorder_is_a_valid_preorder);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn last_child() {
+        for_each_size!(last_child_is_unique);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn dedupe() {
+        for_each_size!(dedupe_counts_each_inode_once);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn aggregate() {
+        for_each_size!(aggregate_sums_counted_files);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn prune() {
+        for_each_size!(prune_removes_exactly_empty_dirs);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn dirs_only() {
+        for_each_size!(dirs_only_keeps_connected_dirs);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn hide_small() {
+        for_each_size!(hide_small_keeps_large_and_their_ancestors);
+    }
+
     #[kani::proof]
     #[kani::unwind(5)]
-    fn global_indices_are_distinct() {
-        let lens: [u32; 3] = [kani::any(), kani::any(), kani::any()];
+    fn global_indices() {
+        let lens: [u32; 3] = kani::any();
         kani::assume(lens.iter().all(|&l| l <= 4));
-        let offsets = [0, lens[0], lens[0] + lens[1]];
-
-        let (s1, i1, s2, i2): (u32, u32, u32, u32) = kani::any();
-        kani::assume(s1 < 3 && s2 < 3 && i1 < lens[ix(s1)] && i2 < lens[ix(s2)]);
-
-        let g1 = global_index(&offsets, s1, i1);
-        let g2 = global_index(&offsets, s2, i2);
-        assert!(g1 < lens.iter().sum::<u32>());
-        assert_eq!(g1 == g2, (s1, i1) == (s2, i2));
+        let a: (u32, u32) = kani::any();
+        let b: (u32, u32) = kani::any();
+        kani::assume(a.0 < 3 && b.0 < 3 && a.1 < lens[a.0 as usize] && b.1 < lens[b.0 as usize]);
+        spec::global_indices_are_distinct(lens, a, b);
     }
 }

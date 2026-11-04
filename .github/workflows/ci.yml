@@ -64,6 +64,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets --locked
 
+  # Bounded proofs of the tree algorithms in src/tree/topo.rs (`mod proofs`).
+  kani:
+    name: kani
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: model-checking/kani-github-action@v1
+        with:
+          kani-version: 0.68.0
+
   deny:
     name: deny
     runs-on: ubuntu-latest
@@ -75,7 +86,7 @@ jobs:
   ci-pass:
     name: ci-pass
     if: always()
-    needs: [fmt, clippy, test, msrv, deny]
+    needs: [fmt, clippy, test, msrv, deny, kani]
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
