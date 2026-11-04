@@ -1,13 +1,13 @@
 use super::{SizeFormat, Tree, topo::ix};
 use crate::{
     disk_usage::file_size::{DiskUsage, FileSize, byte, line_count, word_count},
+    fs::stat::Kind,
     icons,
 };
 use nu_ansi_term::Style;
 use std::{
     borrow::Cow,
     ffi::OsStr,
-    fs::FileType,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -120,8 +120,6 @@ impl<'a> Node<'a> {
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::FileTypeExt;
-
             if ft.is_fifo() {
                 return Some("|");
             }
@@ -139,7 +137,7 @@ impl<'a> Node<'a> {
     }
 
     /// Type of the entry, or of its target when it is a followed symlink.
-    pub fn file_type(self) -> FileType {
+    pub fn file_type(self) -> Kind {
         self.tree.cols.file_type[ix(self.i)]
     }
 
@@ -224,7 +222,7 @@ impl<'a> Node<'a> {
 
     /// `LS_COLORS` style, if colors are enabled.
     pub fn style(self) -> Option<Style> {
-        self.tree.cols.style.get(ix(self.i)).copied()
+        self.tree.cols.style_at(ix(self.i))
     }
 
     /// See [`crate::icons::fs::compute`].

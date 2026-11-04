@@ -76,9 +76,10 @@ impl Tree {
     /// rendering needs into the returned [Context]. The tree may be a stump (see
     /// [`Self::is_stump`]). `progress` counts walked entries.
     pub fn try_init(mut ctx: Context, progress: Option<&AtomicU64>) -> Result<(Self, Context)> {
-        let walker = walker(&ctx)?;
+        let mut walker = walker(&ctx)?;
         let root_path = walker.root.clone();
         let probe = Probe::new(&ctx);
+        walker.fields = probe.fields();
 
         let sinks = walker.run(|_| Collector::new(probe), progress);
         let cols = Columns::merge(sinks.into_iter().map(|c| c.columns).collect());
@@ -112,7 +113,7 @@ impl Tree {
 
         cols.link_target.sort_unstable_by_key(|(i, _)| *i);
 
-        let is_dir: Vec<bool> = cols.file_type.iter().map(fs::FileType::is_dir).collect();
+        let is_dir: Vec<bool> = cols.file_type.iter().map(|kind| kind.is_dir()).collect();
         let mut children = Children::build(&cols.parent);
 
         let mut tree = Self {
@@ -465,5 +466,6 @@ fn walker(ctx: &Context) -> Result<Walker> {
         },
         filter,
         count_ignored: ctx.report_ignored,
+        fields: crate::fs::stat::Fields::default(),
     })
 }

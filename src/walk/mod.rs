@@ -9,8 +9,7 @@
 
 use std::{
     ffi::OsStr,
-    fs::{self, FileType, Metadata},
-    mem,
+    fs, mem,
     path::{Path, PathBuf},
     sync::{
         Condvar, Mutex, PoisonError,
@@ -22,6 +21,7 @@ use std::{
 /// Ignore rules per directory, adapted from the `ignore` crate.
 pub mod rules;
 
+use crate::fs::stat::{Fields, Kind, Stat};
 use rules::{Found, Rules};
 
 /// Identifies a record: the index of the sink that holds it and its index in that sink.
@@ -34,7 +34,7 @@ pub struct NodeRef {
 /// A directory entry offered to the entry filter (`--pattern`, `--include`).
 pub struct Entry<'a> {
     path: &'a Path,
-    file_type: FileType,
+    file_type: Kind,
     depth: usize,
     hidden: bool,
 }
@@ -46,7 +46,7 @@ impl Entry<'_> {
     }
 
     /// Type of the entry; of the link target when symlinks are followed.
-    pub const fn file_type(&self) -> FileType {
+    pub const fn file_type(&self) -> Kind {
         self.file_type
     }
 
@@ -75,7 +75,7 @@ pub struct Record<'a> {
     pub name: &'a OsStr,
     pub path: &'a Path,
     /// Metadata of the entry itself, or of its target when the entry is a followed symlink.
-    pub metadata: &'a Metadata,
+    pub stat: &'a Stat,
     /// Whether the entry is a symlink (followed or not).
     pub is_symlink: bool,
 }
@@ -104,6 +104,8 @@ pub struct Walker {
     pub filter: Option<Filter>,
     /// Count ignored entries per directory (`--report-ignored`).
     pub count_ignored: bool,
+    /// Optional metadata fields to read for every entry.
+    pub fields: Fields,
 }
 
 /// A directory waiting to be read.
@@ -200,6 +202,7 @@ impl Walker {
     /// Records the root and returns the job that reads it.
     fn root_job<S: Sink>(&self, sink: &mut S, sink_index: u32) -> Option<Job> {
         let metadata = fs::symlink_metadata(&self.root).ok()?;
+        let stat = Stat::from_metadata(&metadata, self.fields);
         let name = self
             .root
             .file_name()
@@ -210,11 +213,11 @@ impl Walker {
             depth: 0,
             name,
             path: &self.root,
-            metadata: &metadata,
-            is_symlink: metadata.file_type().is_symlink(),
+            stat: &stat,
+            is_symlink: stat.kind.is_symlink(),
         })?;
 
-        if !metadata.is_dir() || self.max_depth == Some(0) {
+        if !stat.kind.is_dir() || self.max_depth == Some(0) {
             return None;
         }
 
@@ -371,13 +374,12 @@ impl<S: Sink> Worker<'_, S> {
         for (entry, name) in &entries {
             path.push(name);
 
-            if let Some((index, metadata)) = self.visit(entry, name, &path, &rules, job.id, depth) {
+            if let Some((index, stat)) = self.visit(entry, name, &path, &rules, job.id, depth) {
                 kept += 1;
 
-                if metadata.is_dir() && walker.max_depth.is_none_or(|max| depth < max) {
-                    let foreign = root_device.is_some_and(|root| {
-                        device_of(&metadata, &path).is_some_and(|dev| dev != root)
-                    });
+                if stat.kind.is_dir() && walker.max_depth.is_none_or(|max| depth < max) {
+                    let foreign = root_device
+                        .is_some_and(|root| device_of(&stat, &path).is_some_and(|dev| dev != root));
 
                     self.shared.pending.fetch_add(1, Ordering::AcqRel);
                     self.local.push(Job {
@@ -414,19 +416,19 @@ impl<S: Sink> Worker<'_, S> {
         rules: &Rules,
         parent: NodeRef,
         depth: usize,
-    ) -> Option<(u32, Metadata)> {
+    ) -> Option<(u32, Stat)> {
         let walker = self.walker;
-        let mut file_type = entry.file_type().ok()?;
+        let mut file_type = Kind::from(entry.file_type().ok()?);
         let is_symlink = file_type.is_symlink();
         let followed = if walker.follow_links && is_symlink {
-            let metadata = fs::metadata(path).ok()?;
-            file_type = metadata.file_type();
+            let stat = Stat::from_metadata(&fs::metadata(path).ok()?, walker.fields);
+            file_type = stat.kind;
 
             if file_type.is_dir() && is_loop(rules, path) {
                 return None;
             }
 
-            Some(metadata)
+            Some(stat)
         } else {
             None
         };
@@ -451,9 +453,9 @@ impl<S: Sink> Worker<'_, S> {
             }
         }
 
-        let metadata = match followed {
-            Some(metadata) => metadata,
-            None => entry.metadata().ok()?,
+        let stat = match followed {
+            Some(stat) => stat,
+            None => Stat::from_metadata(&entry.metadata().ok()?, walker.fields),
         };
 
         let index = self.sink.push(&Record {
@@ -461,11 +463,11 @@ impl<S: Sink> Worker<'_, S> {
             depth,
             name,
             path,
-            metadata: &metadata,
+            stat: &stat,
             is_symlink,
         })?;
 
-        Some((index, metadata))
+        Some((index, stat))
     }
 }
 
@@ -525,21 +527,19 @@ fn device_num(path: &Path) -> Option<u64> {
     }
 }
 
-/// Device number of a directory given its metadata.
-// Only the Windows lookup can fail.
-#[cfg_attr(unix, allow(clippy::unnecessary_wraps))]
-fn device_of(metadata: &Metadata, path: &Path) -> Option<u64> {
+/// Device number of a directory given its stat.
+// Only the Windows lookup can fail or is not `const`.
+#[cfg_attr(unix, allow(clippy::unnecessary_wraps, clippy::missing_const_for_fn))]
+fn device_of(stat: &Stat, path: &Path) -> Option<u64> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-
         let _ = path;
-        Some(metadata.dev())
+        Some(stat.dev)
     }
 
     #[cfg(not(unix))]
     {
-        let _ = metadata;
+        let _ = stat;
         device_num(path)
     }
 }

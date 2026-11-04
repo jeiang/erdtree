@@ -1,6 +1,9 @@
 /// Operations pertaining to underlying inodes of files.
 pub mod inode;
 
+/// Platform-neutral entry metadata read by the walk.
+pub mod stat;
+
 /// Unix file permissions.
 #[cfg(unix)]
 pub mod permissions;

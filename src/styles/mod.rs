@@ -7,6 +7,9 @@ use std::{collections::HashMap, sync::OnceLock};
 /// Errors for this module.
 pub mod error;
 
+/// `LS_COLORS` style of a directory entry.
+pub mod entry;
+
 /// Used as general placeholder for an empty field.
 pub const PLACEHOLDER: &str = "-";
 

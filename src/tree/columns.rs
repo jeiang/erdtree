@@ -10,15 +10,18 @@ use crate::context::time;
 use crate::{
     context::{Context, sort},
     disk_usage::file_size::{DiskUsage, line_count, word_count},
-    fs::inode::Inode,
-    styles::get_ls_colors,
+    fs::{
+        inode::Inode,
+        stat::{Fields, Kind, Stat},
+    },
+    styles::{entry::Resolver, get_ls_colors},
     walk::{NodeRef, Record, Sink},
 };
 use lscolors::Style as LsStyle;
 use nu_ansi_term::Style;
 use std::{
+    collections::HashMap,
     ffi::OsStr,
-    fs::{FileType, Metadata},
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -41,6 +44,15 @@ pub struct Probe {
 }
 
 impl Probe {
+    /// The optional metadata fields the walk must read.
+    pub const fn fields(self) -> Fields {
+        Fields {
+            modified: self.modified,
+            accessed: self.accessed,
+            created: self.created,
+        }
+    }
+
     pub fn new(ctx: &Context) -> Self {
         // Timestamps shown by the long view.
         #[cfg(unix)]
@@ -95,7 +107,7 @@ pub struct Columns {
     pub parent: Vec<u32>,
     pub depth: Vec<u32>,
     /// Type of the entry, or of its target when it is a followed symlink.
-    pub file_type: Vec<FileType>,
+    pub file_type: Vec<Kind>,
     pub size: Vec<Option<u64>>,
     #[cfg(unix)]
     pub mode: Vec<u32>,
@@ -107,8 +119,16 @@ pub struct Columns {
     pub inode: Vec<Option<Inode>>,
     /// Symlink targets.
     pub link_target: Vec<(u32, PathBuf)>,
-    /// `LS_COLORS` style; only with [`Probe::colors`].
-    pub style: Vec<Style>,
+    /// Index into `style_table` of the `LS_COLORS` style; only with [`Probe::colors`].
+    style: Vec<u16>,
+    /// The distinct styles, with the default style first.
+    style_table: Vec<Style>,
+    /// Resolves styles; only with [`Probe::colors`].
+    resolver: Option<Resolver>,
+    /// Index in `style_table` per `lscolors` style, by address, for the styles seen so far.
+    style_index: HashMap<usize, u16>,
+    /// The style address and index of the previous entry; neighbors mostly share a style.
+    last_style: (usize, u16),
     pub modified: Vec<Option<SystemTime>>,
     pub accessed: Vec<Option<SystemTime>>,
     pub created: Vec<Option<SystemTime>>,
@@ -129,6 +149,11 @@ impl Collector {
         Self {
             columns: Columns {
                 probe: Some(probe),
+                resolver: probe
+                    .colors
+                    .then(|| get_ls_colors().ok().map(Resolver::new))
+                    .flatten(),
+                style_table: vec![Style::default()],
                 ..Columns::default()
             },
         }
@@ -170,12 +195,44 @@ impl Columns {
             .map(|k| self.link_target[k].1.as_path())
     }
 
+    /// The `LS_COLORS` style of entry `i`, if styles were collected.
+    pub fn style_at(&self, i: usize) -> Option<Style> {
+        self.style.get(i).map(|&s| self.style_table[usize::from(s)])
+    }
+
+    /// The index in `style_table` of `style`, which `lscolors` returned (`None` is the default
+    /// style).
+    fn intern_style(&mut self, style: Option<&'static LsStyle>) -> u16 {
+        let Some(style) = style else {
+            return 0;
+        };
+
+        let address = std::ptr::from_ref(style) as usize;
+        if self.last_style.0 == address {
+            return self.last_style.1;
+        }
+
+        let index = if let Some(&index) = self.style_index.get(&address) {
+            index
+        } else {
+            let index = u16::try_from(self.style_table.len()).unwrap_or(0);
+            if index != 0 {
+                self.style_table.push(style.to_nu_ansi_term_style());
+            }
+            self.style_index.insert(address, index);
+            index
+        };
+
+        self.last_style = (address, index);
+        index
+    }
+
     fn push(&mut self, record: &Record<'_>) -> Option<u32> {
         let probe = self.probe?;
         let index = u32::try_from(self.len()).ok().filter(|&i| i != NONE)?;
-        let md = record.metadata;
+        let stat = record.stat;
         let path = record.path;
-        let file_type = md.file_type();
+        let file_type = stat.kind;
 
         let size = size(probe, record, file_type);
 
@@ -185,7 +242,7 @@ impl Columns {
             self.link_target.push((index, target));
         }
 
-        let inode = Inode::try_new(path, md, record.is_symlink).ok();
+        let inode = Inode::try_new(path, stat, record.is_symlink).ok();
 
         if let Some(inode) = inode.filter(|inode| inode.nlink > 1) {
             self.multi_linked.push((index, inode));
@@ -195,39 +252,34 @@ impl Columns {
             self.inode.push(inode);
         }
 
-        if probe.colors
-            && let Ok(ls_colors) = get_ls_colors()
-        {
-            let style = ls_colors
-                .style_for_path_with_metadata(path, Some(md))
-                .map_or_else(Style::default, LsStyle::to_nu_ansi_term_style);
+        if let Some(resolver) = self.resolver {
+            let style = resolver.style(record.name, stat, || !path.exists());
+            let style = self.intern_style(style);
             self.style.push(style);
         }
 
         if probe.modified {
-            self.modified.push(md.modified().ok());
+            self.modified.push(stat.modified);
         }
         if probe.accessed {
-            self.accessed.push(md.accessed().ok());
+            self.accessed.push(stat.accessed);
         }
         if probe.created {
-            self.created.push(md.created().ok());
+            self.created.push(stat.created);
         }
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
-
-            self.mode.push(md.mode());
-            self.blocks.push(md.blocks());
+            self.mode.push(stat.mode);
+            self.blocks.push(stat.blocks);
 
             if let Some(level) = probe.long_level {
                 let attrs = if record.depth <= level {
                     LongAttrs {
                         read: true,
                         has_xattrs: crate::fs::xattr::has_xattrs(path),
-                        uid: md.uid(),
-                        gid: md.gid(),
+                        uid: stat.uid,
+                        gid: stat.gid,
                     }
                 } else {
                     LongAttrs::default()
@@ -258,6 +310,7 @@ impl Columns {
 
         let mut merged = Self {
             probe: sinks.first().and_then(|s| s.probe),
+            style_table: vec![Style::default()],
             ..Self::default()
         };
 
@@ -280,7 +333,22 @@ impl Columns {
             merged.file_type.append(&mut sink.file_type);
             merged.size.append(&mut sink.size);
             merged.inode.append(&mut sink.inode);
-            merged.style.append(&mut sink.style);
+            // Styles are small ids into per-sink tables; translate them into the merged table.
+            let remap: Vec<u16> = sink
+                .style_table
+                .iter()
+                .map(|style| {
+                    let found = merged.style_table.iter().position(|s| s == style);
+                    let index = found.unwrap_or_else(|| {
+                        merged.style_table.push(*style);
+                        merged.style_table.len() - 1
+                    });
+                    u16::try_from(index).unwrap_or(0)
+                })
+                .collect();
+            merged
+                .style
+                .extend(sink.style.iter().map(|&s| remap[usize::from(s)]));
             merged.modified.append(&mut sink.modified);
             merged.accessed.append(&mut sink.accessed);
             merged.created.append(&mut sink.created);
@@ -310,8 +378,8 @@ impl Columns {
 
 /// The size of an entry in the configured metric; `None` for entries without one (directories,
 /// `--suppress-size`, files that are not text for line and word counts).
-fn size(probe: Probe, record: &Record<'_>, file_type: FileType) -> Option<u64> {
-    let md: &Metadata = record.metadata;
+fn size(probe: Probe, record: &Record<'_>, file_type: Kind) -> Option<u64> {
+    let stat: &Stat = record.stat;
 
     // A followed symlink has its target's type here; an unfollowed one is a symlink.
     let sized = file_type.is_file() || file_type.is_symlink() && !probe.follow;
@@ -321,17 +389,15 @@ fn size(probe: Probe, record: &Record<'_>, file_type: FileType) -> Option<u64> {
     }
 
     match probe.disk_usage {
-        DiskUsage::Logical => Some(md.len()),
-        DiskUsage::Physical => {
-            use filesize::PathExt;
-            Some(record.path.size_on_disk_fast(md).unwrap_or(md.len()))
-        },
+        DiskUsage::Logical => Some(stat.size),
+        // Unix: allocated blocks, which is what `filesize` reports for a Unix entry.
+        #[cfg(unix)]
+        DiskUsage::Physical => Some(stat.blocks * 512),
+        #[cfg(not(unix))]
+        DiskUsage::Physical => Some(filesize::file_real_size(record.path).unwrap_or(stat.size)),
         DiskUsage::Line => line_count::Metric::init(record.path).map(|m| m.value),
         DiskUsage::Word => word_count::Metric::init(record.path).map(|m| m.value),
         #[cfg(unix)]
-        DiskUsage::Block => {
-            use std::os::unix::fs::MetadataExt;
-            Some(md.blocks())
-        },
+        DiskUsage::Block => Some(stat.blocks),
     }
 }

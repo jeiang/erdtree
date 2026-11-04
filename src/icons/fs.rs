@@ -1,5 +1,6 @@
+use crate::fs::stat::Kind;
 use nu_ansi_term::{AnsiGenericString, Style};
-use std::{borrow::Cow, ffi::OsStr, fs::FileType, path::Path};
+use std::{borrow::Cow, ffi::OsStr, path::Path};
 
 /// Computes a plain, colorless icon with given parameters.
 ///
@@ -9,7 +10,7 @@ use std::{borrow::Cow, ffi::OsStr, fs::FileType, path::Path};
 ///
 /// `ext_source` is the path whose extension is used: the symlink target for a symlink, else the
 /// entry's name.
-pub fn compute(file_type: FileType, ext_source: &Path, file_name: &OsStr) -> Cow<'static, str> {
+pub fn compute(file_type: Kind, ext_source: &Path, file_name: &OsStr) -> Cow<'static, str> {
     if let Some(icon) = super::icon_from_file_type(file_type) {
         return Cow::from(icon);
     }
@@ -27,7 +28,7 @@ pub fn compute(file_type: FileType, ext_source: &Path, file_name: &OsStr) -> Cow
 
 /// Computes a plain, colored icon with given parameters. See [compute] for more details.
 pub fn compute_with_color(
-    file_type: FileType,
+    file_type: Kind,
     ext_source: &Path,
     file_name: &OsStr,
     style: Option<Style>,

@@ -3,9 +3,10 @@ use nu_ansi_term::Color;
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
-    fs::FileType,
     sync::LazyLock,
 };
+
+use crate::fs::stat::Kind;
 
 /// Concerned with computing icons given filesystem parameters.
 pub mod fs;
@@ -17,7 +18,7 @@ fn icon_from_ext(ext: &OsStr) -> Option<(u8, &'static str)> {
 }
 
 /// Attempts to return an icon based on file type.
-fn icon_from_file_type(ft: FileType) -> Option<&'static str> {
+fn icon_from_file_type(ft: Kind) -> Option<&'static str> {
     if ft.is_dir() {
         return FILE_TYPE_ICON_MAP.get("dir").copied();
     } else if ft.is_symlink() {
