@@ -1,14 +1,12 @@
 use crate::{
     context::Context,
-    render::{Flat, Layout, Plan, grid},
+    render::{Flat, Layout, Plan, Rows},
     tree::Tree,
 };
 
 impl Layout for Flat {
-    type Grid = grid::Flat;
-
     /// The flat order reversed, root last.
-    fn plan(tree: &Tree, ctx: &Context) -> Plan {
+    fn rows(tree: &Tree, ctx: &Context) -> Rows {
         let max_depth = ctx.level();
         let mut plan = Plan::with_capacity(tree.order().len(), false);
 
@@ -18,6 +16,6 @@ impl Layout for Flat {
             }
         }
 
-        plan
+        Rows::Plan(plan)
     }
 }

@@ -9,8 +9,7 @@ use count::FileCount;
 use error::Error;
 use node::{Node, cmp::SortKeys};
 use std::{
-    cmp::Ordering, convert::TryFrom, fs, path::PathBuf, result::Result as StdResult,
-    sync::atomic::AtomicU64,
+    cmp::Ordering, convert::TryFrom, fs, result::Result as StdResult, sync::atomic::AtomicU64,
 };
 use topo::{Children, NONE, ix};
 use widths::Scope;
@@ -478,23 +477,6 @@ impl Tree {
     pub fn has_children(&self, i: u32) -> bool {
         self.cols.depth[ix(i)] < self.shown_depth
             && self.children.of(i).iter().any(|&c| self.alive[ix(c)])
-    }
-
-    /// Path of node `i` relative to the root; the root's own name for the root.
-    pub fn relative_path_of(&self, i: u32) -> PathBuf {
-        if i == self.root {
-            return PathBuf::from(self.cols.name(ix(i)));
-        }
-
-        let mut names = vec![];
-        let mut cur = i;
-
-        while cur != self.root && cur != NONE {
-            names.push(self.cols.name(ix(cur)));
-            cur = self.cols.parent[ix(cur)];
-        }
-
-        names.iter().rev().collect()
     }
 
     /// Nodes in the order the inverted flat layout (`iflat`) displays them; the flat layout

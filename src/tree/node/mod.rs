@@ -2,15 +2,9 @@ use super::{SizeFormat, Tree, topo::ix};
 use crate::{
     disk_usage::file_size::{DiskUsage, FileSize, byte, line_count, word_count},
     fs::stat::Kind,
-    icons,
 };
 use nu_ansi_term::Style;
-use std::{
-    borrow::Cow,
-    ffi::OsStr,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{ffi::OsStr, path::Path, time::SystemTime};
 
 #[cfg(unix)]
 use crate::{
@@ -144,11 +138,6 @@ impl<'a> Node<'a> {
         self.tree.cols.file_type[ix(self.i)]
     }
 
-    /// Path relative to the root; the root's own name for the root.
-    pub fn relative_path(self) -> PathBuf {
-        self.tree.relative_path_of(self.i)
-    }
-
     /// Raw size in the configured metric.
     pub fn size_value(self) -> Option<u64> {
         self.tree.cols.size[ix(self.i)]
@@ -192,6 +181,12 @@ impl<'a> Node<'a> {
         Ok(permissions.try_mode_symbolic_notation()?)
     }
 
+    /// Raw `st_mode` of the entry (long view).
+    #[cfg(unix)]
+    pub fn st_mode(self) -> u32 {
+        self.tree.cols.mode[ix(self.i)]
+    }
+
     /// Whether the entry has extended attributes (long view).
     #[cfg(unix)]
     pub fn has_xattrs(self) -> bool {
@@ -204,45 +199,15 @@ impl<'a> Node<'a> {
 
     /// Owner and group names, if both could be resolved (long view, up to the display level).
     #[cfg(unix)]
-    fn owner_and_group(self) -> Option<(&'a str, &'a str)> {
+    pub fn owner_and_group(self) -> Option<(&'a str, &'a str)> {
         let attrs = self.tree.cols.long.get(ix(self.i)).filter(|a| a.read)?;
         let owner = lookup(&self.tree.users, attrs.uid)?;
         let group = lookup(&self.tree.groups, attrs.gid)?;
         Some((owner, group))
     }
 
-    /// Owner name (long view).
-    #[cfg(unix)]
-    pub fn owner(self) -> Option<&'a str> {
-        self.owner_and_group().map(|(owner, _)| owner)
-    }
-
-    /// Group name (long view).
-    #[cfg(unix)]
-    pub fn group(self) -> Option<&'a str> {
-        self.owner_and_group().map(|(_, group)| group)
-    }
-
     /// `LS_COLORS` style, if colors are enabled.
     pub fn style(self) -> Option<Style> {
         self.tree.cols.style_at(ix(self.i))
-    }
-
-    /// See [`crate::icons::fs::compute`].
-    pub fn compute_icon(self, no_color: bool) -> Cow<'static, str> {
-        let ext_source = self
-            .symlink_target_path()
-            .unwrap_or_else(|| Path::new(self.file_name()));
-
-        if no_color {
-            icons::fs::compute(self.file_type(), ext_source, self.file_name())
-        } else {
-            icons::fs::compute_with_color(
-                self.file_type(),
-                ext_source,
-                self.file_name(),
-                self.style(),
-            )
-        }
     }
 }
