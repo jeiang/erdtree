@@ -100,10 +100,6 @@ impl Clock {
         format: Format,
         lookup: impl Fn(i64) -> i32,
     ) -> bool {
-        if matches!(format, Format::IsoStrict) {
-            return false;
-        }
-
         let Ok(since_epoch) = time.duration_since(UNIX_EPOCH) else {
             return false;
         };
@@ -119,23 +115,32 @@ impl Clock {
             return true;
         }
 
-        let local = DateTime::from_timestamp(secs + i64::from(self.offset(secs, lookup)), 0)
-            .map(|t| t.naive_utc());
+        let offset = self.offset(secs, lookup);
+        let local = DateTime::from_timestamp(secs + i64::from(offset), 0).map(|t| t.naive_utc());
         self.text.clear();
-        let done = local.is_some_and(|local| write_fields(&mut self.text, &local, format));
+        let done = local.is_some_and(|local| write_fields(&mut self.text, &local, offset, format));
         self.last = done.then_some((secs, format));
-        out.extend_from_slice(&self.text);
+
+        if done {
+            out.extend_from_slice(&self.text);
+        }
         done
     }
 }
 
-/// Appends the fields of `local` for the formats `%d %h %H:%M %g`, `%Y-%m-%d %H:%M:%S` and
-/// `%Y-%m-%d`; returns `false` for any other format.
-fn write_fields(out: &mut Vec<u8>, local: &NaiveDateTime, format: Format) -> bool {
+/// Appends the fields of `local`, which is `offset` seconds east of UTC, for the formats
+/// `%d %h %H:%M %g`, `%Y-%m-%d %H:%M:%S`, `%Y-%m-%d` and `%Y-%m-%dT%H:%M:%S%Z` (which chrono
+/// shows as `+HH:MM`); returns `false`, writing nothing, for an offset with seconds.
+fn write_fields(out: &mut Vec<u8>, local: &NaiveDateTime, offset: i32, format: Format) -> bool {
     const MONTHS: [&[u8; 3]; 12] = [
         b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov",
         b"Dec",
     ];
+
+    // chrono prints an offset with seconds as `+HH:MM:SS`.
+    if matches!(format, Format::IsoStrict) && offset % 60 != 0 {
+        return false;
+    }
 
     let date = |out: &mut Vec<u8>| {
         let year = local.year().unsigned_abs();
@@ -169,7 +174,20 @@ fn write_fields(out: &mut Vec<u8>, local: &NaiveDateTime, format: Format) -> boo
             push_pair(out, local.second());
         },
         Format::Short => date(out),
-        Format::IsoStrict => return false,
+        Format::IsoStrict => {
+            date(out);
+            out.push(b'T');
+            push_pair(out, local.hour());
+            out.push(b':');
+            push_pair(out, local.minute());
+            out.push(b':');
+            push_pair(out, local.second());
+            out.push(if offset < 0 { b'-' } else { b'+' });
+            let minutes = offset.unsigned_abs() / 60;
+            push_pair(out, minutes / 60);
+            out.push(b':');
+            push_pair(out, minutes % 60);
+        },
     }
 
     true
@@ -181,10 +199,11 @@ mod test {
     use chrono::{FixedOffset, NaiveDate, NaiveTime};
     use std::time::Duration;
 
-    const FORMATS: [(Format, &str); 3] = [
+    const FORMATS: [(Format, &str); 4] = [
         (Format::Default, "%d %h %H:%M %g"),
         (Format::Iso, "%Y-%m-%d %H:%M:%S"),
         (Format::Short, "%Y-%m-%d"),
+        (Format::IsoStrict, "%Y-%m-%dT%H:%M:%S%Z"),
     ];
 
     /// A zone with two changes a year, at half past midnight UTC, so that an hour contains each.
@@ -241,6 +260,39 @@ mod test {
         }
     }
 
+    /// Offsets of any whole number of minutes match chrono; an offset with seconds (a zone's
+    /// local mean time) is left to chrono.
+    #[test]
+    fn iso_strict_offsets_match_chrono() {
+        let mut clock = Clock::default();
+        let format = "%Y-%m-%dT%H:%M:%S%Z";
+
+        for (n, offset) in [
+            0, 3600, -3600, 19_800, -12_600, 20_700, -43_200, 50_400, 1, -17_762,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let secs = 1_700_000_000 + i64::try_from(n).unwrap() * 86_400;
+            let time = UNIX_EPOCH + Duration::from_secs(secs.unsigned_abs());
+            let expected = DateTime::from_timestamp(secs, 0)
+                .unwrap()
+                .with_timezone(&FixedOffset::east_opt(offset).unwrap())
+                .format(format)
+                .to_string();
+            let mut out = vec![];
+            let done = clock.write_with(&mut out, time, Format::IsoStrict, |_| offset);
+
+            if offset % 60 == 0 {
+                assert!(done);
+                assert_eq!(String::from_utf8(out).unwrap(), expected);
+            } else {
+                assert!(!done);
+                assert_eq!(out, Vec::<u8>::new());
+            }
+        }
+    }
+
     #[test]
     fn out_of_range_takes_the_slow_route() {
         let mut clock = Clock::default();
@@ -252,7 +304,6 @@ mod test {
             Format::Default,
             zone
         ));
-        assert!(!clock.write_with(&mut out, UNIX_EPOCH, Format::IsoStrict, zone));
         let far = UNIX_EPOCH + Duration::from_secs(FAST_LIMIT.unsigned_abs());
         assert!(!clock.write_with(&mut out, far, Format::Iso, zone));
         assert_eq!(out, Vec::<u8>::new());
