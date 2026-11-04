@@ -57,13 +57,18 @@ fn many_threads_match_one_thread_on_large_directories() {
     )
     .unwrap();
 
-    for extra in [
+    let mut cases = vec![
         &["-d", "logical"][..],
         &["-d", "logical", "--report-ignored"],
         &["-d", "logical", "-H", "-y", "flat"],
-        &["-d", "block", "-l"],
         &["-d", "logical", "--min-size", "10"],
-    ] {
+    ];
+    // `--disk-usage block` and the long view exist only on Unix.
+    if cfg!(unix) {
+        cases.push(&["-d", "block", "-l"]);
+    }
+
+    for extra in cases {
         let one = run("1", root, extra);
 
         for _ in 0..3 {
