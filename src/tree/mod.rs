@@ -467,5 +467,6 @@ fn walker(ctx: &Context) -> Result<Walker> {
         filter,
         count_ignored: ctx.report_ignored,
         fields: crate::fs::stat::Fields::default(),
+        tuning: crate::walk::Tuning::default(),
     })
 }

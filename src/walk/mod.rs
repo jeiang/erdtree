@@ -17,7 +17,7 @@ use std::{
     fs, mem,
     path::{MAIN_SEPARATOR, Path, PathBuf},
     sync::{
-        Condvar, Mutex, PoisonError,
+        Arc, Condvar, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread,
@@ -26,12 +26,9 @@ use std::{
 #[cfg(target_os = "linux")]
 use crate::fs::at::{self, At};
 #[cfg(target_os = "linux")]
-use std::{
-    os::{
-        fd::{AsRawFd, OwnedFd},
-        unix::ffi::OsStrExt,
-    },
-    sync::Arc,
+use std::os::{
+    fd::{AsRawFd, OwnedFd},
+    unix::ffi::OsStrExt,
 };
 
 /// The entries of one directory.
@@ -139,6 +136,29 @@ pub struct Walker {
     pub count_ignored: bool,
     /// Optional metadata fields to read for every entry.
     pub fields: Fields,
+    /// How large directories are shared between workers.
+    pub tuning: Tuning,
+}
+
+/// Directories with at least this many entries can be split between workers.
+pub const SPLIT_MIN: usize = 1024;
+
+/// Knobs of the walk that tests change.
+pub struct Tuning {
+    /// Directories with at least this many entries are visited in blocks of `split_min / 8`
+    /// entries (at least 16) that idle workers take over. Never splits when `usize::MAX`.
+    pub split_min: usize,
+    /// Number of times a directory was split; for tests.
+    pub splits: AtomicUsize,
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Self {
+            split_min: SPLIT_MIN,
+            splits: AtomicUsize::new(0),
+        }
+    }
 }
 
 /// Where the record of a queued directory is.
@@ -151,6 +171,21 @@ enum Me {
     /// a second lookup of its name.
     #[cfg(target_os = "linux")]
     Deferred(NodeRef),
+}
+
+/// Work for a worker.
+enum Task {
+    /// Read a directory.
+    Dir(Job),
+    /// Visit part of the entries of a directory another worker listed.
+    Chunk(Chunk),
+}
+
+/// The entries `lo..hi` of a listed directory.
+struct Chunk {
+    dir: Arc<Dir>,
+    lo: usize,
+    hi: usize,
 }
 
 /// A directory waiting to be read.
@@ -174,7 +209,7 @@ struct Job {
 
 /// Work shared between workers.
 struct Shared {
-    queue: Mutex<Vec<Job>>,
+    queue: Mutex<Vec<Task>>,
     wake: Condvar,
     /// Jobs queued or being processed. Zero means the walk is complete.
     pending: AtomicUsize,
@@ -224,7 +259,7 @@ impl Walker {
                 .enumerate()
                 .map(|(i, sink)| {
                     let local = if i == 0 {
-                        root.take().into_iter().collect()
+                        root.take().into_iter().map(Task::Dir).collect()
                     } else {
                         vec![]
                     };
@@ -343,7 +378,7 @@ struct Worker<'a, S> {
     sink_index: u32,
     shared: &'a Shared,
     sink: S,
-    local: Vec<Job>,
+    local: Vec<Task>,
     progress: Option<&'a AtomicU64>,
     /// Device of the root, with `--one-file-system`.
     root_device: Option<u64>,
@@ -362,8 +397,11 @@ impl<S: Sink> Worker<'_, S> {
             None
         };
 
-        while let Some(job) = self.next_job() {
-            let kept = self.read_dir(job);
+        while let Some(task) = self.next_job() {
+            let kept = match task {
+                Task::Dir(job) => self.read_dir(job),
+                Task::Chunk(chunk) => self.walk_chunk(&chunk.dir, chunk.lo, chunk.hi),
+            };
 
             if let Some(progress) = self.progress {
                 progress.fetch_add(kept, Ordering::Relaxed);
@@ -402,7 +440,7 @@ impl<S: Sink> Worker<'_, S> {
     // The queue lock is held from the emptiness check until `wait` releases it, so a worker
     // cannot miss the notification of the last job finishing.
     #[allow(clippy::significant_drop_tightening)]
-    fn next_job(&mut self) -> Option<Job> {
+    fn next_job(&mut self) -> Option<Task> {
         if let Some(job) = self.local.pop() {
             return Some(job);
         }
@@ -444,7 +482,7 @@ impl<S: Sink> Worker<'_, S> {
         };
 
         let rules = job.rules.add_child(&job.path, Some(&found));
-        let mut dir = Dir {
+        let dir = Dir {
             listing,
             path: job.path,
             rules,
@@ -452,19 +490,95 @@ impl<S: Sink> Worker<'_, S> {
             depth: job.depth,
         };
 
-        let kept = self.walk_entries(&dir, 0, dir.listing.len());
+        let len = dir.listing.len();
 
         if self.walker.count_ignored {
-            let listed = dir.listing.unusable + dir.listing.len();
+            self.sink.add_ignored(dir.listing.unusable);
+        }
+
+        if len >= self.walker.tuning.split_min && self.walker.threads > 1 {
+            // Idle workers may take over parts of a directory this large.
+            let dir = Arc::new(dir);
+            let kept = self.walk_chunk(&dir, 0, len);
+
+            if let Ok(dir) = Arc::try_unwrap(dir) {
+                self.recycle(dir.listing);
+            }
+
+            return kept;
+        }
+
+        let kept = self.walk_entries(&dir, 0, len);
+
+        if self.walker.count_ignored {
+            self.sink
+                .add_ignored(len - usize::try_from(kept).unwrap_or(len));
+        }
+
+        self.recycle(dir.listing);
+        kept
+    }
+
+    /// Keeps the buffers of `listing` for the next directory, but not the directory's file
+    /// descriptor.
+    fn recycle(&mut self, mut listing: Listing) {
+        listing.clear();
+        self.listing = listing;
+    }
+
+    /// Visits the entries `lo..hi` of `dir` in blocks, handing the second half of what is left
+    /// to an idle worker. Returns how many entries were kept.
+    fn walk_chunk(&mut self, dir: &Arc<Dir>, lo: usize, mut hi: usize) -> u64 {
+        let tuning = &self.walker.tuning;
+        let block = (tuning.split_min / 8).max(16);
+
+        let mut kept = 0;
+        let mut at = lo;
+
+        while at < hi {
+            let end = (at + block).min(hi);
+
+            if self.shared.idle.load(Ordering::Relaxed) > 0 {
+                let rest = hi - end;
+
+                if rest >= 2 * block {
+                    let mid = end + rest / 2;
+                    tuning.splits.fetch_add(1, Ordering::Relaxed);
+                    self.give(Task::Chunk(Chunk {
+                        dir: Arc::clone(dir),
+                        lo: mid,
+                        hi,
+                    }));
+                    hi = mid;
+                }
+
+                // Subdirectories found so far can start elsewhere meanwhile.
+                self.share();
+            }
+
+            let n = end.min(hi) - at;
+            kept += self.walk_entries(dir, at, at + n);
+            at += n;
+        }
+
+        if self.walker.count_ignored {
+            let listed = hi - lo;
             self.sink
                 .add_ignored(listed - usize::try_from(kept).unwrap_or(listed));
         }
 
-        // Keep the buffers for the next directory, but not the directory's file descriptor.
-        dir.listing.clear();
-        self.listing = dir.listing;
-
         kept
+    }
+
+    /// Queues `task` for an idle worker.
+    fn give(&self, task: Task) {
+        self.shared.pending.fetch_add(1, Ordering::AcqRel);
+        self.shared
+            .queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(task);
+        self.shared.wake.notify_one();
     }
 
     /// Opens and lists the directory of `job`, storing its record if that is still to do.
@@ -617,7 +731,7 @@ impl<S: Sink> Worker<'_, S> {
             };
 
             self.shared.pending.fetch_add(1, Ordering::AcqRel);
-            self.local.push(Job {
+            self.local.push(Task::Dir(Job {
                 // SAFETY: as above.
                 path: PathBuf::from(unsafe { OsString::from_encoded_bytes_unchecked(buf.clone()) }),
                 me,
@@ -628,7 +742,7 @@ impl<S: Sink> Worker<'_, S> {
                 parent: dir.listing.dir.clone(),
                 #[cfg(target_os = "linux")]
                 follow: entry.followed,
-            });
+            }));
         }
 
         self.path_buf = buf;
@@ -819,5 +933,151 @@ fn device_of(stat: &Stat, path: &Path) -> Option<u64> {
     {
         let _ = stat;
         device_num(path)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use ignore::overrides::Override;
+    use std::collections::BTreeSet;
+
+    /// Keeps what the walk reports, so runs can be compared.
+    #[derive(Default)]
+    struct Collect {
+        records: Vec<(PathBuf, Kind, u64, Option<NodeRef>)>,
+        ignored: usize,
+    }
+
+    impl Sink for Collect {
+        fn push(&mut self, record: &Record<'_>) -> Option<u32> {
+            self.records.push((
+                record.path.to_path_buf(),
+                record.stat.kind,
+                record.stat.size,
+                record.parent,
+            ));
+            u32::try_from(self.records.len() - 1).ok()
+        }
+
+        fn add_ignored(&mut self, count: usize) {
+            self.ignored += count;
+        }
+    }
+
+    /// A directory of `wide` files (some hidden) and subdirectories, each with `inner` files.
+    fn tree(wide: usize, subdirs: usize, inner: usize) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        for i in 0..wide {
+            let name = if i % 7 == 0 {
+                format!(".hidden-{i}")
+            } else {
+                format!("file-{i}")
+            };
+            fs::write(root.join(name), "x".repeat(i % 13)).unwrap();
+        }
+        fs::write(root.join(".gitignore"), "file-1*\n").unwrap();
+
+        for d in 0..subdirs {
+            let sub = root.join(format!("dir-{d}"));
+            fs::create_dir(&sub).unwrap();
+            for i in 0..inner {
+                fs::write(sub.join(format!("f{i}")), "y".repeat(i)).unwrap();
+            }
+        }
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("file-2", root.join("link")).unwrap();
+
+        dir
+    }
+
+    /// Every record as (path, kind, size, parent's path), the ignored count and how often a
+    /// directory was split.
+    fn walk(root: &Path, threads: usize, split_min: usize) -> (BTreeSet<String>, usize, usize) {
+        let walker = Walker {
+            root: root.to_path_buf(),
+            rules: Rules::root(rules::Options::new(true, true), Override::empty(), None),
+            follow_links: false,
+            same_file_system: false,
+            max_depth: None,
+            threads,
+            filter: None,
+            count_ignored: true,
+            fields: Fields::default(),
+            tuning: Tuning {
+                split_min,
+                splits: AtomicUsize::new(0),
+            },
+        };
+
+        let progress = AtomicU64::new(0);
+        let sinks = walker.run(|_| Collect::default(), Some(&progress));
+
+        let parent_path = |parent: Option<NodeRef>| {
+            parent.map(|p| sinks[p.sink as usize].records[p.index as usize].0.clone())
+        };
+
+        let records: Vec<String> = sinks
+            .iter()
+            .flat_map(|sink| &sink.records)
+            .map(|(path, kind, size, parent)| {
+                format!(
+                    "{} {kind:?} {size} {:?}",
+                    path.display(),
+                    parent_path(*parent)
+                )
+            })
+            .collect();
+        let total = records.len();
+        let records: BTreeSet<String> = records.into_iter().collect();
+        let ignored = sinks.iter().map(|sink| sink.ignored).sum();
+
+        // Every kept entry below the root is counted by the progress counter, once.
+        assert_eq!(records.len(), total, "no record appears twice");
+        assert_eq!(
+            usize::try_from(progress.load(Ordering::Relaxed)).unwrap(),
+            total - 1
+        );
+
+        (
+            records,
+            ignored,
+            walker.tuning.splits.load(Ordering::Relaxed),
+        )
+    }
+
+    #[test]
+    fn splitting_large_directories_changes_nothing() {
+        let dir = tree(3000, 40, 30);
+        let root = dir.path().canonicalize().unwrap();
+
+        let (expected, expected_ignored, splits) = walk(&root, 1, 32);
+        assert_eq!(splits, 0, "a single worker never splits");
+        assert!(expected.len() > 3500);
+        assert!(
+            expected_ignored > 400,
+            "hidden and ignored entries are counted"
+        );
+
+        let mut split_somewhere = false;
+
+        for _ in 0..20 {
+            let (records, ignored, splits) = walk(&root, 4, 32);
+            assert_eq!(records, expected);
+            assert_eq!(ignored, expected_ignored);
+            split_somewhere |= splits > 0;
+        }
+
+        assert!(
+            split_somewhere,
+            "idle workers took over parts of a directory"
+        );
+
+        // With a threshold above every directory size, nothing is split.
+        let (records, ignored, splits) = walk(&root, 4, usize::MAX);
+        assert_eq!((records, ignored, splits), (expected, expected_ignored, 0));
     }
 }
