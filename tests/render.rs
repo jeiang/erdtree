@@ -125,7 +125,8 @@ fn prefixes_equal_those_of_the_sequential_plan() {
     }
 }
 
-#[cfg(unix)]
+// APFS and other UTF-8-only file systems refuse such names (EILSEQ).
+#[cfg(target_os = "linux")]
 #[test]
 fn flat_paths_replace_invalid_utf8() {
     use std::{ffi::OsStr, os::unix::ffi::OsStrExt};

@@ -251,6 +251,8 @@ mod test {
         );
     }
 
+    // APFS and other UTF-8-only file systems refuse such names (EILSEQ).
+    #[cfg(target_os = "linux")]
     #[test]
     fn invalid_utf8_name_gets_no_regular_file_style() {
         use std::os::unix::ffi::OsStrExt;
