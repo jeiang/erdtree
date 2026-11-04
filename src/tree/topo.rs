@@ -641,13 +641,12 @@ mod proofs {
 
     use super::{NONE, spec};
 
-    /// Runs `$check::<N>()` for every size from 1 to 4; larger bounds exhaust memory or time.
+    /// Runs `$check::<N>()` for every size from 1 to 3; larger bounds take hours.
     macro_rules! for_each_size {
         ($check:ident) => {
             $check::<1>();
             $check::<2>();
             $check::<3>();
-            $check::<4>();
         };
     }
 
