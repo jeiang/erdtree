@@ -306,7 +306,33 @@ mod spec {
     }
 
     /// Whether `a` is `node` or one of its ancestors.
-    fn is_ancestor(parent: &[u32], a: u32, mut node: u32) -> bool {
+    /// Ancestor sets as bitmasks: bit `a` of `anc[i]` is set when `a` is `i` or one of its
+    /// ancestors. Computed once per tree (`n` rounds of propagation, enough for any depth), so
+    /// each query is a shift instead of a walk up the parents. Supports up to 16 nodes.
+    pub fn ancestors(parent: &[u32]) -> Vec<u16> {
+        let n = parent.len();
+        let mut anc: Vec<u16> = (0..n).map(|i| 1 << i).collect();
+
+        for _ in 0..n {
+            for i in 0..n {
+                if parent[i] != NONE {
+                    anc[i] |= anc[ix(parent[i])];
+                }
+            }
+        }
+
+        anc
+    }
+
+    /// Whether `a` is `node` or one of its ancestors, given [`ancestors`].
+    const fn has_ancestor(anc: &[u16], node: usize, a: usize) -> bool {
+        anc[node] >> a & 1 == 1
+    }
+
+    /// Whether `a` is `node` or one of its ancestors, by walking up the parents. Reference for
+    /// [`ancestors`] in the tests.
+    #[cfg(test)]
+    pub fn is_ancestor(parent: &[u32], a: u32, mut node: u32) -> bool {
         for _ in 0..parent.len() {
             if node == a {
                 return true;
@@ -353,9 +379,10 @@ mod spec {
         }
 
         assert_eq!(order[0], root);
+        let anc = ancestors(parent);
 
         for i in 0..n {
-            let reachable = (0..n).all(|a| !is_ancestor(parent, id(a), id(i)) || alive[a]);
+            let reachable = (0..n).all(|a| !has_ancestor(&anc, i, a) || alive[a]);
             assert_eq!(pos[i] != usize::MAX, reachable);
 
             if pos[i] != usize::MAX && id(i) != root {
@@ -365,25 +392,47 @@ mod spec {
 
         // Siblings keep their child-list order.
         for p in 0..n {
-            let listed: Vec<usize> = children
-                .of(id(p))
-                .iter()
-                .map(|&c| pos[ix(c)])
-                .filter(|&k| k != usize::MAX)
-                .collect();
-            assert!(listed.windows(2).all(|w| w[0] < w[1]));
-        }
-
-        // Everything between a node and one of its listed descendants is its descendant.
-        for (k, &a) in order.iter().enumerate() {
-            for (m, &d) in order.iter().enumerate().skip(k) {
-                if is_ancestor(parent, a, d) {
-                    for &between in &order[k..=m] {
-                        assert!(is_ancestor(parent, a, between));
-                    }
+            let mut previous = None;
+            for &c in children.of(id(p)) {
+                let k = pos[ix(c)];
+                if k != usize::MAX {
+                    assert!(previous.is_none_or(|prev| prev < k));
+                    previous = Some(k);
                 }
             }
         }
+
+        assert!(subtrees_contiguous(&anc, &pos));
+    }
+
+    /// Whether every listed subtree occupies consecutive positions: the listed descendants of
+    /// `a` (including `a`) all fall in `pos[a] .. pos[a] + count`, where `count` is their
+    /// number. Positions are distinct, so that window is exactly filled. `pos` is
+    /// `usize::MAX` for unlisted nodes.
+    pub fn subtrees_contiguous(anc: &[u16], pos: &[usize]) -> bool {
+        let n = pos.len();
+
+        (0..n).filter(|&a| pos[a] != usize::MAX).all(|a| {
+            let below = |d: usize| pos[d] != usize::MAX && has_ancestor(anc, d, a);
+            let count = (0..n).filter(|&d| below(d)).count();
+            (0..n)
+                .filter(|&d| below(d))
+                .all(|d| pos[a] <= pos[d] && pos[d] < pos[a] + count)
+        })
+    }
+
+    /// Reference for [`subtrees_contiguous`]: everything listed between a node and one of its
+    /// listed descendants is also its descendant.
+    #[cfg(test)]
+    pub fn subtrees_contiguous_reference(parent: &[u32], order: &[u32]) -> bool {
+        order.iter().enumerate().all(|(k, &a)| {
+            order.iter().enumerate().skip(k).all(|(m, &d)| {
+                !is_ancestor(parent, a, d)
+                    || order[k..=m]
+                        .iter()
+                        .all(|&between| is_ancestor(parent, a, between))
+            })
+        })
     }
 
     /// Exactly one alive child of each listed node with alive children is marked last, and it
@@ -394,15 +443,16 @@ mod spec {
         let last = last_alive_child(&children, &order, alive);
 
         for &p in &order {
-            let alive_children: Vec<u32> = children
-                .of(p)
-                .iter()
-                .copied()
-                .filter(|&c| alive[ix(c)])
-                .collect();
-            let marked = alive_children.iter().filter(|&&c| last[ix(c)]).count();
-            assert_eq!(marked, usize::from(!alive_children.is_empty()));
-            if let Some(&l) = alive_children.last() {
+            let mut marked = 0;
+            let mut last_alive = None;
+            for &c in children.of(p) {
+                if alive[ix(c)] {
+                    marked += usize::from(last[ix(c)]);
+                    last_alive = Some(c);
+                }
+            }
+            assert_eq!(marked, usize::from(last_alive.is_some()));
+            if let Some(l) = last_alive {
                 assert!(last[ix(l)]);
             }
         }
@@ -442,6 +492,7 @@ mod spec {
         let order = preorder(&children, root, &all_alive(n));
         let mut size = files.to_vec();
         aggregate(&order, parent, counted, is_dir, &mut size);
+        let anc = ancestors(parent);
 
         for d in 0..n {
             if !is_dir[d] {
@@ -451,15 +502,13 @@ mod spec {
 
             let mut expected = 0_u64;
             for f in 0..n {
-                if is_dir[f] || f == d || !is_ancestor(parent, id(d), id(f)) {
+                if is_dir[f] || f == d || !has_ancestor(&anc, f, d) {
                     continue;
                 }
-                let mut cur = f;
-                let mut reaches = true;
-                while cur != d {
-                    reaches &= counted[cur];
-                    cur = ix(parent[cur]);
-                }
+                // The path from `f` up to `d`, excluding `d`, is the ancestors of `f` that are
+                // not ancestors of `d`; all of them must be counted.
+                let reaches = (0..n)
+                    .all(|m| !has_ancestor(&anc, f, m) || has_ancestor(&anc, d, m) || counted[m]);
                 if reaches {
                     expected += files[f].unwrap_or(0);
                 }
@@ -478,9 +527,11 @@ mod spec {
         let mut alive = all_alive(n);
         prune(&order, parent, is_dir, &mut alive);
 
+        let anc = ancestors(parent);
+
         assert!(alive[ix(root)]);
         for i in (0..n).filter(|&i| id(i) != root) {
-            let has_file = (0..n).any(|f| !is_dir[f] && is_ancestor(parent, id(i), id(f)));
+            let has_file = (0..n).any(|f| !is_dir[f] && has_ancestor(&anc, f, i));
             assert_eq!(alive[i], has_file);
         }
     }
@@ -512,13 +563,21 @@ mod spec {
         let order = preorder(&children, root, &all_alive(n));
         let mut alive = all_alive(n);
         let hidden = hide_small(&order, parent, size, threshold, &mut alive);
+        let anc = ancestors(parent);
+
+        // How often each node is reported hidden.
+        let mut reported = vec![0_usize; n];
+        for &h in &hidden {
+            reported[ix(h)] += 1;
+        }
 
         assert!(alive[ix(root)]);
+        assert_eq!(reported[ix(root)], 0);
         for i in (0..n).filter(|&i| id(i) != root) {
-            let large_below = (0..n)
-                .any(|d| size[d].unwrap_or(0) >= threshold && is_ancestor(parent, id(i), id(d)));
+            let large_below =
+                (0..n).any(|d| size[d].unwrap_or(0) >= threshold && has_ancestor(&anc, d, i));
             assert_eq!(alive[i], large_below);
-            assert_eq!(hidden.contains(&(id(i))), !large_below);
+            assert_eq!(reported[i], usize::from(!large_below));
         }
     }
 
@@ -566,6 +625,82 @@ mod test {
     /// The `n` low bits of `mask`.
     fn bits(mask: usize, n: usize) -> Vec<bool> {
         (0..n).map(|i| mask >> i & 1 == 1).collect()
+    }
+
+    /// The ancestor bitsets and the interval form of contiguity used by the specs agree with
+    /// their direct definitions, so the cheaper specs are not weaker.
+    #[test]
+    fn spec_helpers_match_references() {
+        for n in 1..=spec::MAX_TEST {
+            for (parent, _) in trees(n) {
+                let anc = spec::ancestors(&parent);
+                for (node, bits) in anc.iter().enumerate() {
+                    for a in 0..n {
+                        let node32 = u32::try_from(node).unwrap();
+                        let a32 = u32::try_from(a).unwrap();
+                        assert_eq!(bits >> a & 1 == 1, spec::is_ancestor(&parent, a32, node32));
+                    }
+                }
+            }
+        }
+
+        // Every ordering of every subset of nodes, for trees of up to 4 nodes.
+        for n in 1..=4 {
+            for (parent, _) in trees(n) {
+                let anc = spec::ancestors(&parent);
+                for subset in 0_usize..1 << n {
+                    let nodes: Vec<u32> = (0..n)
+                        .filter(|&i| subset >> i & 1 == 1)
+                        .map(|i| u32::try_from(i).unwrap())
+                        .collect();
+                    for order in permutations(&nodes) {
+                        let mut pos = vec![usize::MAX; n];
+                        for (k, &node) in order.iter().enumerate() {
+                            pos[super::ix(node)] = k;
+                        }
+
+                        // The specs assert parents first separately; on other orders the
+                        // interval form is stricter (it also rejects a descendant listed
+                        // before its ancestor).
+                        let ancestors_first = (0..n).all(|d| {
+                            (0..n).all(|a| {
+                                pos[a] == usize::MAX
+                                    || pos[d] == usize::MAX
+                                    || anc[d] >> a & 1 == 0
+                                    || pos[a] <= pos[d]
+                            })
+                        });
+                        if !ancestors_first {
+                            assert!(!spec::subtrees_contiguous(&anc, &pos));
+                            continue;
+                        }
+
+                        assert_eq!(
+                            spec::subtrees_contiguous(&anc, &pos),
+                            spec::subtrees_contiguous_reference(&parent, &order)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every ordering of `items`.
+    fn permutations(items: &[u32]) -> Vec<Vec<u32>> {
+        if items.is_empty() {
+            return vec![vec![]];
+        }
+
+        (0..items.len())
+            .flat_map(|k| {
+                let mut rest = items.to_vec();
+                let first = rest.remove(k);
+                permutations(&rest).into_iter().map(move |mut tail| {
+                    tail.insert(0, first);
+                    tail
+                })
+            })
+            .collect()
     }
 
     #[test]
