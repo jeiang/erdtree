@@ -503,8 +503,8 @@ impl Tree {
             && self.children.of(i).iter().any(|&c| self.alive[ix(c)])
     }
 
-    /// Nodes in the order the inverted flat layout (`iflat`) displays them; the flat layout
-    /// displays the same list reversed.
+    /// Nodes in the order the inverted flat layout (`iflat`) displays them, down to the display
+    /// level; the flat layout displays the same list reversed.
     ///
     /// Name sorts keep the hierarchy: a pre-order walk of the per-directory sorted tree, so each
     /// directory's contents follow it, as when sorting by full path. Other sorts are global: the
@@ -513,13 +513,20 @@ impl Tree {
     /// list a directory before its contents.
     #[must_use]
     pub fn flat_order(&self, ctx: &Context) -> Vec<u32> {
+        let level = ctx.level();
+
         if ctx.sort.is_name() || self.order.len() <= 1 {
-            return self.order.clone();
+            let mut ids = self.order.clone();
+
+            // The order is cut at the level unless a filter or `--follow` kept all of it.
+            if ix(self.shown_depth) > level {
+                ids.retain(|&i| ix(self.cols.depth[ix(i)]) <= level);
+            }
+            return ids;
         }
 
         // The flat layouts show nothing deeper than the level, and a stable sort of a subset
         // lists it as the sort of the whole does, so sort just the visible nodes.
-        let level = ctx.level();
         let rest: Vec<u32> = self.order[1..]
             .iter()
             .copied()

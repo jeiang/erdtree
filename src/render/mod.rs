@@ -79,16 +79,14 @@ impl Plan {
         }
     }
 
-    /// Makes the rows flat rows whose paths are made from the directories of `tree` down to
+    /// Flat rows of the nodes `ids`, whose paths are made from the directories of `tree` down to
     /// `level`, found with `threads` threads.
-    pub fn with_paths(mut self, tree: &Tree, level: usize, threads: usize) -> Self {
-        self.paths = Some(paths::DirPaths::new(tree, level, threads));
-        self
-    }
-
-    /// Adds a flat row.
-    pub fn push(&mut self, id: u32) {
-        self.ids.push(id);
+    pub fn flat(ids: Vec<u32>, tree: &Tree, level: usize, threads: usize) -> Self {
+        Self {
+            ids,
+            paths: Some(paths::DirPaths::new(tree, level, threads)),
+            ..Self::default()
+        }
     }
 
     /// Adds a tree row whose prefix is the concatenation of `parts`.
