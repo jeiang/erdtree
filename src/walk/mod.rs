@@ -314,6 +314,7 @@ where
             #[cfg(target_os = "linux")]
             dirent_buf: Vec::new(),
             path_buf: Vec::new(),
+            deferred: 0,
         };
         worker.run();
         mem::forget(guard);
@@ -506,6 +507,9 @@ struct Worker<'scope, 'env, S, F> {
     #[cfg(target_os = "linux")]
     dirent_buf: Vec<u8>,
     path_buf: Vec<u8>,
+    /// Directories the current task queued whose record their own job stores. Those jobs count
+    /// them as kept (for the progress counter) when they do.
+    deferred: u64,
 }
 
 impl<'env, S, F> Worker<'_, 'env, S, F>
@@ -531,8 +535,9 @@ where
                 self.grow();
             }
 
+            let deferred = mem::take(&mut self.deferred);
             if let Some(progress) = self.progress {
-                progress.fetch_add(kept, Ordering::Relaxed);
+                progress.fetch_add(kept.saturating_sub(deferred), Ordering::Relaxed);
             }
 
             self.share();
@@ -752,6 +757,10 @@ where
     /// Opens and lists the directory of `job`, storing its record if that is still to do.
     /// Returns its record, listing, which ignore files it has and its device and inode numbers
     /// (with `--follow`); `None` when it cannot be read or is not walked.
+    ///
+    /// A directory the parent listed as one but that cannot be looked up (its parent is
+    /// readable but not searchable, or it vanished) has no record. It counts as ignored, as an
+    /// entry whose metadata cannot be read does.
     #[cfg(target_os = "linux")]
     fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found)> {
         let walker = self.walker;
@@ -764,10 +773,26 @@ where
                     .as_ref()
                     .and_then(|fd| at::stat_fd(fd.as_raw_fd(), walker.fields).ok());
 
-                let stat = from_fd.or_else(|| lstat_in_parent(job, walker.fields))?;
+                let stored = from_fd
+                    .or_else(|| lstat_in_parent(job, walker.fields))
+                    .and_then(|stat| {
+                        let index = self.store_dir(job, parent, &stat)?;
+                        Some((stat, index))
+                    });
+
+                let Some((stat, index)) = stored else {
+                    if walker.count_ignored {
+                        self.sink.add_ignored(1);
+                    }
+                    return None;
+                };
+
+                // The parent's task did not count the directory.
+                if let Some(progress) = self.progress {
+                    progress.fetch_add(1, Ordering::Relaxed);
+                }
 
                 let foreign = self.root_device.is_some_and(|root| stat.dev != root);
-                let index = self.store_dir(job, parent, &stat)?;
 
                 (
                     NodeRef {
@@ -907,6 +932,11 @@ where
                     .retain(buf.len() >= fds::LONG_PATH)
                     .then(|| Arc::clone(parent))
             });
+
+            #[cfg(target_os = "linux")]
+            if matches!(me, Me::Deferred(_)) {
+                self.deferred += 1;
+            }
 
             self.shared.pending.fetch_add(1, Ordering::AcqRel);
             self.local.push(Task::Dir(Job {
@@ -1312,6 +1342,37 @@ mod test {
         // With a threshold above every directory size, nothing is split.
         let (records, ignored, splits) = walk(&root, 4, usize::MAX);
         assert_eq!((records, ignored, splits), (expected, expected_ignored, 0));
+    }
+
+    /// A directory that is listed but cannot be looked up in (mode 644) holds entries the walk
+    /// cannot stat. All of them count as ignored, subdirectories too, and none as kept.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_entries_count_as_ignored() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let locked = root.join("locked");
+
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("f"), "x").unwrap();
+        fs::create_dir(locked.join("sub")).unwrap();
+        fs::create_dir(locked.join("sub2")).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+
+        // The superuser can look up everything.
+        let searchable = fs::symlink_metadata(locked.join("f")).is_ok();
+
+        let (records, ignored, _) = walk(&root, 1, SPLIT_MIN);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        if searchable {
+            return;
+        }
+
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert_eq!(ignored, 3);
     }
 
     #[test]
