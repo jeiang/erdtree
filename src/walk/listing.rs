@@ -7,17 +7,11 @@ use crate::fs::stat::{Fields, Kind, Stat};
 use std::ffi::OsStr;
 
 #[cfg(target_os = "linux")]
+use super::fds::DirFd;
+#[cfg(target_os = "linux")]
 use crate::fs::at::{self, At};
 #[cfg(target_os = "linux")]
-use std::{
-    ffi::CStr,
-    os::{
-        fd::{AsRawFd, OwnedFd},
-        unix::ffi::OsStrExt,
-    },
-    path::Path,
-    sync::Arc,
-};
+use std::{ffi::CStr, os::unix::ffi::OsStrExt, path::Path, sync::Arc};
 #[cfg(not(target_os = "linux"))]
 use std::{fs, path::Path};
 
@@ -53,7 +47,7 @@ pub struct Listing {
     pub unusable: usize,
     /// The open directory, which `statx` of the entries is relative to.
     #[cfg(target_os = "linux")]
-    pub dir: Option<Arc<OwnedFd>>,
+    pub dir: Option<Arc<DirFd>>,
     #[cfg(not(target_os = "linux"))]
     std: Vec<fs::DirEntry>,
 }
@@ -128,7 +122,7 @@ impl Listing {
 impl Listing {
     /// Reads every entry of `dir` with `getdents64` through `buf`, and notes ignore-relevant names
     /// in `found`. Entries listed before an I/O error are kept.
-    pub fn fill(&mut self, dir: Arc<OwnedFd>, buf: &mut Vec<u8>, found: &mut Found) {
+    pub fn fill(&mut self, dir: Arc<DirFd>, buf: &mut Vec<u8>, found: &mut Found) {
         if buf.len() < DIRENT_BUF {
             buf.resize(DIRENT_BUF, 0);
         }
@@ -267,6 +261,7 @@ impl Listing {
 
 #[cfg(all(test, target_os = "linux"))]
 mod test {
+    use super::super::fds::Budget;
     use super::*;
     use crate::fs::at;
     use std::{collections::BTreeSet, fs};
@@ -281,10 +276,14 @@ mod test {
         fs::create_dir(dir.path().join("sub")).unwrap();
         fs::write(dir.path().join(".gitignore"), "").unwrap();
 
-        let fd = at::open_dir_path(dir.path()).unwrap();
+        let fd = at::open_dir_path(dir.path(), true).unwrap();
         let mut listing = Listing::default();
         let mut found = Found::default();
-        listing.fill(Arc::new(fd), &mut Vec::new(), &mut found);
+        listing.fill(
+            Arc::new(DirFd::new(fd, Budget::new(1024, 1))),
+            &mut Vec::new(),
+            &mut found,
+        );
 
         assert!(found.has_git_ignore && !found.has_git_dir);
 
@@ -328,8 +327,12 @@ mod test {
         }
 
         let mut listing = Listing::default();
-        let fd = at::open_dir_path(dir.path()).unwrap();
-        listing.fill(Arc::new(fd), &mut Vec::new(), &mut Found::default());
+        let fd = at::open_dir_path(dir.path(), true).unwrap();
+        listing.fill(
+            Arc::new(DirFd::new(fd, Budget::new(1024, 1))),
+            &mut Vec::new(),
+            &mut Found::default(),
+        );
 
         assert_eq!(listing.len(), 20);
         assert!((0..20).all(|i| listing.kind(i) == Some(Kind::File) || listing.kind(i).is_none()));

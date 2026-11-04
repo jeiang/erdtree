@@ -85,12 +85,18 @@ pub fn open_dir_at(dir: RawFd, name: &CStr, follow: bool) -> io::Result<OwnedFd>
     })
 }
 
-/// Opens the directory at `path`.
-pub fn open_dir_path(path: &Path) -> io::Result<OwnedFd> {
+/// Opens the directory at `path`. A symlink as the last component is only followed with `follow`.
+pub fn open_dir_path(path: &Path, follow: bool) -> io::Result<OwnedFd> {
+    let flags = if follow {
+        DIR_FLAGS
+    } else {
+        DIR_FLAGS | libc::O_NOFOLLOW
+    };
+
     with_path(path, |path| {
         retry(|| {
             // SAFETY: `path` is NUL-terminated and outlives the call.
-            let fd = unsafe { libc::open(path.as_ptr(), DIR_FLAGS) };
+            let fd = unsafe { libc::open(path.as_ptr(), flags) };
             owned(fd)
         })
     })
@@ -490,9 +496,10 @@ pub fn target_exists(at: At<'_>) -> bool {
     stat_at(at, true, Fields::default()).is_ok()
 }
 
-/// Raises the soft limit of open files towards the hard limit. The walk keeps a directory open
-/// while its subdirectories wait to be read, so deep trees need more than the common 1024.
-pub fn raise_open_file_limit() {
+/// Raises the soft limit of open files towards the hard limit, and returns the limit in force.
+/// The walk keeps a directory open while its subdirectories wait to be read, so deep trees need
+/// more than the common 1024.
+pub fn raise_open_file_limit() -> usize {
     const WANTED: libc::rlim_t = 65_536;
 
     let mut limit = libc::rlimit {
@@ -502,14 +509,30 @@ pub fn raise_open_file_limit() {
 
     // SAFETY: `limit` is a valid `rlimit` for the calls to fill and read.
     unsafe {
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) != 0 || limit.rlim_cur >= WANTED {
-            return;
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) != 0 {
+            // Unknown: assume the common default.
+            return 1024;
         }
 
-        limit.rlim_cur = limit.rlim_max.min(WANTED);
-        // Failing leaves the limit as it was.
-        let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit);
+        if limit.rlim_cur < WANTED {
+            let old = limit.rlim_cur;
+            limit.rlim_cur = limit.rlim_max.min(WANTED);
+
+            // Failing leaves the limit as it was.
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) != 0 {
+                limit.rlim_cur = old;
+            }
+        }
     }
+
+    usize::try_from(limit.rlim_cur).unwrap_or(usize::MAX)
+}
+
+/// Metadata of the file at `path`, without following a symlink.
+pub fn lstat_path(path: &Path, fields: Fields) -> io::Result<Stat> {
+    with_path(path, |path| {
+        stat_raw(libc::AT_FDCWD, path, libc::AT_SYMLINK_NOFOLLOW, fields)
+    })
 }
 
 #[cfg(test)]
@@ -550,7 +573,7 @@ mod test {
     #[test]
     fn stat_at_matches_std() {
         let dir = fixture();
-        let fd = open_dir_path(dir.path()).unwrap();
+        let fd = open_dir_path(dir.path(), true).unwrap();
 
         for name in ["file", "dir", "link", "dangling"] {
             let c = CString::new(name).unwrap();
@@ -585,7 +608,7 @@ mod test {
     #[test]
     fn fstatat_fallback_matches_statx() {
         let dir = fixture();
-        let fd = open_dir_path(dir.path()).unwrap();
+        let fd = open_dir_path(dir.path(), true).unwrap();
 
         for name in ["file", "dir", "link", "dangling"] {
             let c = CString::new(name).unwrap();
@@ -614,7 +637,7 @@ mod test {
         fs::create_dir(dir.path().join("sub")).unwrap();
         symlink("sub", dir.path().join("link")).unwrap();
 
-        let fd = open_dir_path(dir.path()).unwrap();
+        let fd = open_dir_path(dir.path(), true).unwrap();
         let mut buf = vec![0_u8; 1024];
         let mut got = BTreeSet::new();
 
@@ -670,7 +693,7 @@ mod test {
     #[test]
     fn read_link_handles_long_targets() {
         let dir = tempfile::tempdir().unwrap();
-        let fd = open_dir_path(dir.path()).unwrap();
+        let fd = open_dir_path(dir.path(), true).unwrap();
 
         for len in [1, 255, 256, 257, 1000, 3000] {
             let target = "t".repeat(len);
@@ -696,7 +719,7 @@ mod test {
     #[test]
     fn open_dir_refuses_files_and_unfollowed_symlinks() {
         let dir = fixture();
-        let fd = open_dir_path(dir.path()).unwrap();
+        let fd = open_dir_path(dir.path(), true).unwrap();
         let open = |name: &str, follow| {
             let c = CString::new(name).unwrap();
             open_dir_at(fd.as_raw_fd(), &c, follow)
@@ -747,7 +770,7 @@ mod test_at_calls {
         };
         eprintln!("setxattr: {set}");
 
-        let fd = open_dir_path(dir.path()).unwrap();
+        let fd = open_dir_path(dir.path(), true).unwrap();
 
         for name in [
             "plain",
@@ -779,7 +802,7 @@ mod test_at_calls {
         if big.set_len(3 << 30).is_err() {
             return;
         }
-        let fd = open_dir_path(dir.path()).unwrap();
+        let fd = open_dir_path(dir.path(), true).unwrap();
         let c = CString::new("big").unwrap();
         let file = open_file(At {
             dir: fd.as_raw_fd(),
@@ -794,7 +817,7 @@ mod test_at_calls {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("f"), "contents").unwrap();
         symlink("f", dir.path().join("l")).unwrap();
-        let fd = open_dir_path(dir.path()).unwrap();
+        let fd = open_dir_path(dir.path(), true).unwrap();
 
         for name in ["f", "l"] {
             let c = CString::new(name).unwrap();

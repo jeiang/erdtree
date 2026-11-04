@@ -34,11 +34,16 @@ use std::os::{
 
 /// Detects workers that wait for the file system.
 mod adaptive;
+/// Bounds the descriptors that queued jobs hold.
+#[cfg(target_os = "linux")]
+mod fds;
 /// The entries of one directory.
 mod listing;
 /// Ignore rules per directory, adapted from the `ignore` crate.
 pub mod rules;
 
+#[cfg(target_os = "linux")]
+use fds::{Budget, DirFd};
 use listing::Listing;
 use rules::{Found, Rules};
 
@@ -243,9 +248,10 @@ struct Job {
     /// Whether the directory is on another file system than the root (`-x`). Only known for
     /// [`Me::Pushed`].
     foreign: bool,
-    /// The parent directory, which the directory is opened relative to.
+    /// The parent directory, which the directory is opened relative to. `None` when the budget
+    /// of held descriptors is spent: the directory is then opened by path.
     #[cfg(target_os = "linux")]
-    parent: Option<Arc<OwnedFd>>,
+    parent: Option<Arc<DirFd>>,
     /// Whether the directory is a followed symlink, so opening it follows the link.
     #[cfg(target_os = "linux")]
     follow: bool,
@@ -272,6 +278,9 @@ struct Run<'a, S, F> {
     workers: AtomicUsize,
     /// Sinks of the extra workers, once they are done.
     extras: Mutex<Vec<(u32, S)>>,
+    /// How many directory descriptors queued jobs may hold.
+    #[cfg(target_os = "linux")]
+    budget: Arc<Budget>,
 }
 
 /// Starts the worker with sink index `sink_index`.
@@ -346,9 +355,10 @@ impl Walker {
             return sinks;
         };
 
-        // Parent directories stay open while their subdirectories wait, so allow many files.
+        // Parent directories stay open while their subdirectories wait, so allow many files, and
+        // hold no more of them than the limit allows.
         #[cfg(target_os = "linux")]
-        at::raise_open_file_limit();
+        let budget = Budget::new(at::raise_open_file_limit(), self.max_workers());
 
         let run = Run {
             walker: self,
@@ -363,6 +373,8 @@ impl Walker {
             make_sink,
             workers: AtomicUsize::new(threads),
             extras: Mutex::new(Vec::new()),
+            #[cfg(target_os = "linux")]
+            budget,
         };
 
         let mut root = Some(root);
@@ -738,8 +750,8 @@ where
     }
 
     /// Opens and lists the directory of `job`, storing its record if that is still to do.
-    /// Returns its record, listing and which ignore files it has; `None` when it cannot be read
-    /// or is not walked.
+    /// Returns its record, listing, which ignore files it has and its device and inode numbers
+    /// (with `--follow`); `None` when it cannot be read or is not walked.
     #[cfg(target_os = "linux")]
     fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found)> {
         let walker = self.walker;
@@ -751,6 +763,7 @@ where
                 let from_fd = fd
                     .as_ref()
                     .and_then(|fd| at::stat_fd(fd.as_raw_fd(), walker.fields).ok());
+
                 let stat = from_fd.or_else(|| lstat_in_parent(job, walker.fields))?;
 
                 let foreign = self.root_device.is_some_and(|root| stat.dev != root);
@@ -775,7 +788,8 @@ where
         let mut listing = mem::take(&mut self.listing);
         let mut found = Found::default();
         listing.clear();
-        listing.fill(Arc::new(fd), &mut self.dirent_buf, &mut found);
+        let dir = DirFd::new(fd, Arc::clone(&self.run.budget));
+        listing.fill(Arc::new(dir), &mut self.dirent_buf, &mut found);
 
         if foreign {
             // Contents of another file system are not walked, only counted.
@@ -824,7 +838,7 @@ where
     #[cfg(target_os = "linux")]
     fn store_dir(&mut self, job: &Job, parent: NodeRef, stat: &Stat) -> Option<u32> {
         let name = job.path.file_name()?;
-        let parent_fd = job.parent.as_deref().map(AsRawFd::as_raw_fd);
+        let parent_fd = job.parent.as_deref().map(DirFd::as_raw_fd);
 
         at::with_cstr(name.as_bytes(), |cname| {
             Ok(self.sink.push(&Record {
@@ -886,6 +900,14 @@ where
                 None => continue,
             };
 
+            #[cfg(target_os = "linux")]
+            let parent = dir.listing.dir.as_ref().and_then(|parent| {
+                // A path this long cannot be opened by path, so the job needs the descriptor.
+                parent
+                    .retain(buf.len() >= fds::LONG_PATH)
+                    .then(|| Arc::clone(parent))
+            });
+
             self.shared.pending.fetch_add(1, Ordering::AcqRel);
             self.local.push(Task::Dir(Job {
                 // SAFETY: as above.
@@ -895,7 +917,7 @@ where
                 rules: dir.rules.clone(),
                 foreign: entry.foreign,
                 #[cfg(target_os = "linux")]
-                parent: dir.listing.dir.clone(),
+                parent,
                 #[cfg(target_os = "linux")]
                 follow: entry.followed,
             }));
@@ -998,26 +1020,57 @@ where
     }
 }
 
-/// Metadata of the directory of `job` looked up by name in its parent.
+/// Metadata of the directory of `job` looked up by name in its parent, or by path when the job
+/// holds no descriptor of the parent.
 #[cfg(target_os = "linux")]
 fn lstat_in_parent(job: &Job, fields: Fields) -> Option<Stat> {
-    let dir = job.parent.as_ref()?.as_raw_fd();
+    let Some(parent) = &job.parent else {
+        return at::lstat_path(&job.path, fields).ok();
+    };
+
+    let dir = parent.as_raw_fd();
     let name = job.path.file_name()?.as_bytes();
 
     at::with_cstr(name, |name| at::stat_at(At { dir, name }, false, fields)).ok()
 }
 
-/// Opens the directory of `job`: relative to its parent when it has one.
+/// How often opening a directory is retried when the process or system is out of descriptors,
+/// and the longest wait between tries.
+#[cfg(target_os = "linux")]
+const OPEN_RETRIES: u32 = 100;
+
+/// Opens the directory of `job`: relative to its parent when it has one, else by path. Running
+/// out of descriptors (`EMFILE`, `ENFILE`) is retried for a while, as other workers close theirs;
+/// only then the directory counts as unreadable. The budget (see [`fds`]) keeps the walk from
+/// causing this by itself, except for paths too long to open by path.
 #[cfg(target_os = "linux")]
 fn open_dir(job: &Job) -> Option<OwnedFd> {
+    for attempt in 1..=OPEN_RETRIES {
+        match open_dir_once(job) {
+            Err(e) if matches!(e.raw_os_error(), Some(libc::EMFILE | libc::ENFILE)) => {
+                thread::sleep(std::time::Duration::from_micros(100 * u64::from(attempt)));
+            },
+            result => return result.ok(),
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn open_dir_once(job: &Job) -> std::io::Result<OwnedFd> {
     if let Some(parent) = &job.parent {
-        let name = job.path.file_name()?.as_bytes();
+        let name = job
+            .path
+            .file_name()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?
+            .as_bytes();
         let opened = at::with_cstr(name, |name| {
             at::open_dir_at(parent.as_raw_fd(), name, job.follow)
         });
 
         match opened {
-            Ok(fd) => return Some(fd),
+            Ok(fd) => return Ok(fd),
             // Another lookup cannot fix these.
             Err(e)
                 if matches!(
@@ -1033,13 +1086,13 @@ fn open_dir(job: &Job) -> Option<OwnedFd> {
                     )
                 ) =>
             {
-                return None;
+                return Err(e);
             },
             Err(_) => {},
         }
     }
 
-    at::open_dir_path(&job.path).ok()
+    at::open_dir_path(&job.path, job.follow)
 }
 
 /// Whether the directory at `path` is one of the walked directories that lead to it.
