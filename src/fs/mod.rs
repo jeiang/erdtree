@@ -1,9 +1,13 @@
 /// Operations pertaining to underlying inodes of files.
 pub mod inode;
 
-/// Linux system calls relative to a directory file descriptor.
-#[cfg(target_os = "linux")]
+/// System calls relative to a directory file descriptor.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod at;
+
+/// Directory listings with metadata in bulk (`getattrlistbulk`).
+#[cfg(target_os = "macos")]
+pub mod bulk;
 
 /// Platform-neutral entry metadata read by the walk.
 pub mod stat;
