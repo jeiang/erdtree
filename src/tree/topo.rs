@@ -269,8 +269,9 @@ pub const fn global_index(offsets: &[u32], sink: u32, index: u32) -> u32 {
 
 /// Specifications of the functions above, checked two ways: exhaustively for every tree of up
 /// to [`spec::MAX_TEST`] nodes by `cargo test`, and symbolically by Kani (`cargo kani`, see
-/// `proofs`) for every tree of up to 3 nodes and every size, threshold and inode grouping. Both
-/// cover every root position.
+/// `proofs`) for every tree of up to 3 nodes and every size, threshold, order and inode
+/// grouping, except the pre-order and last-child properties, which Kani checks only for 1 node.
+/// Both cover every root position.
 #[cfg(any(test, kani))]
 // The specifications index several per-node arrays by node number.
 #[allow(clippy::needless_range_loop)]
@@ -312,7 +313,6 @@ mod spec {
         parent.iter().all(|&p| p == NONE || is_dir[ix(p)])
     }
 
-    /// Whether `a` is `node` or one of its ancestors.
     /// Ancestor sets as bitmasks: bit `a` of `anc[i]` is set when `a` is `i` or one of its
     /// ancestors. Computed once per tree (`n` rounds of propagation, enough for any depth), so
     /// each query is a shift instead of a walk up the parents. Supports up to 16 nodes.
@@ -372,24 +372,41 @@ mod spec {
     }
 
     /// Whether `order` lists every node exactly once, root first, each node after its parent.
-    /// `aggregate`, `prune` and `hide_small` require such an order; every pre-order of the whole
-    /// tree is one, which `preorder_is_a_valid_preorder` checks.
+    /// `aggregate` and `prune` (called while every node is alive) require such an order; every
+    /// pre-order of the whole tree is one, which `preorder_is_a_valid_preorder` checks.
     pub fn is_parent_first_order(parent: &[u32], root: u32, order: &[u32]) -> bool {
+        is_parent_first_order_of(parent, root, &all_alive(parent.len()), order)
+    }
+
+    /// Whether `alive` is connected (the root is alive and so is the parent of every alive
+    /// node) and `order` lists exactly the alive nodes, root first, each after its parent.
+    /// `hide_small` gets such an order: production calls it with the pre-order of the nodes
+    /// left alive by `--prune`, patterns and `--dirs-only`.
+    pub fn is_parent_first_order_of(
+        parent: &[u32],
+        root: u32,
+        alive: &[bool],
+        order: &[u32],
+    ) -> bool {
         let n = parent.len();
 
-        if order.len() != n || order.first() != Some(&root) {
+        if order.first() != Some(&root) {
             return false;
         }
 
         let mut pos = vec![usize::MAX; n];
         for (k, &node) in order.iter().enumerate() {
-            if ix(node) >= n || pos[ix(node)] != usize::MAX {
+            if ix(node) >= n || !alive[ix(node)] || pos[ix(node)] != usize::MAX {
                 return false;
             }
             pos[ix(node)] = k;
         }
 
-        (0..n).all(|i| parent[i] == NONE || pos[ix(parent[i])] < pos[i])
+        (0..n).all(|i| {
+            !alive[i]
+                || pos[i] != usize::MAX
+                    && (parent[i] == NONE || alive[ix(parent[i])] && pos[ix(parent[i])] < pos[i])
+        })
     }
 
     /// `sort_each` sorts every child list by the comparator and keeps its members, for any
@@ -451,10 +468,14 @@ mod spec {
 
         assert!(subtrees_contiguous(&anc, &pos));
 
-        // With every node alive, the pre-order is an order the size and filter passes accept,
-        // which their proofs assume.
+        // With every node alive, the pre-order is an order `aggregate` and `prune` accept, and
+        // with a connected alive set it is one `hide_small` accepts; their proofs assume this.
         if alive.iter().all(|&a| a) {
             assert!(is_parent_first_order(parent, root, &order));
+        }
+        let connected = (0..n).all(|i| !alive[i] || parent[i] == NONE || alive[ix(parent[i])]);
+        if connected {
+            assert!(is_parent_first_order_of(parent, root, alive, &order));
         }
     }
 
@@ -611,18 +632,20 @@ mod spec {
         }
     }
 
-    /// `--min-size` keeps the root and exactly the nodes with a node of at least `threshold`
-    /// in their subtree, and reports every other node as hidden. Holds for every `order`
-    /// accepted by [`is_parent_first_order`].
+    /// `--min-size`, starting from the nodes `alive_before`: keeps the root and exactly the
+    /// alive nodes with an alive node of at least `threshold` in their subtree, reports every
+    /// other alive node as hidden, and leaves dead nodes dead. Holds for every `order` accepted
+    /// by [`is_parent_first_order_of`].
     pub fn hide_small_keeps_large_and_their_ancestors(
         parent: &[u32],
         root: u32,
+        alive_before: &[bool],
         order: &[u32],
         size: &[Option<u64>],
         threshold: u64,
     ) {
         let n = parent.len();
-        let mut alive = all_alive(n);
+        let mut alive = alive_before.to_vec();
         let hidden = hide_small(order, parent, size, threshold, &mut alive);
         let anc = ancestors(parent);
 
@@ -635,8 +658,14 @@ mod spec {
         assert!(alive[ix(root)]);
         assert_eq!(reported[ix(root)], 0);
         for i in (0..n).filter(|&i| id(i) != root) {
-            let large_below =
-                (0..n).any(|d| size[d].unwrap_or(0) >= threshold && has_ancestor(&anc, d, i));
+            if !alive_before[i] {
+                assert!(!alive[i]);
+                assert_eq!(reported[i], 0);
+                continue;
+            }
+            let large_below = (0..n).any(|d| {
+                alive_before[d] && size[d].unwrap_or(0) >= threshold && has_ancestor(&anc, d, i)
+            });
             assert_eq!(alive[i], large_below);
             assert_eq!(reported[i], usize::from(!large_below));
         }
@@ -848,18 +877,34 @@ mod test {
                             }
                         }
                     }
+                }
 
-                    // Sizes of 2^i, with and without the directories sized; thresholds at
-                    // every distinct boundary.
-                    let all_sized: Vec<Option<u64>> = (0..n).map(|i| Some(1 << i)).collect();
-                    let files_sized: Vec<Option<u64>> =
-                        (0..n).map(|i| (!is_dir[i]).then_some(1 << i)).collect();
-                    let thresholds = (0..=n).map(|i| 1_u64 << i).chain([0]);
-                    for threshold in thresholds {
-                        for sizes in [&all_sized, &files_sized] {
-                            for order in &orders {
+                // `--min-size` runs on whatever `--prune`, patterns and `--dirs-only` left
+                // alive: every connected set containing the root, with its pre-order (and, for
+                // the whole tree, also breadth-first). Sizes are 2^i, all set or with the odd
+                // nodes unsized; thresholds sit at every distinct boundary.
+                let all_sized: Vec<Option<u64>> = (0..n).map(|i| Some(1 << i)).collect();
+                let some_unsized: Vec<Option<u64>> =
+                    (0..n).map(|i| (i % 2 == 0).then_some(1 << i)).collect();
+                for mask in (0..1 << n).filter(|m| m >> r & 1 == 1) {
+                    let alive = bits(mask, n);
+                    let connected = (0..n)
+                        .all(|i| !alive[i] || parent[i] == NONE || alive[super::ix(parent[i])]);
+                    if !connected {
+                        continue;
+                    }
+
+                    let mut alive_orders = vec![super::preorder(&sorted, root, &alive)];
+                    if alive.iter().all(|&a| a) {
+                        alive_orders.push(breadth_first(&built, root));
+                    }
+
+                    for order in &alive_orders {
+                        assert!(spec::is_parent_first_order_of(&parent, root, &alive, order));
+                        for threshold in (0..=n).map(|i| 1_u64 << i).chain([0]) {
+                            for sizes in [&all_sized, &some_unsized] {
                                 spec::hide_small_keeps_large_and_their_ancestors(
-                                    &parent, root, order, sizes, threshold,
+                                    &parent, root, &alive, order, sizes, threshold,
                                 );
                             }
                         }
@@ -981,10 +1026,10 @@ mod proofs {
         spec::dedupe_counts_each_inode_once(N, &linked);
     }
 
-    /// Any order of all nodes with each parent first (what `aggregate`, `prune` and
-    /// `hide_small` require). The pre-order harness proves that `preorder` produces one, so these
-    /// harnesses need not model `Children::build` and `preorder`, and they hold for every such
-    /// order.
+    /// Any order of all nodes with each parent first (what `aggregate` and `prune` require), so
+    /// these harnesses need not model `Children::build` and `preorder` and hold for every such
+    /// order. That `preorder` produces one is asserted by the pre-order spec, which the
+    /// exhaustive tests check up to `spec::MAX_TEST` nodes and Kani only for 1 node.
     fn any_parent_first_order<const N: usize>(parent: &[u32; N], root: u32) -> [u32; N] {
         let order: [u8; N] = kani::any();
         let order = order.map(u32::from);
@@ -1021,11 +1066,27 @@ mod proofs {
         spec::dirs_only_keeps_connected_dirs(&parent, root, &is_dir);
     }
 
-    fn hide_small_keeps_large_and_their_ancestors<const N: usize>() {
+    /// `hide_small` on `N` nodes of which `K` are alive (a connected set containing the root),
+    /// with any parent-first order of the alive nodes. The harnesses for `K` from 1 to `N`
+    /// together cover every alive set, and the concrete order length keeps CBMC's problem small.
+    fn hide_small_keeps_large_and_their_ancestors<const N: usize, const K: usize>() {
         let (parent, root) = any_tree::<N>();
+        let alive: [bool; N] = kani::any();
+        kani::assume(alive.iter().filter(|&&a| a).count() == K);
+        let order: [u8; K] = kani::any();
+        let order = order.map(u32::from);
+        kani::assume(spec::is_parent_first_order_of(
+            &parent, root, &alive, &order,
+        ));
         let size: [Option<u64>; N] = kani::any();
-        let order = any_parent_first_order(&parent, root);
-        spec::hide_small_keeps_large_and_their_ancestors(&parent, root, &order, &size, kani::any());
+        spec::hide_small_keeps_large_and_their_ancestors(
+            &parent,
+            root,
+            &alive,
+            &order,
+            &size,
+            kani::any(),
+        );
     }
 
     /// One harness per property and tree size, so each CBMC problem stays small and
@@ -1061,7 +1122,6 @@ mod proofs {
         aggregate: aggregate_sums_counted_files, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
         prune: prune_removes_exactly_empty_dirs, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
         dirs_only: dirs_only_keeps_connected_dirs, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
-        hide_small: hide_small_keeps_large_and_their_ancestors, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
     }
 
     /// `dedupe` for `N` nodes of which `M` are linked.
@@ -1084,6 +1144,29 @@ mod proofs {
             n1_m0 = 1, 0; n1_m1 = 1, 1;
             n2_m0 = 2, 0; n2_m1 = 2, 1; n2_m2 = 2, 2;
             n3_m0 = 3, 0; n3_m1 = 3, 1; n3_m2 = 3, 2; n3_m3 = 3, 3;
+        }
+    }
+
+    /// `hide_small` for `N` nodes of which `K` are alive.
+    mod hide_small {
+        use super::*;
+
+        macro_rules! cases {
+            ($($name:ident = $n:literal, $k:literal;)*) => {
+                $(
+                    #[kani::proof]
+                    #[kani::unwind(5)]
+                    fn $name() {
+                        hide_small_keeps_large_and_their_ancestors::<$n, $k>();
+                    }
+                )*
+            };
+        }
+
+        cases! {
+            n1_k1 = 1, 1;
+            n2_k1 = 2, 1; n2_k2 = 2, 2;
+            n3_k1 = 3, 1; n3_k2 = 3, 2; n3_k3 = 3, 3;
         }
     }
 

@@ -74,7 +74,7 @@ jobs:
       - uses: model-checking/kani-github-action@v1
         with:
           kani-version: 0.68.0
-          # All 27 harnesses take about a minute on 4 cores and peak near 3 GB in total.
+          # All 30 harnesses take about 1.5 minutes on 4 cores and peak near 2 GB in total.
           args: --jobs 4 --output-format terse
 
   deny:
