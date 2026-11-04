@@ -49,7 +49,7 @@ impl<'a> Node<'a> {
     /// Number of blocks allocated to the entry, if any.
     #[cfg(unix)]
     pub fn blocks(self) -> Option<u64> {
-        let blocks = self.tree.cols.blocks[ix(self.i)];
+        let blocks = *self.tree.cols.blocks.get(ix(self.i))?;
         (blocks != 0).then_some(blocks)
     }
 
@@ -128,7 +128,14 @@ impl<'a> Node<'a> {
                 return Some("=");
             }
 
-            if ft.is_file() && self.tree.cols.mode[ix(self.i)] & 0o111 != 0 {
+            if ft.is_file()
+                && self
+                    .tree
+                    .cols
+                    .mode
+                    .get(ix(self.i))
+                    .is_some_and(|mode| mode & 0o111 != 0)
+            {
                 return Some("*");
             }
         }

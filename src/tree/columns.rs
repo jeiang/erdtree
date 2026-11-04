@@ -41,6 +41,13 @@ pub struct Probe {
     pub long_level: Option<usize>,
     /// Collect `ino` and `nlink` of every entry (long view).
     pub inodes: bool,
+    /// Collect the mode of every entry: the long view shows it and `--classify` marks
+    /// executables.
+    #[cfg(unix)]
+    pub mode: bool,
+    /// Collect the allocated blocks of every entry (long view).
+    #[cfg(unix)]
+    pub blocks: bool,
 }
 
 impl Probe {
@@ -82,6 +89,10 @@ impl Probe {
             inodes: ctx.long,
             #[cfg(not(unix))]
             inodes: false,
+            #[cfg(unix)]
+            mode: ctx.long || ctx.classify,
+            #[cfg(unix)]
+            blocks: ctx.long,
         }
     }
 }
@@ -97,20 +108,32 @@ pub struct LongAttrs {
     pub gid: u32,
 }
 
-/// Columns of entries. In a worker's sink `parent_ref` holds references into any sink; after
+/// A run of consecutive entries of a sink that share a parent.
+struct ParentRun {
+    /// Index of the first entry of the run.
+    start: u32,
+    /// The parent, `None` for the root.
+    parent: Option<NodeRef>,
+}
+
+/// Columns of entries. In a worker's sink `parent_runs` holds references into any sink; after
 /// [`Columns::merge`] `parent` holds global indices.
 #[derive(Default)]
 pub struct Columns {
     names: Vec<u8>,
-    name_end: Vec<usize>,
-    parent_ref: Vec<Option<NodeRef>>,
+    name_end: Vec<u32>,
+    /// The parents of a sink's entries. Entries of one directory are stored together, so there
+    /// are about as many runs as directories instead of one reference per entry.
+    parent_runs: Vec<ParentRun>,
     pub parent: Vec<u32>,
     pub depth: Vec<u32>,
     /// Type of the entry, or of its target when it is a followed symlink.
     pub file_type: Vec<Kind>,
     pub size: Vec<Option<u64>>,
+    /// Mode bits; only with [`Probe::mode`].
     #[cfg(unix)]
     pub mode: Vec<u32>,
+    /// Allocated blocks; only with [`Probe::blocks`].
     #[cfg(unix)]
     pub blocks: Vec<u64>,
     /// Inodes with more than one link, for hard-link deduplication.
@@ -181,8 +204,12 @@ impl Columns {
     /// Name of entry `i`.
     #[inline]
     pub fn name(&self, i: usize) -> &OsStr {
-        let start = if i == 0 { 0 } else { self.name_end[i - 1] };
-        let bytes = &self.names[start..self.name_end[i]];
+        let start = if i == 0 {
+            0
+        } else {
+            self.name_end[i - 1] as usize
+        };
+        let bytes = &self.names[start..self.name_end[i] as usize];
 
         // SAFETY: `names` only holds bytes from `OsStr::as_encoded_bytes`, split at the
         // boundaries they were appended with.
@@ -232,6 +259,7 @@ impl Columns {
     fn push(&mut self, record: &Record<'_>) -> Option<u32> {
         let probe = self.probe?;
         let index = u32::try_from(self.len()).ok().filter(|&i| i != NONE)?;
+        let name_end = u32::try_from(self.names.len() + record.name.len()).ok()?;
         let stat = record.stat;
         let path = record.path;
         let file_type = stat.kind;
@@ -272,8 +300,12 @@ impl Columns {
 
         #[cfg(unix)]
         {
-            self.mode.push(stat.mode);
-            self.blocks.push(stat.blocks);
+            if probe.mode {
+                self.mode.push(stat.mode);
+            }
+            if probe.blocks {
+                self.blocks.push(stat.blocks);
+            }
 
             if let Some(level) = probe.long_level {
                 let attrs = if record.depth <= level {
@@ -291,8 +323,17 @@ impl Columns {
         }
 
         self.names.extend_from_slice(record.name.as_encoded_bytes());
-        self.name_end.push(self.names.len());
-        self.parent_ref.push(record.parent);
+        self.name_end.push(name_end);
+        if self
+            .parent_runs
+            .last()
+            .is_none_or(|run| run.parent != record.parent)
+        {
+            self.parent_runs.push(ParentRun {
+                start: index,
+                parent: record.parent,
+            });
+        }
         self.depth
             .push(u32::try_from(record.depth).unwrap_or(u32::MAX));
         self.file_type.push(file_type);
@@ -301,77 +342,138 @@ impl Columns {
         Some(index)
     }
 
-    /// Concatenates the sinks, in order, and resolves parent references to global indices.
-    pub fn merge(mut sinks: Vec<Self>) -> Self {
-        let mut offsets = Vec::with_capacity(sinks.len());
-        let mut total = 0_u32;
-        for sink in &sinks {
-            offsets.push(total);
-            total = total.saturating_add(u32::try_from(sink.len()).unwrap_or(NONE));
+    /// The parents of all entries as global indices, for the sinks in `order`.
+    fn global_parents(sinks: &[Self], order: &[usize], offsets: &[u32], total: u32) -> Vec<u32> {
+        let mut parent = Vec::with_capacity(usize::try_from(total).unwrap_or(0));
+
+        for &i in order {
+            let sink = &sinks[i];
+
+            for (k, run) in sink.parent_runs.iter().enumerate() {
+                let end = sink
+                    .parent_runs
+                    .get(k + 1)
+                    .map_or(sink.len(), |next| next.start as usize);
+                let global = run.parent.map_or(NONE, |p| {
+                    super::topo::global_index(offsets, p.sink, p.index)
+                });
+                parent.extend(std::iter::repeat_n(global, end - run.start as usize));
+            }
         }
 
-        let mut merged = Self {
-            probe: sinks.first().and_then(|s| s.probe),
-            style_table: vec![Style::default()],
-            ..Self::default()
+        parent
+    }
+
+    /// Appends the columns of `sink`, whose first entry gets the global index `offset`. Parents
+    /// are not touched.
+    fn append(&mut self, sink: &mut Self, offset: u32) {
+        let merged = self;
+
+        let names_offset = u32::try_from(merged.names.len()).unwrap_or(u32::MAX);
+        merged.names.append(&mut sink.names);
+        merged
+            .name_end
+            .extend(sink.name_end.iter().map(|end| end + names_offset));
+        merged.depth.append(&mut sink.depth);
+        merged.file_type.append(&mut sink.file_type);
+        merged.size.append(&mut sink.size);
+        merged.inode.append(&mut sink.inode);
+        merged.modified.append(&mut sink.modified);
+        merged.accessed.append(&mut sink.accessed);
+        merged.created.append(&mut sink.created);
+        merged.multi_linked.extend(
+            sink.multi_linked
+                .drain(..)
+                .map(|(i, inode)| (i + offset, inode)),
+        );
+        merged.link_target.extend(
+            sink.link_target
+                .drain(..)
+                .map(|(i, target)| (i + offset, target)),
+        );
+        merged.ignored += sink.ignored;
+
+        // Styles are small ids into per-sink tables; translate them into the merged table.
+        let remap: Vec<u16> = sink
+            .style_table
+            .iter()
+            .map(|style| {
+                let found = merged.style_table.iter().position(|s| s == style);
+                let index = found.unwrap_or_else(|| {
+                    merged.style_table.push(*style);
+                    merged.style_table.len() - 1
+                });
+                u16::try_from(index).unwrap_or(0)
+            })
+            .collect();
+        merged
+            .style
+            .extend(sink.style.iter().map(|&s| remap[usize::from(s)]));
+
+        #[cfg(unix)]
+        {
+            merged.mode.append(&mut sink.mode);
+            merged.blocks.append(&mut sink.blocks);
+            merged.long.append(&mut sink.long);
+        }
+    }
+
+    /// Concatenates the sinks and resolves parent references to global indices. The largest sink
+    /// goes first and keeps its columns in place; the others are appended to them, in index
+    /// order, into space reserved for the exact total.
+    pub fn merge(mut sinks: Vec<Self>) -> Self {
+        let Some(base) = (0..sinks.len()).max_by_key(|&i| sinks[i].len()) else {
+            return Self::default();
         };
 
-        let n = usize::try_from(total).unwrap_or(0);
-        merged.parent.reserve(n);
-        merged.name_end.reserve(n);
+        let order: Vec<usize> = std::iter::once(base)
+            .chain((0..sinks.len()).filter(|&i| i != base))
+            .collect();
 
-        for (sink, &offset) in sinks.iter_mut().zip(&offsets) {
-            let names_offset = merged.names.len();
-            merged.names.append(&mut sink.names);
-            merged
-                .name_end
-                .extend(sink.name_end.iter().map(|end| end + names_offset));
-            merged.parent.extend(sink.parent_ref.iter().map(|p| {
-                p.map_or(NONE, |p| {
-                    super::topo::global_index(&offsets, p.sink, p.index)
-                })
-            }));
-            merged.depth.append(&mut sink.depth);
-            merged.file_type.append(&mut sink.file_type);
-            merged.size.append(&mut sink.size);
-            merged.inode.append(&mut sink.inode);
-            // Styles are small ids into per-sink tables; translate them into the merged table.
-            let remap: Vec<u16> = sink
-                .style_table
-                .iter()
-                .map(|style| {
-                    let found = merged.style_table.iter().position(|s| s == style);
-                    let index = found.unwrap_or_else(|| {
-                        merged.style_table.push(*style);
-                        merged.style_table.len() - 1
-                    });
-                    u16::try_from(index).unwrap_or(0)
-                })
-                .collect();
-            merged
-                .style
-                .extend(sink.style.iter().map(|&s| remap[usize::from(s)]));
-            merged.modified.append(&mut sink.modified);
-            merged.accessed.append(&mut sink.accessed);
-            merged.created.append(&mut sink.created);
-            merged.multi_linked.extend(
-                sink.multi_linked
-                    .drain(..)
-                    .map(|(i, inode)| (i + offset, inode)),
-            );
-            merged.link_target.extend(
-                sink.link_target
-                    .drain(..)
-                    .map(|(i, target)| (i + offset, target)),
-            );
-            merged.ignored += sink.ignored;
+        let mut offsets = vec![0_u32; sinks.len()];
+        let mut total = 0_u32;
+        for &i in &order {
+            offsets[i] = total;
+            total = total.saturating_add(u32::try_from(sinks[i].len()).unwrap_or(NONE));
+        }
 
-            #[cfg(unix)]
-            {
-                merged.mode.append(&mut sink.mode);
-                merged.blocks.append(&mut sink.blocks);
-                merged.long.append(&mut sink.long);
-            }
+        let parent = Self::global_parents(&sinks, &order, &offsets, total);
+
+        // Every column grows once, to its final size.
+        macro_rules! reserve {
+            ($($col:ident),*) => {{
+                $(
+                    let sum: usize = sinks.iter().map(|s| s.$col.len()).sum();
+                    let have = sinks[base].$col.len();
+                    sinks[base].$col.reserve_exact(sum - have);
+                )*
+            }};
+        }
+        reserve!(
+            names,
+            name_end,
+            depth,
+            file_type,
+            size,
+            inode,
+            style,
+            modified,
+            accessed,
+            created,
+            multi_linked,
+            link_target
+        );
+        #[cfg(unix)]
+        reserve!(mode, blocks, long);
+
+        let probe = sinks[base].probe;
+        let mut merged = std::mem::take(&mut sinks[base]);
+        merged.probe = probe;
+        merged.parent = parent;
+        merged.parent_runs = vec![];
+
+        for &i in order.iter().skip(1) {
+            merged.append(&mut sinks[i], offsets[i]);
         }
 
         merged
