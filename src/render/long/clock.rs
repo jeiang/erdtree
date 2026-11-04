@@ -43,6 +43,11 @@ pub fn local_offset(secs: i64) -> i32 {
 /// an hour with a transition is looked up every time.
 pub struct Clock {
     slots: Vec<Slot>,
+
+    /// The second and format of the last text, which is `text`: files written together share a
+    /// second, and neighbors in a listing often are.
+    last: Option<(i64, Format)>,
+    text: Vec<u8>,
 }
 
 impl Default for Clock {
@@ -56,6 +61,8 @@ impl Default for Clock {
                 };
                 SLOTS
             ],
+            last: None,
+            text: Vec::new(),
         }
     }
 }
@@ -107,9 +114,18 @@ impl Clock {
             return false;
         }
 
+        if self.last == Some((secs, format)) {
+            out.extend_from_slice(&self.text);
+            return true;
+        }
+
         let local = DateTime::from_timestamp(secs + i64::from(self.offset(secs, lookup)), 0)
             .map(|t| t.naive_utc());
-        local.is_some_and(|local| write_fields(out, &local, format))
+        self.text.clear();
+        let done = local.is_some_and(|local| write_fields(&mut self.text, &local, format));
+        self.last = done.then_some((secs, format));
+        out.extend_from_slice(&self.text);
+        done
     }
 }
 

@@ -18,7 +18,6 @@ use crate::{
     styles,
     tree::{Tree, node::Node},
 };
-use std::path::Path;
 
 #[cfg(unix)]
 use super::long;
@@ -260,11 +259,12 @@ impl<'a> RowFmt<'a> {
     fn write_icon(&self, scratch: &mut Scratch, node: Node<'_>, out: &mut Vec<u8>) {
         let name = node.file_name();
         let file_type = node.file_type();
-        let ext_source = node
-            .symlink_target_path()
-            .unwrap_or_else(|| Path::new(name));
-        let (glyph, paint) =
-            icons::fs::lookup(file_type.is_dir(), file_type.is_symlink(), ext_source, name);
+        let (glyph, paint) = icons::fs::lookup(
+            file_type.is_dir(),
+            file_type.is_symlink(),
+            node.symlink_target_path(),
+            name,
+        );
 
         if !self.color {
             out.extend_from_slice(glyph.as_bytes());

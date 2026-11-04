@@ -16,19 +16,20 @@ pub enum Paint {
 /// is as followed: file-type, file-extension, and then file-name. If an icon cannot be
 /// computed the fall-back default icon is used. Without color the [`Paint`] does not apply.
 ///
-/// `ext_source` is the path whose extension is used: the symlink target for a symlink, else the
-/// entry's name.
+/// `target` is the path of a symlink's target, whose extension is used for a symlink; otherwise the
+/// extension of the entry's name is.
 pub fn lookup(
     is_dir: bool,
     is_symlink: bool,
-    ext_source: &Path,
+    target: Option<&Path>,
     file_name: &OsStr,
 ) -> (&'static str, Paint) {
     if let Some(icon) = super::icon_from_file_type(is_dir, is_symlink) {
         return (icon, Paint::FileStyle);
     }
 
-    if let Some((code, icon)) = ext_source.extension().and_then(super::icon_from_ext) {
+    let ext = target.map_or_else(|| name_extension(file_name), Path::extension);
+    if let Some((code, icon)) = ext.and_then(super::icon_from_ext) {
         return (icon, Paint::Fixed(code));
     }
 
@@ -38,6 +39,19 @@ pub fn lookup(
 
     let (code, icon) = super::DEFAULT_ICON;
     (icon, Paint::Fixed(code))
+}
+
+/// The extension of a file name, as [`Path::extension`] finds it for a path of one component:
+/// the text after the last dot, unless the dot starts the name or the name is `..`.
+pub fn name_extension(name: &OsStr) -> Option<&OsStr> {
+    let bytes = name.as_encoded_bytes();
+    let dot = bytes
+        .iter()
+        .rposition(|&b| b == b'.')
+        .filter(|&at| at > 0 && bytes != b"..")?;
+
+    // SAFETY: a split at an ASCII dot of an encoded name is valid for `OsStr`.
+    Some(unsafe { OsStr::from_encoded_bytes_unchecked(&bytes[dot + 1..]) })
 }
 
 /// Appends `icon` painted with the 8-bit color `code`, as `Color::Fixed(code).paint(icon)` shows
@@ -68,32 +82,57 @@ mod test {
     }
 
     #[test]
+    fn extensions_match_path() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "...",
+            "a",
+            ".a",
+            "..a",
+            "a.",
+            "a..",
+            "a.b",
+            ".a.b",
+            "a.b.c",
+            "a.rs",
+            "Cargo.lock",
+            ".bashrc",
+            "x.\u{e9}",
+            "\u{e9}.rs",
+            "a b.txt",
+        ] {
+            assert_eq!(
+                name_extension(OsStr::new(name)),
+                Path::new(name).extension(),
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
     fn precedence() {
         let name = OsStr::new("Cargo.lock");
 
         assert_eq!(
-            lookup(true, false, Path::new("x.rs"), name).1,
+            lookup(true, false, Some(Path::new("x.rs")), name).1,
             Paint::FileStyle
         );
         assert_eq!(
-            lookup(false, false, Path::new("x.rs"), name),
+            lookup(false, false, Some(Path::new("x.rs")), name),
             ("\u{e7a8}", Paint::Fixed(180))
         );
         assert_eq!(
-            lookup(false, false, Path::new("Cargo.lock"), name),
+            lookup(false, false, None, name),
             ("\u{f13e}", Paint::Fixed(250))
         );
         assert_eq!(
-            lookup(
-                false,
-                false,
-                Path::new("Dockerfile"),
-                OsStr::new("Dockerfile")
-            ),
+            lookup(false, false, None, OsStr::new("Dockerfile")),
             ("\u{f308}", Paint::FileStyle)
         );
         assert_eq!(
-            lookup(false, false, Path::new("nothing"), OsStr::new("nothing")),
+            lookup(false, false, None, OsStr::new("nothing")),
             ("\u{f15b}", Paint::Fixed(66))
         );
     }
