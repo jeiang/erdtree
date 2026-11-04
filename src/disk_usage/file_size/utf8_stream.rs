@@ -10,12 +10,19 @@ pub const BUF_SIZE: usize = 64 * 1024;
 /// Returns `None` if the stream is not valid UTF-8 or an I/O error occurs, mirroring
 /// `fs::read_to_string`. `f` may already have been called by then; callers must discard any
 /// partial result.
-pub fn for_each_chunk(
+#[cfg(test)]
+pub fn for_each_chunk(reader: impl Read, buf_size: usize, f: impl FnMut(&str)) -> Option<()> {
+    for_each_chunk_in(reader, &mut vec![0u8; buf_size.max(4)], f)
+}
+
+/// Like [`for_each_chunk`], reading through `buf`, which must hold at least 4 bytes. Reusing one
+/// buffer for many files saves allocating and zeroing it per file.
+pub fn for_each_chunk_in(
     mut reader: impl Read,
-    buf_size: usize,
+    buf: &mut [u8],
     mut f: impl FnMut(&str),
 ) -> Option<()> {
-    let mut buf = vec![0u8; buf_size.max(4)];
+    debug_assert!(buf.len() >= 4);
     let mut filled = 0;
 
     loop {

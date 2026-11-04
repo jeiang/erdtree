@@ -1,12 +1,15 @@
+#[cfg(test)]
+use std::path::Path;
 use std::{
-    convert::{AsRef, From},
+    convert::From,
     fmt::{self, Display},
     fs::File,
     io::Read,
-    path::Path,
 };
 
-use super::utf8_stream::{BUF_SIZE, for_each_chunk};
+#[cfg(test)]
+use super::utf8_stream::for_each_chunk;
+use super::utf8_stream::{BUF_SIZE, for_each_chunk_in};
 
 /// Concerned with measuring file size using line count as a metric.
 #[derive(Default)]
@@ -18,8 +21,19 @@ impl Metric {
     /// Streams the contents of a file given by `path` through a fixed-size buffer and computes
     /// the total number of lines in that file, as `str::lines` would. If a file is not UTF-8
     /// encoded as in the case of a binary jpeg file then `None` will be returned.
+    #[cfg(test)]
     pub fn init(path: impl AsRef<Path>) -> Option<Self> {
         Self::from_reader(File::open(path.as_ref()).ok()?, BUF_SIZE)
+    }
+
+    /// Counts the lines of an open file, reading through `scratch`, which is grown to the read
+    /// size when it is smaller. One buffer can serve many files.
+    pub fn from_file(file: File, scratch: &mut Vec<u8>) -> Option<Self> {
+        if scratch.len() < BUF_SIZE {
+            scratch.resize(BUF_SIZE, 0);
+        }
+
+        Self::count(file, &mut scratch[..BUF_SIZE])
     }
 
     /// Counts lines in `reader` using a buffer of `buf_size` bytes.
@@ -27,12 +41,23 @@ impl Metric {
     /// Equivalent to `str::lines().count()`: lines are terminated by `\n` (a preceding `\r` is
     /// part of the terminator and does not matter for counting), a final line without a
     /// terminator counts, and an empty input has zero lines.
+    #[cfg(test)]
     fn from_reader(reader: impl Read, buf_size: usize) -> Option<Self> {
+        Self::tally(|f| for_each_chunk(reader, buf_size, f))
+    }
+
+    /// Like [`Self::from_reader`], reading through `buf`.
+    fn count(reader: impl Read, buf: &mut [u8]) -> Option<Self> {
+        Self::tally(|f| for_each_chunk_in(reader, buf, f))
+    }
+
+    /// Counts the lines of the chunks `run` produces.
+    fn tally(run: impl FnOnce(&mut dyn FnMut(&str)) -> Option<()>) -> Option<Self> {
         let mut newlines = 0_u64;
         let mut last_byte = None;
 
-        for_each_chunk(reader, buf_size, |chunk| {
-            newlines += chunk.bytes().filter(|&b| b == b'\n').count() as u64;
+        run(&mut |chunk: &str| {
+            newlines += count_newlines(chunk.as_bytes());
             last_byte = chunk.as_bytes().last().copied().or(last_byte);
         })?;
 
@@ -41,6 +66,21 @@ impl Metric {
             value: newlines + u64::from(unterminated),
         })
     }
+}
+
+/// Number of `\n` bytes in `bytes`. Counting in `u8` lanes of 255 lets the compiler use vector
+/// compares and byte adds, an order of magnitude faster than a `u64` counter.
+fn count_newlines(bytes: &[u8]) -> u64 {
+    bytes
+        .chunks(255)
+        .map(|lane| {
+            let mut n = 0_u8;
+            for &b in lane {
+                n += u8::from(b == b'\n');
+            }
+            u64::from(n)
+        })
+        .sum()
 }
 
 impl From<u64> for Metric {
@@ -127,6 +167,18 @@ mod tests {
             streamed(unterminated.as_bytes(), BUF_SIZE),
             Some(oracle(&unterminated))
         );
+    }
+
+    #[test]
+    fn newline_count_matches_a_plain_count() {
+        for len in [0, 1, 254, 255, 256, 510, 511, 1000] {
+            let data: Vec<u8> = (0..len)
+                .map(|i| if i % 3 == 0 { b'\n' } else { b'a' })
+                .collect();
+            let plain = data.iter().fold(0_u64, |n, &b| n + u64::from(b == b'\n'));
+            assert_eq!(count_newlines(&data), plain, "{len}");
+        }
+        assert_eq!(count_newlines(&[b'\n'; 1000]), 1000);
     }
 
     #[test]

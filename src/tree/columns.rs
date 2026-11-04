@@ -123,6 +123,8 @@ pub struct Columns {
     style: Vec<u16>,
     /// The distinct styles, with the default style first.
     style_table: Vec<Style>,
+    /// Read buffer reused for every file of the line and word counts.
+    scratch: Vec<u8>,
     /// Resolves styles; only with [`Probe::colors`].
     resolver: Option<Resolver>,
     /// Index in `style_table` per `lscolors` style, by address, for the styles seen so far.
@@ -234,7 +236,7 @@ impl Columns {
         let path = record.path;
         let file_type = stat.kind;
 
-        let size = size(probe, record, file_type);
+        let size = size(probe, record, file_type, &mut self.scratch);
 
         if record.is_symlink
             && let Ok(target) = record.read_link()
@@ -253,7 +255,7 @@ impl Columns {
         }
 
         if let Some(resolver) = self.resolver {
-            let style = resolver.style(record.name, stat, || !path.exists());
+            let style = resolver.style(record.name, stat, || !record.target_exists());
             let style = self.intern_style(style);
             self.style.push(style);
         }
@@ -277,7 +279,7 @@ impl Columns {
                 let attrs = if record.depth <= level {
                     LongAttrs {
                         read: true,
-                        has_xattrs: crate::fs::xattr::has_xattrs(path),
+                        has_xattrs: record.has_xattrs(),
                         uid: stat.uid,
                         gid: stat.gid,
                     }
@@ -378,7 +380,7 @@ impl Columns {
 
 /// The size of an entry in the configured metric; `None` for entries without one (directories,
 /// `--suppress-size`, files that are not text for line and word counts).
-fn size(probe: Probe, record: &Record<'_>, file_type: Kind) -> Option<u64> {
+fn size(probe: Probe, record: &Record<'_>, file_type: Kind, scratch: &mut Vec<u8>) -> Option<u64> {
     let stat: &Stat = record.stat;
 
     // A followed symlink has its target's type here; an unfollowed one is a symlink.
@@ -395,8 +397,12 @@ fn size(probe: Probe, record: &Record<'_>, file_type: Kind) -> Option<u64> {
         DiskUsage::Physical => Some(stat.blocks * 512),
         #[cfg(not(unix))]
         DiskUsage::Physical => Some(filesize::file_real_size(record.path).unwrap_or(stat.size)),
-        DiskUsage::Line => line_count::Metric::init(record.path).map(|m| m.value),
-        DiskUsage::Word => word_count::Metric::init(record.path).map(|m| m.value),
+        DiskUsage::Line => {
+            line_count::Metric::from_file(record.open().ok()?, scratch).map(|m| m.value)
+        },
+        DiskUsage::Word => {
+            word_count::Metric::from_file(record.open().ok()?, scratch).map(|m| m.value)
+        },
         #[cfg(unix)]
         DiskUsage::Block => Some(stat.blocks),
     }

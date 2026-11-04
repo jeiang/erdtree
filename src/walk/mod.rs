@@ -99,6 +99,37 @@ pub struct Record<'a> {
 }
 
 impl Record<'_> {
+    /// Whether the entry has extended attributes (following a symlink).
+    #[cfg(unix)]
+    pub fn has_xattrs(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Some(has) = self.at.and_then(at::has_xattrs) {
+            return has;
+        }
+
+        crate::fs::xattr::has_xattrs(self.path)
+    }
+
+    /// Whether the target of the entry, which must be a symlink, exists.
+    pub fn target_exists(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Some(at) = self.at {
+            return at::target_exists(at);
+        }
+
+        self.path.exists()
+    }
+
+    /// Opens the entry for reading, following a symlink.
+    pub fn open(&self) -> std::io::Result<fs::File> {
+        #[cfg(target_os = "linux")]
+        if let Some(at) = self.at {
+            return at::open_file(at);
+        }
+
+        fs::File::open(self.path)
+    }
+
     /// The target of the entry, which must be a symlink.
     pub fn read_link(&self) -> std::io::Result<PathBuf> {
         #[cfg(target_os = "linux")]

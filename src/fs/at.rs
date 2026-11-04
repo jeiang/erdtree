@@ -6,13 +6,14 @@
 use super::stat::{Fields, Kind, Stat};
 use std::{
     ffi::{CStr, CString, OsString, c_char, c_int, c_long, c_void},
+    fs::File,
     io,
     os::{
         fd::{FromRawFd, OwnedFd, RawFd},
         unix::ffi::{OsStrExt, OsStringExt},
     },
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     time::SystemTime,
 };
 
@@ -393,6 +394,86 @@ pub fn read_link(at: At<'_>) -> io::Result<PathBuf> {
     }
 }
 
+/// Opens the file `at` for reading, following a symlink as `File::open` does.
+pub fn open_file(at: At<'_>) -> io::Result<File> {
+    retry(|| {
+        // SAFETY: `at.name` is NUL-terminated and outlives the call.
+        let fd =
+            unsafe { libc::openat(at.dir, at.name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        owned(fd).map(File::from)
+    })
+}
+
+/// Whether `has_xattrs` can use `listxattrat`: not known yet, yes or no.
+static LISTXATTRAT: AtomicU8 = AtomicU8::new(UNKNOWN);
+const UNKNOWN: u8 = 0;
+const SUPPORTED: u8 = 1;
+const UNSUPPORTED: u8 = 2;
+
+/// The number of `listxattrat` (Linux 6.17), which is the same on the architectures that have
+/// the common system call numbers after 400.
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "x86",
+    target_arch = "aarch64",
+    target_arch = "arm",
+    target_arch = "riscv64",
+    target_arch = "powerpc64",
+    target_arch = "s390x",
+    target_arch = "loongarch64"
+))]
+const SYS_LISTXATTRAT: Option<c_long> = Some(465);
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "x86",
+    target_arch = "aarch64",
+    target_arch = "arm",
+    target_arch = "riscv64",
+    target_arch = "powerpc64",
+    target_arch = "s390x",
+    target_arch = "loongarch64"
+)))]
+const SYS_LISTXATTRAT: Option<c_long> = None;
+
+/// Whether the entry `at` has extended attributes, following a symlink like `listxattr`; `None`
+/// when the kernel has no `listxattrat` (or a sandbox blocks it), so the caller must use the
+/// path-based call. A failing call means no attributes, as with `listxattr`.
+pub fn has_xattrs(at: At<'_>) -> Option<bool> {
+    let state = LISTXATTRAT.load(Ordering::Relaxed);
+    let number = SYS_LISTXATTRAT.filter(|_| state != UNSUPPORTED)?;
+
+    // SAFETY: `at.name` is NUL-terminated; a null list with size 0 only asks for the size.
+    let ret = unsafe {
+        libc::syscall(
+            number,
+            c_long::from(at.dir),
+            at.name.as_ptr(),
+            0 as c_long,
+            std::ptr::null_mut::<c_char>(),
+            0 as libc::size_t,
+        )
+    };
+
+    if ret >= 0 {
+        LISTXATTRAT.store(SUPPORTED, Ordering::Relaxed);
+        return Some(ret > 0);
+    }
+
+    let errno = io::Error::last_os_error().raw_os_error();
+
+    if state == UNKNOWN && matches!(errno, Some(libc::ENOSYS | libc::EPERM | libc::EINVAL)) {
+        LISTXATTRAT.store(UNSUPPORTED, Ordering::Relaxed);
+        return None;
+    }
+
+    Some(false)
+}
+
+/// Whether following the symlink `at` reaches something that exists.
+pub fn target_exists(at: At<'_>) -> bool {
+    stat_at(at, true, Fields::default()).is_ok()
+}
+
 /// Raises the soft limit of open files towards the hard limit. The walk keeps a directory open
 /// while its subdirectories wait to be read, so deep trees need more than the common 1024.
 pub fn raise_open_file_limit() {
@@ -612,5 +693,94 @@ mod test {
         symlink("dir", dir.path().join("dirlink")).unwrap();
         assert!(open("dirlink", false).is_err());
         assert!(open("dirlink", true).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod test_at_calls {
+    use super::*;
+    use crate::fs::xattr;
+    use std::{
+        fs,
+        io::Read,
+        os::{fd::AsRawFd, unix::fs::symlink},
+    };
+
+    #[test]
+    fn xattrs_and_targets_match_the_path_based_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = |name: &str| dir.path().join(name);
+
+        fs::write(p("plain"), "x").unwrap();
+        fs::write(p("tagged"), "x").unwrap();
+        symlink("tagged", p("link-to-tagged")).unwrap();
+        symlink("plain", p("link-to-plain")).unwrap();
+        symlink("missing", p("dangling")).unwrap();
+
+        // A user attribute; file systems without support (tmpfs in older kernels) skip it.
+        let tagged = CString::new(p("tagged").as_os_str().as_bytes()).unwrap();
+        // SAFETY: valid NUL-terminated strings and a buffer of the given size.
+        let set = unsafe {
+            libc::setxattr(
+                tagged.as_ptr(),
+                c"user.erd".as_ptr(),
+                b"1".as_ptr().cast(),
+                1,
+                0,
+            )
+        };
+        eprintln!("setxattr: {set}");
+
+        let fd = open_dir_path(dir.path()).unwrap();
+
+        for name in [
+            "plain",
+            "tagged",
+            "link-to-tagged",
+            "link-to-plain",
+            "dangling",
+        ] {
+            let c = CString::new(name).unwrap();
+            let at = At {
+                dir: fd.as_raw_fd(),
+                name: &c,
+            };
+
+            if let Some(has) = has_xattrs(at) {
+                assert_eq!(has, xattr::has_xattrs(&p(name)), "{name}");
+            }
+
+            assert_eq!(target_exists(at), p(name).exists(), "{name}");
+        }
+    }
+
+    #[test]
+    fn open_file_reads_like_file_open() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("f"), "contents").unwrap();
+        symlink("f", dir.path().join("l")).unwrap();
+        let fd = open_dir_path(dir.path()).unwrap();
+
+        for name in ["f", "l"] {
+            let c = CString::new(name).unwrap();
+            let mut text = String::new();
+            open_file(At {
+                dir: fd.as_raw_fd(),
+                name: &c,
+            })
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+            assert_eq!(text, "contents");
+        }
+
+        let c = CString::new("nothing").unwrap();
+        assert!(
+            open_file(At {
+                dir: fd.as_raw_fd(),
+                name: &c
+            })
+            .is_err()
+        );
     }
 }
