@@ -40,7 +40,9 @@ impl Children {
         }
 
         let mut fill = start.clone();
-        let mut list = vec![0_u32; ix(start[n])];
+        // At most `n` children in total. Allocating `n` (a length known from the input size)
+        // rather than `start[n]` keeps the allocation size concrete for Kani.
+        let mut list = vec![0_u32; n];
 
         for (child, &p) in parent.iter().enumerate() {
             if p != NONE {
@@ -49,6 +51,8 @@ impl Children {
                 *slot += 1;
             }
         }
+
+        list.truncate(ix(start[n]));
 
         Self { start, list }
     }
@@ -105,7 +109,9 @@ impl Children {
 /// `root` through `alive` nodes. Dead nodes and their subtrees are skipped.
 pub fn preorder(children: &Children, root: u32, alive: &[bool]) -> Vec<u32> {
     let mut order = Vec::with_capacity(alive.len());
-    let mut stack = vec![root];
+    // Every node is pushed at most once (by its parent), so the stack never grows past this.
+    let mut stack = Vec::with_capacity(alive.len());
+    stack.push(root);
 
     while let Some(node) = stack.pop() {
         if !alive[ix(node)] {
@@ -229,7 +235,7 @@ pub fn hide_small(
     alive: &mut [bool],
 ) -> Vec<u32> {
     let mut shown = vec![false; alive.len()];
-    let mut hidden = vec![];
+    let mut hidden = Vec::with_capacity(alive.len());
 
     for &node in order.iter().rev() {
         let i = ix(node);
