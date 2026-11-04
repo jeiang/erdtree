@@ -263,7 +263,8 @@ pub const fn global_index(offsets: &[u32], sink: u32, index: u32) -> u32 {
 
 /// Specifications of the functions above, checked two ways: exhaustively for every tree of up
 /// to [`spec::MAX_TEST`] nodes by `cargo test`, and symbolically by Kani (`cargo kani`, see
-/// `proofs`) for every tree of up to 4 nodes and every size, threshold and inode grouping.
+/// `proofs`) for every tree of up to 3 nodes and every size, threshold and inode grouping. Both
+/// cover every root position.
 #[cfg(any(test, kani))]
 // The specifications index several per-node arrays by node number.
 #[allow(clippy::needless_range_loop)]

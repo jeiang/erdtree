@@ -17,7 +17,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Checking for extended attributes in the long view (`--long`) passed the path to `listxattr` without a terminating NUL byte, which could read past the path.
 
 ### Verification
-- The tree algorithms (child lists, pre-order, size totals, hard-link deduplication, `--prune`, `--dirs-only`, `--min-size`) have written specifications that `cargo test` checks for every tree of up to 5 entries and that Kani proofs check symbolically, for all sizes and thresholds, for every tree of up to 3 entries; CI runs both. The walk is tested against the `ignore` crate's walker on handcrafted and randomly generated trees with ignore files.
+- The tree algorithms (child lists, pre-order, size totals, hard-link deduplication, `--prune`, `--dirs-only`, `--min-size`) have written specifications that `cargo test` checks for every tree of up to 6 entries and that Kani proofs check symbolically, for all sizes and thresholds, for every tree of up to 3 entries, both at every root position; CI runs both. The walk is tested against the `ignore` crate's walker on handcrafted and randomly generated trees with ignore files.
 
 ## [4.0.0] - 2026-10-14
 
