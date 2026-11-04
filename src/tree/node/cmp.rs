@@ -67,15 +67,23 @@ fn base_comparator(sort_type: sort::Type) -> Box<NodeComparator> {
 mod time_stamping {
     use crate::tree::node::Node;
     use core::cmp::Ordering;
-    use std::time::SystemTime;
+    use std::{sync::LazyLock, time::SystemTime};
+
+    /// Stands in for a missing timestamp. Read once, so every comparison sees the same value
+    /// and the order stays total (sorting may panic on an inconsistent order).
+    static NOW: LazyLock<SystemTime> = LazyLock::new(SystemTime::now);
+
+    fn or_now(stamp: Option<SystemTime>) -> SystemTime {
+        stamp.unwrap_or(*NOW)
+    }
 
     pub mod accessed {
         use super::*;
 
         /// Comparator that sorts [Node]s by Last Access timestamp, newer to older.
         pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-            let a_stamp = a.accessed().unwrap_or_else(SystemTime::now);
-            let b_stamp = b.accessed().unwrap_or_else(SystemTime::now);
+            let a_stamp = or_now(a.accessed());
+            let b_stamp = or_now(b.accessed());
             b_stamp.cmp(&a_stamp)
         }
 
@@ -90,8 +98,8 @@ mod time_stamping {
 
         /// Comparator that sorts [Node]s by Creation timestamp, newer to older.
         pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-            let a_stamp = a.created().unwrap_or_else(SystemTime::now);
-            let b_stamp = b.created().unwrap_or_else(SystemTime::now);
+            let a_stamp = or_now(a.created());
+            let b_stamp = or_now(b.created());
             b_stamp.cmp(&a_stamp)
         }
 
@@ -106,8 +114,8 @@ mod time_stamping {
 
         /// Comparator that sorts [Node]s by Alteration timestamp, newer to older.
         pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-            let a_stamp = a.modified().unwrap_or_else(SystemTime::now);
-            let b_stamp = b.modified().unwrap_or_else(SystemTime::now);
+            let a_stamp = or_now(a.modified());
+            let b_stamp = or_now(b.modified());
             b_stamp.cmp(&a_stamp)
         }
 
