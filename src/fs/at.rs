@@ -66,7 +66,9 @@ fn check(ret: c_long) -> io::Result<c_long> {
     }
 }
 
-const DIR_FLAGS: c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+/// `O_LARGEFILE` is zero on 64-bit targets. On 32-bit glibc, `openat` and `open` do not set it,
+/// and without it the kernel refuses (`EOVERFLOW`) to open a file of 2 GiB or more.
+const DIR_FLAGS: c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_LARGEFILE;
 
 /// Opens the directory `name` of directory `dir`. A symlink is only followed with `follow`.
 pub fn open_dir_at(dir: RawFd, name: &CStr, follow: bool) -> io::Result<OwnedFd> {
@@ -238,6 +240,9 @@ fn stat_raw(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result
 }
 
 /// `statx` asking for the fields the walk uses.
+// The mask has few bits set, so it fits `c_long`, which is 32 bits wide on 32-bit targets and
+// 64 bits wide elsewhere: neither `as` is lossy, and `From` exists on only one of the two.
+#[allow(clippy::cast_possible_wrap, clippy::cast_lossless)]
 fn statx(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<Stat> {
     let mut mask = STATX_TYPE
         | STATX_MODE
@@ -265,10 +270,10 @@ fn statx(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<St
         let ret = unsafe {
             libc::syscall(
                 libc::SYS_statx,
-                libc::c_long::from(dir),
+                c_long::from(dir),
                 path.as_ptr().cast::<c_char>(),
-                libc::c_long::from(flags),
-                libc::c_long::from(mask),
+                c_long::from(flags),
+                mask as c_long,
                 buf.as_mut_ptr(),
             )
         };
@@ -325,11 +330,21 @@ fn fstatat(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<
         gid: s.st_gid,
         modified: fields
             .modified
-            .then(|| super::stat::system_time(s.st_mtime, u32::try_from(s.st_mtime_nsec).ok()?))
+            .then(|| {
+                super::stat::system_time(
+                    i64::from(s.st_mtime),
+                    u32::try_from(s.st_mtime_nsec).ok()?,
+                )
+            })
             .flatten(),
         accessed: fields
             .accessed
-            .then(|| super::stat::system_time(s.st_atime, u32::try_from(s.st_atime_nsec).ok()?))
+            .then(|| {
+                super::stat::system_time(
+                    i64::from(s.st_atime),
+                    u32::try_from(s.st_atime_nsec).ok()?,
+                )
+            })
             .flatten(),
         created: None,
     })
@@ -394,12 +409,13 @@ pub fn read_link(at: At<'_>) -> io::Result<PathBuf> {
     }
 }
 
+const FILE_FLAGS: c_int = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_LARGEFILE;
+
 /// Opens the file `at` for reading, following a symlink as `File::open` does.
 pub fn open_file(at: At<'_>) -> io::Result<File> {
     retry(|| {
         // SAFETY: `at.name` is NUL-terminated and outlives the call.
-        let fd =
-            unsafe { libc::openat(at.dir, at.name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        let fd = unsafe { libc::openat(at.dir, at.name.as_ptr(), FILE_FLAGS) };
         owned(fd).map(File::from)
     })
 }
@@ -752,6 +768,25 @@ mod test_at_calls {
 
             assert_eq!(target_exists(at), p(name).exists(), "{name}");
         }
+    }
+
+    /// On 32-bit glibc, opening a file of 2 GiB or more needs `O_LARGEFILE`. A sparse file takes
+    /// no space; skip where the file system cannot hold one.
+    #[test]
+    fn open_file_opens_files_over_2_gib() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = fs::File::create(dir.path().join("big")).unwrap();
+        if big.set_len(3 << 30).is_err() {
+            return;
+        }
+        let fd = open_dir_path(dir.path()).unwrap();
+        let c = CString::new("big").unwrap();
+        let file = open_file(At {
+            dir: fd.as_raw_fd(),
+            name: &c,
+        })
+        .unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 3 << 30);
     }
 
     #[test]
