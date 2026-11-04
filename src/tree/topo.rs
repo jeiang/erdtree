@@ -641,15 +641,6 @@ mod proofs {
 
     use super::{NONE, spec};
 
-    /// Runs `$check::<N>()` for every size from 1 to 3; larger bounds take hours.
-    macro_rules! for_each_size {
-        ($check:ident) => {
-            $check::<1>();
-            $check::<2>();
-            $check::<3>();
-        };
-    }
-
     /// An arbitrary tree with `N` nodes rooted at 0.
     fn any_tree<const N: usize>() -> Vec<u32> {
         let mut parent = vec![NONE; N];
@@ -722,52 +713,47 @@ mod proofs {
         spec::hide_small_keeps_large_and_their_ancestors(&parent, &size, kani::any());
     }
 
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn children() {
-        for_each_size!(children_partition_nodes);
+    /// One harness per property and tree size, so each CBMC problem stays small and
+    /// `cargo kani -j` can run them in parallel. Loops run at most `N + 1` times; the unwind
+    /// bound is the smallest that passes the unwinding checks, which stay enabled, so a bound
+    /// that is too small fails instead of passing silently.
+    macro_rules! harnesses {
+        ($($name:ident: $check:ident, $u1:literal, $u2:literal, $u3:literal;)*) => {
+            $(
+                mod $name {
+                    use super::*;
+
+                    #[kani::proof]
+                    #[kani::unwind($u1)]
+                    fn n1() {
+                        $check::<1>();
+                    }
+
+                    #[kani::proof]
+                    #[kani::unwind($u2)]
+                    fn n2() {
+                        $check::<2>();
+                    }
+
+                    #[kani::proof]
+                    #[kani::unwind($u3)]
+                    fn n3() {
+                        $check::<3>();
+                    }
+                }
+            )*
+        };
     }
 
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn preorder() {
-        for_each_size!(preorder_is_a_valid_preorder);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn last_child() {
-        for_each_size!(last_child_is_unique);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn dedupe() {
-        for_each_size!(dedupe_counts_each_inode_once);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn aggregate() {
-        for_each_size!(aggregate_sums_counted_files);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn prune() {
-        for_each_size!(prune_removes_exactly_empty_dirs);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn dirs_only() {
-        for_each_size!(dirs_only_keeps_connected_dirs);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(7)]
-    fn hide_small() {
-        for_each_size!(hide_small_keeps_large_and_their_ancestors);
+    harnesses! {
+        children: children_partition_nodes, 3, 4, 5;
+        preorder: preorder_is_a_valid_preorder, 3, 4, 5;
+        last_child: last_child_is_unique, 3, 4, 5;
+        dedupe: dedupe_counts_each_inode_once, 3, 4, 5;
+        aggregate: aggregate_sums_counted_files, 3, 4, 5;
+        prune: prune_removes_exactly_empty_dirs, 3, 4, 5;
+        dirs_only: dirs_only_keeps_connected_dirs, 3, 4, 5;
+        hide_small: hide_small_keeps_large_and_their_ancestors, 3, 4, 5;
     }
 
     #[kani::proof]
