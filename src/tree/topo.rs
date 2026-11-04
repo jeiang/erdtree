@@ -278,30 +278,31 @@ mod spec {
         u32::try_from(i).unwrap_or(NONE)
     }
 
-    /// Whether `parent` is a tree rooted at 0: every parent is another valid node and every
-    /// node reaches the root.
-    pub fn is_tree(parent: &[u32]) -> bool {
+    /// Whether `parent` is a tree rooted at `root`: only the root has no parent, every other
+    /// parent is another valid node, and every node reaches the root.
+    pub fn is_tree(parent: &[u32], root: u32) -> bool {
         let n = parent.len();
+        let r = ix(root);
 
-        if n == 0 || parent[0] != NONE {
+        if r >= n || parent[r] != NONE {
             return false;
         }
 
-        (1..n).all(|i| ix(parent[i]) < n && ix(parent[i]) != i)
+        (0..n).all(|i| i == r || ix(parent[i]) < n && ix(parent[i]) != i)
             && (0..n).all(|i| {
                 let mut cur = i;
                 let mut steps = 0;
-                while cur != 0 && steps < n {
+                while cur != r && steps < n {
                     cur = ix(parent[cur]);
                     steps += 1;
                 }
-                cur == 0
+                cur == r
             })
     }
 
     /// Whether only directories have children.
     pub fn only_dirs_have_children(parent: &[u32], is_dir: &[bool]) -> bool {
-        (1..parent.len()).all(|i| is_dir[ix(parent[i])])
+        parent.iter().all(|&p| p == NONE || is_dir[ix(p)])
     }
 
     /// Whether `a` is `node` or one of its ancestors.
@@ -340,10 +341,10 @@ mod spec {
     /// The pre-order lists exactly the alive nodes whose ancestors are all alive, each once,
     /// root first, every node after its parent, siblings in child-list order, and every subtree
     /// contiguous.
-    pub fn preorder_is_a_valid_preorder(parent: &[u32], alive: &[bool]) {
+    pub fn preorder_is_a_valid_preorder(parent: &[u32], root: u32, alive: &[bool]) {
         let n = parent.len();
         let children = Children::build(parent);
-        let order = preorder(&children, 0, alive);
+        let order = preorder(&children, root, alive);
 
         let mut pos = vec![usize::MAX; n];
         for (k, &node) in order.iter().enumerate() {
@@ -351,13 +352,13 @@ mod spec {
             pos[ix(node)] = k;
         }
 
-        assert_eq!(order[0], 0);
+        assert_eq!(order[0], root);
 
         for i in 0..n {
             let reachable = (0..n).all(|a| !is_ancestor(parent, id(a), id(i)) || alive[a]);
             assert_eq!(pos[i] != usize::MAX, reachable);
 
-            if pos[i] != usize::MAX && i != 0 {
+            if pos[i] != usize::MAX && id(i) != root {
                 assert!(pos[ix(parent[i])] < pos[i]);
             }
         }
@@ -387,9 +388,9 @@ mod spec {
 
     /// Exactly one alive child of each listed node with alive children is marked last, and it
     /// is the last alive one.
-    pub fn last_child_is_unique(parent: &[u32], alive: &[bool]) {
+    pub fn last_child_is_unique(parent: &[u32], root: u32, alive: &[bool]) {
         let children = Children::build(parent);
-        let order = preorder(&children, 0, alive);
+        let order = preorder(&children, root, alive);
         let last = last_alive_child(&children, &order, alive);
 
         for &p in &order {
@@ -431,13 +432,14 @@ mod spec {
     /// sizes below 2^60 so the expected sum cannot overflow.
     pub fn aggregate_sums_counted_files(
         parent: &[u32],
+        root: u32,
         counted: &[bool],
         is_dir: &[bool],
         files: &[Option<u64>],
     ) {
         let n = parent.len();
         let children = Children::build(parent);
-        let order = preorder(&children, 0, &all_alive(n));
+        let order = preorder(&children, root, &all_alive(n));
         let mut size = files.to_vec();
         aggregate(&order, parent, counted, is_dir, &mut size);
 
@@ -469,29 +471,29 @@ mod spec {
 
     /// After pruning, the alive non-root nodes are exactly the files and the directories with
     /// a file below them.
-    pub fn prune_removes_exactly_empty_dirs(parent: &[u32], is_dir: &[bool]) {
+    pub fn prune_removes_exactly_empty_dirs(parent: &[u32], root: u32, is_dir: &[bool]) {
         let n = parent.len();
         let children = Children::build(parent);
-        let order = preorder(&children, 0, &all_alive(n));
+        let order = preorder(&children, root, &all_alive(n));
         let mut alive = all_alive(n);
         prune(&order, parent, is_dir, &mut alive);
 
-        assert!(alive[0]);
-        for i in 1..n {
+        assert!(alive[ix(root)]);
+        for i in (0..n).filter(|&i| id(i) != root) {
             let has_file = (0..n).any(|f| !is_dir[f] && is_ancestor(parent, id(i), id(f)));
             assert_eq!(alive[i], has_file);
         }
     }
 
     /// `--dirs-only` keeps the root and the directories, and the kept set stays connected.
-    pub fn dirs_only_keeps_connected_dirs(parent: &[u32], is_dir: &[bool]) {
+    pub fn dirs_only_keeps_connected_dirs(parent: &[u32], root: u32, is_dir: &[bool]) {
         let n = parent.len();
         let mut alive = all_alive(n);
         dirs_only(parent, is_dir, &mut alive);
 
         for i in 0..n {
-            assert_eq!(alive[i], i == 0 || is_dir[i]);
-            if alive[i] && i != 0 {
+            assert_eq!(alive[i], id(i) == root || is_dir[i]);
+            if alive[i] && id(i) != root {
                 assert!(alive[ix(parent[i])]);
             }
         }
@@ -501,17 +503,18 @@ mod spec {
     /// in their subtree, and reports every other node as hidden.
     pub fn hide_small_keeps_large_and_their_ancestors(
         parent: &[u32],
+        root: u32,
         size: &[Option<u64>],
         threshold: u64,
     ) {
         let n = parent.len();
         let children = Children::build(parent);
-        let order = preorder(&children, 0, &all_alive(n));
+        let order = preorder(&children, root, &all_alive(n));
         let mut alive = all_alive(n);
         let hidden = hide_small(&order, parent, size, threshold, &mut alive);
 
-        assert!(alive[0]);
-        for i in 1..n {
+        assert!(alive[ix(root)]);
+        for i in (0..n).filter(|&i| id(i) != root) {
             let large_below = (0..n)
                 .any(|d| size[d].unwrap_or(0) >= threshold && is_ancestor(parent, id(i), id(d)));
             assert_eq!(alive[i], large_below);
@@ -534,19 +537,26 @@ mod spec {
 mod test {
     use super::{NONE, spec};
 
-    /// Every tree with `n` nodes rooted at 0, as parent arrays.
-    fn trees(n: usize) -> Vec<Vec<u32>> {
+    /// Every tree with `n` nodes and any root, as (parent array, root). Production puts the
+    /// root last, so every root position is checked.
+    fn trees(n: usize) -> Vec<(Vec<u32>, u32)> {
         let mut out = vec![];
         let combos = n.pow(u32::try_from(n.saturating_sub(1)).unwrap());
 
-        for mut code in 0..combos {
-            let mut parent = vec![NONE; n];
-            for p in parent.iter_mut().skip(1) {
-                *p = u32::try_from(code % n).unwrap();
-                code /= n;
-            }
-            if spec::is_tree(&parent) {
-                out.push(parent);
+        for r in 0..n {
+            let root = u32::try_from(r).unwrap();
+
+            for mut code in 0..combos {
+                let mut parent = vec![NONE; n];
+                for (i, p) in parent.iter_mut().enumerate() {
+                    if i != r {
+                        *p = u32::try_from(code % n).unwrap();
+                        code /= n;
+                    }
+                }
+                if spec::is_tree(&parent, root) {
+                    out.push((parent, root));
+                }
             }
         }
 
@@ -559,17 +569,26 @@ mod test {
     }
 
     #[test]
+    fn trees_are_all_rooted_labeled_trees() {
+        // There are n^(n-1) rooted labeled trees on n nodes (Cayley).
+        for n in 1..=spec::MAX_TEST {
+            assert_eq!(trees(n).len(), n.pow(u32::try_from(n - 1).unwrap()));
+        }
+    }
+
+    #[test]
     fn exhaustive_small_trees() {
         for n in 1..=spec::MAX_TEST {
-            for parent in trees(n) {
+            for (parent, root) in trees(n) {
+                let r = super::ix(root);
                 spec::children_partition_nodes(&parent);
 
                 for mask in 0..1 << n {
                     let flags = bits(mask, n);
 
-                    if flags[0] {
-                        spec::preorder_is_a_valid_preorder(&parent, &flags);
-                        spec::last_child_is_unique(&parent, &flags);
+                    if flags[r] {
+                        spec::preorder_is_a_valid_preorder(&parent, root, &flags);
+                        spec::last_child_is_unique(&parent, root, &flags);
                     }
 
                     let is_dir = &flags;
@@ -577,8 +596,8 @@ mod test {
                         continue;
                     }
 
-                    spec::prune_removes_exactly_empty_dirs(&parent, is_dir);
-                    spec::dirs_only_keeps_connected_dirs(&parent, is_dir);
+                    spec::prune_removes_exactly_empty_dirs(&parent, root, is_dir);
+                    spec::dirs_only_keeps_connected_dirs(&parent, root, is_dir);
 
                     // Distinct powers of two make every subset sum distinct.
                     let files: Vec<Option<u64>> =
@@ -587,6 +606,7 @@ mod test {
                     for counted in 0..1 << n {
                         spec::aggregate_sums_counted_files(
                             &parent,
+                            root,
                             &bits(counted, n),
                             is_dir,
                             &files,
@@ -596,7 +616,7 @@ mod test {
                     let sizes: Vec<Option<u64>> = (0..n).map(|i| Some(1 << i)).collect();
                     for threshold in 0..=1 << n {
                         spec::hide_small_keeps_large_and_their_ancestors(
-                            &parent, &sizes, threshold,
+                            &parent, root, &sizes, threshold,
                         );
                     }
                 }
@@ -639,49 +659,66 @@ mod proofs {
     //! Kani harnesses: the [`spec`] properties for symbolic inputs, one concrete tree size at a
     //! time so allocations have concrete lengths.
 
-    use super::{NONE, spec};
+    use super::{NONE, ix, spec};
 
-    /// An arbitrary tree with `N` nodes rooted at 0.
-    fn any_tree<const N: usize>() -> Vec<u32> {
-        let mut parent = vec![NONE; N];
-        for p in parent.iter_mut().skip(1) {
-            *p = u32::from(kani::any::<u8>());
+    /// An arbitrary tree with `N` nodes and any root. A symbolic depth per node witnesses
+    /// that the parent array is a tree: the root has depth 0 and every other node is one deeper
+    /// than its parent, so parent chains cannot cycle and must end at the root. This accepts
+    /// exactly the trees `spec::is_tree` accepts, without unrolling a walk to the root for each
+    /// node.
+    fn any_tree<const N: usize>() -> ([u32; N], u32) {
+        let root: u8 = kani::any();
+        kani::assume(usize::from(root) < N);
+        let root = u32::from(root);
+
+        let mut parent = [NONE; N];
+        let depth: [u8; N] = kani::any();
+
+        for i in 0..N {
+            if i == ix(root) {
+                kani::assume(depth[i] == 0);
+            } else {
+                let p: u8 = kani::any();
+                kani::assume(usize::from(p) < N && usize::from(p) != i);
+                parent[i] = u32::from(p);
+                kani::assume(usize::from(depth[usize::from(p)]) < N);
+                kani::assume(depth[i] == depth[usize::from(p)] + 1);
+            }
         }
-        kani::assume(spec::is_tree(&parent));
-        parent
-    }
 
-    fn any_vec<T: kani::Arbitrary, const N: usize>() -> Vec<T> {
-        (0..N).map(|_| kani::any()).collect()
+        (parent, root)
     }
 
     fn children_partition_nodes<const N: usize>() {
-        spec::children_partition_nodes(&any_tree::<N>());
+        spec::children_partition_nodes(&any_tree::<N>().0);
     }
 
     fn preorder_is_a_valid_preorder<const N: usize>() {
-        let alive = any_vec::<bool, N>();
-        kani::assume(alive[0]);
-        spec::preorder_is_a_valid_preorder(&any_tree::<N>(), &alive);
+        let (parent, root) = any_tree::<N>();
+        let alive: [bool; N] = kani::any();
+        kani::assume(alive[ix(root)]);
+        spec::preorder_is_a_valid_preorder(&parent, root, &alive);
     }
 
     fn last_child_is_unique<const N: usize>() {
-        let alive = any_vec::<bool, N>();
-        kani::assume(alive[0]);
-        spec::last_child_is_unique(&any_tree::<N>(), &alive);
+        let (parent, root) = any_tree::<N>();
+        let alive: [bool; N] = kani::any();
+        kani::assume(alive[ix(root)]);
+        spec::last_child_is_unique(&parent, root, &alive);
     }
 
     fn dedupe_counts_each_inode_once<const N: usize>() {
-        let key = any_vec::<Option<u8>, N>();
-        kani::assume(key.iter().all(|k| k.is_none_or(|k| k < 3)));
+        let key: [Option<u8>; N] = kani::any();
+        // Keys are only compared, so values below N cover every grouping.
+        kani::assume(key.iter().all(|k| k.is_none_or(|k| usize::from(k) < N)));
         spec::dedupe_counts_each_inode_once(&key);
     }
 
     fn aggregate_sums_counted_files<const N: usize>() {
-        let parent = any_tree::<N>();
-        let counted = any_vec::<bool, N>();
-        let is_dir = any_vec::<bool, N>();
-        let files = any_vec::<Option<u64>, N>();
+        let (parent, root) = any_tree::<N>();
+        let counted: [bool; N] = kani::any();
+        let is_dir: [bool; N] = kani::any();
+        let files: [Option<u64>; N] = kani::any();
         kani::assume(spec::only_dirs_have_children(&parent, &is_dir));
         for i in 0..N {
             kani::assume(if is_dir[i] {
@@ -690,27 +727,27 @@ mod proofs {
                 files[i].is_none_or(|s| s < 1 << 60)
             });
         }
-        spec::aggregate_sums_counted_files(&parent, &counted, &is_dir, &files);
+        spec::aggregate_sums_counted_files(&parent, root, &counted, &is_dir, &files);
     }
 
     fn prune_removes_exactly_empty_dirs<const N: usize>() {
-        let parent = any_tree::<N>();
-        let is_dir = any_vec::<bool, N>();
+        let (parent, root) = any_tree::<N>();
+        let is_dir: [bool; N] = kani::any();
         kani::assume(spec::only_dirs_have_children(&parent, &is_dir));
-        spec::prune_removes_exactly_empty_dirs(&parent, &is_dir);
+        spec::prune_removes_exactly_empty_dirs(&parent, root, &is_dir);
     }
 
     fn dirs_only_keeps_connected_dirs<const N: usize>() {
-        let parent = any_tree::<N>();
-        let is_dir = any_vec::<bool, N>();
+        let (parent, root) = any_tree::<N>();
+        let is_dir: [bool; N] = kani::any();
         kani::assume(spec::only_dirs_have_children(&parent, &is_dir));
-        spec::dirs_only_keeps_connected_dirs(&parent, &is_dir);
+        spec::dirs_only_keeps_connected_dirs(&parent, root, &is_dir);
     }
 
     fn hide_small_keeps_large_and_their_ancestors<const N: usize>() {
-        let parent = any_tree::<N>();
-        let size = any_vec::<Option<u64>, N>();
-        spec::hide_small_keeps_large_and_their_ancestors(&parent, &size, kani::any());
+        let (parent, root) = any_tree::<N>();
+        let size: [Option<u64>; N] = kani::any();
+        spec::hide_small_keeps_large_and_their_ancestors(&parent, root, &size, kani::any());
     }
 
     /// One harness per property and tree size, so each CBMC problem stays small and
