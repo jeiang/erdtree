@@ -512,7 +512,9 @@ impl<S: Sink> Worker<'_, S> {
             return 0;
         };
 
-        let rules = job.rules.add_child(&job.path, Some(&found));
+        let rules = job
+            .rules
+            .add_child(&job.path, Some(&found), self.walker.follow_links);
         let dir = Dir {
             listing,
             path: job.path,

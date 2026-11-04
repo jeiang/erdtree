@@ -19,7 +19,7 @@ use std::{
     fs::{File, FileType},
     io::{self, BufRead},
     path::{Path, PathBuf},
-    sync::{Arc, RwLock, Weak},
+    sync::{Arc, OnceLock, RwLock, Weak},
 };
 
 /// Which kinds of rules apply. Mirrors the options `erd` passes to [`ignore::WalkBuilder`].
@@ -61,30 +61,52 @@ impl Options {
 #[derive(Clone, Debug)]
 pub struct Rules {
     inner: Arc<Inner>,
-    /// The canonical path given to [`Rules::add_parents`]; used to match against the ignore files
-    /// of the root's ancestors.
-    absolute_base: Option<Arc<PathBuf>>,
+}
+
+/// What every directory of one walk shares.
+#[derive(Debug)]
+struct Common {
+    /// Matchers already built for ancestor directories.
+    compiled: RwLock<HashMap<OsString, Weak<Inner>>>,
+    overrides: Override,
+    /// Git's global gitignore, read when a repository is first seen: building it compiles a
+    /// regular expression, which a walk outside any repository never needs.
+    git_global: OnceLock<Gitignore>,
+    /// Anchors the global gitignore; without it the global gitignore is not used.
+    cwd: Option<PathBuf>,
+}
+
+impl Common {
+    fn git_global(&self, opts: Options) -> &Gitignore {
+        self.git_global.get_or_init(|| match &self.cwd {
+            Some(cwd) if opts.git_global => GitignoreBuilder::new(cwd).build_global().0,
+            _ => Gitignore::empty(),
+        })
+    }
 }
 
 #[derive(Debug)]
 struct Inner {
-    /// Matchers already built for ancestor directories, shared by every root.
-    compiled: Arc<RwLock<HashMap<OsString, Weak<Self>>>>,
+    common: Arc<Common>,
     dir: PathBuf,
-    overrides: Arc<Override>,
     parent: Option<Arc<Self>>,
+    /// The canonical path given to [`Rules::add_parents`]; used to match against the ignore files
+    /// of the root's ancestors.
+    absolute_base: Option<Arc<PathBuf>>,
     is_absolute_parent: bool,
     ignore_matcher: Gitignore,
-    git_global_matcher: Arc<Gitignore>,
     git_ignore_matcher: Gitignore,
     git_exclude_matcher: Gitignore,
     /// Whether this directory contains `.git` (or `.jj`).
     has_git: bool,
     /// Whether this directory or an ancestor contains `.git` (or `.jj`).
     any_git: bool,
-    /// Whether any matcher of this directory or its ancestors is non-empty. When `false`, no
-    /// ignore file can decide, so matching skips the walk up the ancestors.
-    any_matcher: bool,
+    /// Whether the `.ignore` matcher of this directory or an ancestor is non-empty.
+    any_ignore: bool,
+    /// Whether a gitignore or exclude matcher of this directory or an ancestor is non-empty.
+    /// When neither this nor `any_ignore` is set (and there is no global gitignore to apply),
+    /// no ignore file can decide, so matching skips the walk up the ancestors.
+    any_git_matcher: bool,
     opts: Options,
 }
 
@@ -93,10 +115,10 @@ impl Inner {
     fn derive(mut self) -> Self {
         let parent = self.parent.as_deref();
         self.any_git = self.has_git || parent.is_some_and(|p| p.any_git);
-        self.any_matcher = !self.ignore_matcher.is_empty()
-            || !self.git_ignore_matcher.is_empty()
+        self.any_ignore = !self.ignore_matcher.is_empty() || parent.is_some_and(|p| p.any_ignore);
+        self.any_git_matcher = !self.git_ignore_matcher.is_empty()
             || !self.git_exclude_matcher.is_empty()
-            || parent.is_some_and(|p| p.any_matcher);
+            || parent.is_some_and(|p| p.any_git_matcher);
         self
     }
 }
@@ -128,28 +150,27 @@ impl Rules {
     /// The rules before any directory is added. `cwd` anchors the global gitignore; without it
     /// the global gitignore is not used.
     pub fn root(opts: Options, overrides: Override, cwd: Option<PathBuf>) -> Self {
-        let git_global_matcher = match cwd {
-            Some(cwd) if opts.git_global => GitignoreBuilder::new(cwd).build_global().0,
-            _ => Gitignore::empty(),
-        };
-
         Self {
             inner: Arc::new(Inner {
-                compiled: Arc::new(RwLock::new(HashMap::new())),
+                common: Arc::new(Common {
+                    compiled: RwLock::new(HashMap::new()),
+                    overrides,
+                    git_global: OnceLock::new(),
+                    cwd,
+                }),
                 dir: PathBuf::new(),
-                overrides: Arc::new(overrides),
                 parent: None,
+                absolute_base: None,
                 is_absolute_parent: true,
                 ignore_matcher: Gitignore::empty(),
-                git_global_matcher: Arc::new(git_global_matcher),
                 git_ignore_matcher: Gitignore::empty(),
                 git_exclude_matcher: Gitignore::empty(),
                 has_git: false,
                 any_git: false,
-                any_matcher: false,
+                any_ignore: false,
+                any_git_matcher: false,
                 opts,
             }),
-            absolute_base: None,
         }
     }
 
@@ -174,45 +195,50 @@ impl Rules {
 
         let mut rules = self.clone();
         for parent in parents.into_iter().rev() {
-            let compiled = &self.inner.compiled;
+            let compiled = &self.inner.common.compiled;
             let lock = || {
                 compiled
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
             };
 
-            let prebuilt = lock().get(parent.as_os_str()).and_then(Weak::upgrade);
+            let prebuilt = lock()
+                .get(parent.as_os_str())
+                .and_then(Weak::upgrade)
+                .filter(|inner| inner.absolute_base.as_deref() == Some(&*absolute_base));
             if let Some(prebuilt) = prebuilt {
-                rules = Self {
-                    inner: prebuilt,
-                    absolute_base: Some(Arc::clone(&absolute_base)),
-                };
+                rules = Self { inner: prebuilt };
                 continue;
             }
 
             let mut inner = rules.child_inner(parent, None);
             inner.is_absolute_parent = true;
-            inner.has_git = opts.require_git
-                && opts.git_ignore
-                && (parent.join(".git").exists() || parent.join(".jj").exists());
+            inner.absolute_base = Some(Arc::clone(&absolute_base));
+            // `child_inner` already looked for `.git` and `.jj`.
+            inner.has_git = opts.require_git && opts.git_ignore && inner.has_git;
 
             let inner = Arc::new(inner.derive());
             lock().insert(parent.as_os_str().to_os_string(), Arc::downgrade(&inner));
-            rules = Self {
-                inner,
-                absolute_base: Some(Arc::clone(&absolute_base)),
-            };
+            rules = Self { inner };
         }
 
         rules
     }
 
     /// The rules of child directory `dir`, given which ignore files its listing contains. With
-    /// `found` as `None` the ignore files are probed on disk.
-    pub fn add_child(&self, dir: &Path, found: Option<&Found>) -> Self {
+    /// `found` as `None` the ignore files are probed on disk. A directory without ignore files
+    /// shares the rules of its parent, unless `own_rules` asks for rules of its own (symlink loop
+    /// detection lists the walked directories) or the parent is an ancestor of the root.
+    pub fn add_child(&self, dir: &Path, found: Option<&Found>, own_rules: bool) -> Self {
+        let no_files = found
+            .is_some_and(|f| !f.has_ignore && !f.has_git_ignore && !f.has_git_dir && !f.has_jj_dir);
+
+        if no_files && !own_rules && !self.inner.is_absolute_parent {
+            return self.clone();
+        }
+
         Self {
             inner: Arc::new(self.child_inner(dir, found).derive()),
-            absolute_base: self.absolute_base.clone(),
         }
     }
 
@@ -250,18 +276,18 @@ impl Rules {
         };
 
         Inner {
-            compiled: Arc::clone(&self.inner.compiled),
+            common: Arc::clone(&self.inner.common),
             dir: dir.to_path_buf(),
-            overrides: Arc::clone(&self.inner.overrides),
             parent: Some(Arc::clone(&self.inner)),
+            absolute_base: self.inner.absolute_base.clone(),
             is_absolute_parent: false,
             ignore_matcher,
-            git_global_matcher: Arc::clone(&self.inner.git_global_matcher),
             git_ignore_matcher,
             git_exclude_matcher,
             has_git,
             any_git: false,
-            any_matcher: false,
+            any_ignore: false,
+            any_git_matcher: false,
             opts,
         }
     }
@@ -281,20 +307,30 @@ impl Rules {
     fn matched(&self, path: &Path, is_dir: bool) -> Match<()> {
         let path = strip_prefix("./", path).unwrap_or(path);
 
-        if !self.inner.overrides.is_empty() {
-            let m = self.inner.overrides.matched(path, is_dir).map(|_| ());
+        if !self.inner.common.overrides.is_empty() {
+            let m = self
+                .inner
+                .common
+                .overrides
+                .matched(path, is_dir)
+                .map(|_| ());
             if !m.is_none() {
                 return m;
             }
         }
 
         let opts = self.inner.opts;
-        let global =
-            (!opts.require_git || self.inner.any_git) && !self.inner.git_global_matcher.is_empty();
+        let git_applies = !opts.require_git || self.inner.any_git;
         let any_rules = opts.ignore || opts.git_global || opts.git_ignore || opts.git_exclude;
 
-        // With every matcher empty, `matched_ignore` is `Match::None`.
-        if any_rules && (self.inner.any_matcher || global) {
+        // With every matcher that can apply empty, `matched_ignore` is `Match::None`. Git
+        // matchers only apply inside a repository.
+        if any_rules
+            && (self.inner.any_ignore
+                || git_applies
+                    && (self.inner.any_git_matcher
+                        || !self.inner.common.git_global(opts).is_empty()))
+        {
             let m = self.matched_ignore(path, is_dir);
             if m.is_ignore() || m.is_whitelist() {
                 return m;
@@ -334,7 +370,7 @@ impl Rules {
         }
 
         if self.inner.opts.parents
-            && let Some(abs_parent_path) = self.absolute_base.as_deref()
+            && let Some(abs_parent_path) = self.inner.absolute_base.as_deref()
         {
             let topmost = self
                 .parents()
@@ -369,7 +405,8 @@ impl Rules {
 
         let m_global = if any_git {
             self.inner
-                .git_global_matcher
+                .common
+                .git_global(self.inner.opts)
                 .matched(path, is_dir)
                 .map(|_| ())
         } else {
