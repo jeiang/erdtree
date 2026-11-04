@@ -12,18 +12,25 @@ pub const BUF_SIZE: usize = 64 * 1024;
 /// partial result.
 #[cfg(test)]
 pub fn for_each_chunk(reader: impl Read, buf_size: usize, f: impl FnMut(&str)) -> Option<()> {
-    for_each_chunk_in(reader, &mut vec![0u8; buf_size.max(4)], f)
+    for_each_chunk_in(reader, &mut vec![0u8; buf_size.max(4)], 0, f)
 }
 
 /// Like [`for_each_chunk`], reading through `buf`, which must hold at least 4 bytes. Reusing one
 /// buffer for many files saves allocating and zeroing it per file.
+///
+/// `size` is the size the file system reports for a regular file, or 0 when unknown (a file that
+/// reports 0 may still have contents, as in `/proc`). Once that many bytes have been read the
+/// stream ends there, without the read that would only find the end of the file. A file that
+/// grows while it is read is counted up to the size reported.
 pub fn for_each_chunk_in(
     mut reader: impl Read,
     buf: &mut [u8],
+    size: u64,
     mut f: impl FnMut(&str),
 ) -> Option<()> {
     debug_assert!(buf.len() >= 4);
     let mut filled = 0;
+    let mut total = 0_u64;
 
     loop {
         let n = match reader.read(&mut buf[filled..]) {
@@ -37,11 +44,16 @@ pub fn for_each_chunk_in(
             return (filled == 0).then_some(());
         }
         filled += n;
+        total += n as u64;
 
         match std::str::from_utf8(&buf[..filled]) {
             Ok(s) => {
                 f(s);
                 filled = 0;
+
+                if total == size {
+                    return Some(());
+                }
             },
             Err(e) => {
                 if e.error_len().is_some() {
@@ -49,6 +61,12 @@ pub fn for_each_chunk_in(
                 }
                 let valid = e.valid_up_to();
                 f(std::str::from_utf8(&buf[..valid]).ok()?);
+
+                if total == size {
+                    // A truncated character ends the file.
+                    return None;
+                }
+
                 buf.copy_within(valid..filled, 0);
                 filled -= valid;
             },
@@ -95,4 +113,55 @@ pub mod test_support {
         b"\xe2\x28\xa1", // bad continuation
         b"\xc0\x80",     // overlong
     ];
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Counts the reads made of the slice behind it.
+    struct Counting<'a> {
+        data: &'a [u8],
+        reads: usize,
+    }
+
+    impl Read for Counting<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            self.data.read(buf)
+        }
+    }
+
+    fn run(data: &[u8], size: u64) -> (Option<String>, usize) {
+        let mut reader = Counting { data, reads: 0 };
+        let mut text = String::new();
+        let done = for_each_chunk_in(&mut reader, &mut [0; 8], size, |s| text.push_str(s));
+        (done.map(|()| text), reader.reads)
+    }
+
+    #[test]
+    fn a_known_size_saves_the_read_that_finds_the_end() {
+        let data = "h\u{e9}llo w\u{f6}rld".as_bytes();
+        let size = data.len() as u64;
+
+        let (text, with_size) = run(data, size);
+        assert_eq!(text.as_deref(), Some("h\u{e9}llo w\u{f6}rld"));
+
+        let (text, without) = run(data, 0);
+        assert_eq!(text.as_deref(), Some("h\u{e9}llo w\u{f6}rld"));
+        assert_eq!(without, with_size + 1);
+    }
+
+    #[test]
+    fn a_size_too_large_is_harmless() {
+        // The end is found by reading, as for a file of unknown size.
+        assert_eq!(run(b"some text", 100).0.as_deref(), Some("some text"));
+    }
+
+    #[test]
+    fn a_character_cut_off_at_the_size_is_invalid() {
+        let data = "a\u{e9}".as_bytes();
+        assert_eq!(run(&data[..2], 2).0, None);
+        assert_eq!(run(&data[..2], 0).0, None);
+    }
 }

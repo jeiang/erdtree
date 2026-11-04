@@ -627,6 +627,9 @@ fn size(probe: Probe, record: &Record<'_>, file_type: Kind, scratch: &mut Vec<u8
         return None;
     }
 
+    // The size of an unfollowed symlink is the length of its target path, not of the file read.
+    let hint = if record.is_symlink { 0 } else { stat.size };
+
     match probe.disk_usage {
         DiskUsage::Logical => Some(stat.size),
         // Unix: allocated blocks, which is what `filesize` reports for a Unix entry.
@@ -635,10 +638,10 @@ fn size(probe: Probe, record: &Record<'_>, file_type: Kind, scratch: &mut Vec<u8
         #[cfg(not(unix))]
         DiskUsage::Physical => Some(filesize::file_real_size(record.path).unwrap_or(stat.size)),
         DiskUsage::Line => {
-            line_count::Metric::from_file(record.open().ok()?, scratch).map(|m| m.value)
+            line_count::Metric::from_file(record.open().ok()?, hint, scratch).map(|m| m.value)
         },
         DiskUsage::Word => {
-            word_count::Metric::from_file(record.open().ok()?, scratch).map(|m| m.value)
+            word_count::Metric::from_file(record.open().ok()?, hint, scratch).map(|m| m.value)
         },
         #[cfg(unix)]
         DiskUsage::Block => Some(stat.blocks),

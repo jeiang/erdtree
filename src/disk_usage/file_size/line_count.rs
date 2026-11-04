@@ -27,13 +27,14 @@ impl Metric {
     }
 
     /// Counts the lines of an open file, reading through `scratch`, which is grown to the read
-    /// size when it is smaller. One buffer can serve many files.
-    pub fn from_file(file: File, scratch: &mut Vec<u8>) -> Option<Self> {
+    /// size when it is smaller. One buffer can serve many files. `size` is what the file system
+    /// reports for the file, or 0 when unknown.
+    pub fn from_file(file: File, size: u64, scratch: &mut Vec<u8>) -> Option<Self> {
         if scratch.len() < BUF_SIZE {
             scratch.resize(BUF_SIZE, 0);
         }
 
-        Self::count(file, &mut scratch[..BUF_SIZE])
+        Self::count(file, size, &mut scratch[..BUF_SIZE])
     }
 
     /// Counts lines in `reader` using a buffer of `buf_size` bytes.
@@ -46,9 +47,10 @@ impl Metric {
         Self::tally(|f| for_each_chunk(reader, buf_size, f))
     }
 
-    /// Like [`Self::from_reader`], reading through `buf`.
-    fn count(reader: impl Read, buf: &mut [u8]) -> Option<Self> {
-        Self::tally(|f| for_each_chunk_in(reader, buf, f))
+    /// Like [`Self::from_reader`], reading through `buf`, from a file the file system reports as
+    /// `size` bytes long (0 if unknown).
+    fn count(reader: impl Read, size: u64, buf: &mut [u8]) -> Option<Self> {
+        Self::tally(|f| for_each_chunk_in(reader, buf, size, f))
     }
 
     /// Counts the lines of the chunks `run` produces.
