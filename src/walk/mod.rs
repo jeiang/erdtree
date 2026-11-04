@@ -186,11 +186,22 @@ pub struct Walker {
 /// Directories with at least this many entries can be split between workers.
 pub const SPLIT_MIN: usize = 1024;
 
+/// The thresholds when every file is read, chosen by measurement: 2 and 1 took a directory of 8
+/// files of 72 MB from 101 ms to 46 ms (`--disk-usage line`), 64 and 8 did not split it at all,
+/// and trees of many small files (repo, wide, 1M files) ran as fast as with the defaults.
+const READING_SPLIT_MIN: usize = 2;
+const READING_SPLIT_BLOCK: usize = 1;
+
+/// Entries per block that idle workers take over from a directory of [`SPLIT_MIN`] entries.
+const SPLIT_BLOCK: usize = SPLIT_MIN / 8;
+
 /// Knobs of the walk that tests change.
 pub struct Tuning {
-    /// Directories with at least this many entries are visited in blocks of `split_min / 8`
-    /// entries (at least 16) that idle workers take over. Never splits when `usize::MAX`.
+    /// Directories with at least this many entries are visited in blocks that idle workers take
+    /// over. Never splits when `usize::MAX`.
     pub split_min: usize,
+    /// Entries per block.
+    pub block: usize,
     /// Number of times a directory was split; for tests.
     pub splits: AtomicUsize,
     /// When workers count as waiting for the file system.
@@ -199,10 +210,28 @@ pub struct Tuning {
     pub grown: AtomicUsize,
 }
 
+impl Tuning {
+    /// Splits directories of `split_min` entries or more in blocks of `block` entries.
+    pub fn splitting(split_min: usize, block: usize) -> Self {
+        Self {
+            split_min,
+            block: block.max(1),
+            ..Self::default()
+        }
+    }
+
+    /// For walks that read every file (`--disk-usage line` and `word`). Each entry then costs a
+    /// whole file read, so even a directory of a few large files has work for every worker.
+    pub fn reading_files() -> Self {
+        Self::splitting(READING_SPLIT_MIN, READING_SPLIT_BLOCK)
+    }
+}
+
 impl Default for Tuning {
     fn default() -> Self {
         Self {
             split_min: SPLIT_MIN,
+            block: SPLIT_BLOCK,
             splits: AtomicUsize::new(0),
             policy: adaptive::Policy::default(),
             grown: AtomicUsize::new(0),
@@ -708,7 +737,7 @@ where
     /// to an idle worker. Returns how many entries were kept.
     fn walk_chunk(&mut self, dir: &Arc<Dir>, lo: usize, mut hi: usize) -> u64 {
         let tuning = &self.walker.tuning;
-        let block = (tuning.split_min / 8).max(16);
+        let block = tuning.block;
 
         let mut kept = 0;
         let mut at = lo;
@@ -1289,10 +1318,15 @@ mod test {
             count_ignored: true,
             fields: Fields::default(),
             tuning: Tuning {
-                split_min,
-                splits: AtomicUsize::new(0),
                 policy,
-                grown: AtomicUsize::new(0),
+                ..Tuning::splitting(
+                    split_min,
+                    if split_min < 16 {
+                        1
+                    } else {
+                        (split_min / 8).max(16)
+                    },
+                )
             },
         };
 
@@ -1396,6 +1430,24 @@ mod test {
 
         assert_eq!(records.len(), 2, "{records:?}");
         assert_eq!(ignored, 3);
+    }
+
+    #[test]
+    fn small_directories_split_when_files_are_read() {
+        let tuning = Tuning::reading_files();
+        assert_eq!((tuning.split_min, tuning.block), (2, 1));
+
+        let dir = tree(40, 3, 5);
+        let root = dir.path().canonicalize().unwrap();
+        let (expected, expected_ignored, _) = walk(&root, 1, SPLIT_MIN);
+
+        let mut split_somewhere = false;
+        for _ in 0..50 {
+            let (records, ignored, splits) = walk(&root, 4, tuning.split_min);
+            assert_eq!((records, ignored), (expected.clone(), expected_ignored));
+            split_somewhere |= splits > 0;
+        }
+        assert!(split_somewhere, "a directory of 40 entries was split");
     }
 
     #[test]

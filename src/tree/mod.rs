@@ -631,6 +631,15 @@ fn walker(ctx: &Context) -> Result<Walker> {
         filter,
         count_ignored: ctx.report_ignored,
         fields: crate::fs::stat::Fields::default(),
-        tuning: crate::walk::Tuning::default(),
+        tuning: if ctx.suppress_size
+            || !matches!(
+                ctx.disk_usage,
+                crate::disk_usage::file_size::DiskUsage::Line
+                    | crate::disk_usage::file_size::DiskUsage::Word
+            ) {
+            crate::walk::Tuning::default()
+        } else {
+            crate::walk::Tuning::reading_files()
+        },
     })
 }
