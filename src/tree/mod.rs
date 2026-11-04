@@ -164,7 +164,7 @@ impl Tree {
         }
 
         let is_dir: Vec<bool> = cols.file_type.iter().map(|kind| kind.is_dir()).collect();
-        let children = Children::build(&cols.parent);
+        let children = Children::from_runs(n, &std::mem::take(&mut cols.runs));
 
         // Nothing is hidden by a filter, so the display order can stop at `--level`.
         let min_size = ctx.min_size.map(|m| m.value).filter(|&v| v > 0);
@@ -200,39 +200,30 @@ impl Tree {
 
         // Sizes: each inode with several links counts once, in the directory that comes
         // first by path.
-        let counted = tree.dedupe_hard_links(threads);
-
-        // Any parent-first order serves `aggregate`, `prune` and `hide_small`.
-        let parent_first = topo::by_depth(&tree.cols.depth).unwrap_or_else(|| {
-            topo::preorder(
-                &tree.children,
-                root,
-                &tree.alive,
-                &tree.cols.depth,
-                u32::MAX,
-            )
-        });
+        let uncounted = tree.dedupe_hard_links(threads);
         topo::aggregate(
-            &parent_first,
+            &tree.children,
             &tree.cols.parent,
-            &counted,
+            &tree.cols.depth,
+            &is_dir,
+            &uncounted,
             &mut tree.cols.size,
+            threads,
         );
-        drop(counted);
+        drop(uncounted);
 
         tree.sort_children(ctx, col_props, min_size.is_none());
-        tree.filter_and_order(ctx, col_props, &parent_first, &is_dir);
+        tree.filter_and_order(ctx, col_props, &is_dir);
 
         Ok(tree)
     }
 
     /// Applies `--prune`, patterns, `--dirs-only` and `--min-size`, then builds the display
-    /// order and the summary count. `parent_first` lists every node, each after its parent.
+    /// order and the summary count.
     fn filter_and_order(
         &mut self,
         ctx: &Context,
         col_props: &mut column::Properties,
-        parent_first: &[u32],
         is_dir: &[bool],
     ) {
         let tree = self;
@@ -241,6 +232,20 @@ impl Tree {
         let threads = thread_count(ctx);
         let min_size = ctx.min_size.map(|m| m.value).filter(|&v| v > 0);
         let filtered = ctx.prune || ctx.pattern.is_some() || ctx.dirs_only || min_size.is_some();
+
+        // Any parent-first order serves `prune` and `hide_small`.
+        let parent_first = (ctx.prune || ctx.pattern.is_some() || min_size.is_some()).then(|| {
+            topo::by_depth(&tree.cols.depth).unwrap_or_else(|| {
+                topo::preorder(
+                    &tree.children,
+                    root,
+                    &tree.alive,
+                    &tree.cols.depth,
+                    u32::MAX,
+                )
+            })
+        });
+        let parent_first = parent_first.as_deref().unwrap_or_default();
 
         if ctx.prune || ctx.pattern.is_some() {
             topo::prune(parent_first, &tree.cols.parent, is_dir, &mut tree.alive);
@@ -294,7 +299,7 @@ impl Tree {
         } else {
             n <= 1
         };
-        tree.last = topo::last_alive_child(&tree.children, &tree.order, &tree.alive);
+        tree.last = topo::last_alive_child(&tree.children, &tree.order, &tree.alive, threads);
     }
 
     /// Sorts the child lists of the directories shown (down to the display level), and with
@@ -374,10 +379,10 @@ impl Tree {
     /// Hard-link deduplication (see [`topo::dedupe`]): among entries sharing an inode (hard
     /// links, or a directory reached again through a followed symlink), one counts towards its
     /// directory's size: preferably one not reached through a symlink, then the least path.
-    fn dedupe_hard_links(&mut self, threads: usize) -> Vec<bool> {
+    fn dedupe_hard_links(&mut self, threads: usize) -> Vec<u32> {
         let mut linked: Vec<(u32, Inode)> = std::mem::take(&mut self.cols.multi_linked);
 
-        topo::dedupe(self.cols.len(), &mut linked, threads, |a, b| {
+        topo::dedupe(&mut linked, threads, |a, b| {
             self.through_symlink(a)
                 .cmp(&self.through_symlink(b))
                 .then_with(|| self.path_cmp(a, b))

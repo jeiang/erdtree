@@ -4,7 +4,7 @@
 //! only when those options are set, and rare data (symlink targets, multiply-linked inodes) is
 //! kept sparse.
 
-use super::topo::NONE;
+use super::topo::{NONE, Run};
 #[cfg(unix)]
 use crate::context::time;
 use crate::{
@@ -126,6 +126,8 @@ pub struct Columns {
     /// are about as many runs as directories instead of one reference per entry.
     parent_runs: Vec<ParentRun>,
     pub parent: Vec<u32>,
+    /// After [`Columns::merge`], the runs of equal parents in `parent`, except those of the root.
+    pub runs: Vec<Run>,
     pub depth: Vec<u32>,
     /// Type of the entry, or of its target when it is a followed symlink.
     pub file_type: Vec<Kind>,
@@ -342,85 +344,46 @@ impl Columns {
         Some(index)
     }
 
-    /// The parents of all entries as global indices, for the sinks in `order`.
-    fn global_parents(sinks: &[Self], order: &[usize], offsets: &[u32], total: u32) -> Vec<u32> {
+    /// The parents of all entries as global indices, and the runs of equal ones. `runs[k]` and
+    /// `lens[k]` are the parent runs and the length of the `k`-th sink to be concatenated;
+    /// `offsets` are indexed by sink id.
+    fn global_parents(
+        runs: &[Vec<ParentRun>],
+        lens: &[usize],
+        offsets: &[u32],
+        total: u32,
+    ) -> (Vec<u32>, Vec<Run>) {
         let mut parent = Vec::with_capacity(usize::try_from(total).unwrap_or(0));
+        let mut spans = Vec::with_capacity(runs.iter().map(Vec::len).sum());
 
-        for &i in order {
-            let sink = &sinks[i];
-
-            for (k, run) in sink.parent_runs.iter().enumerate() {
-                let end = sink
-                    .parent_runs
-                    .get(k + 1)
-                    .map_or(sink.len(), |next| next.start as usize);
+        for (runs, &len) in runs.iter().zip(lens) {
+            for (k, run) in runs.iter().enumerate() {
+                let end = runs.get(k + 1).map_or(len, |next| next.start as usize);
                 let global = run.parent.map_or(NONE, |p| {
                     super::topo::global_index(offsets, p.sink, p.index)
                 });
+                let start = u32::try_from(parent.len()).unwrap_or(NONE);
                 parent.extend(std::iter::repeat_n(global, end - run.start as usize));
+
+                if global != NONE {
+                    spans.push(Run {
+                        start,
+                        end: u32::try_from(parent.len()).unwrap_or(NONE),
+                        parent: global,
+                    });
+                }
             }
         }
 
-        parent
-    }
-
-    /// Appends the columns of `sink`, whose first entry gets the global index `offset`. Parents
-    /// are not touched.
-    fn append(&mut self, sink: &mut Self, offset: u32) {
-        let merged = self;
-
-        let names_offset = u32::try_from(merged.names.len()).unwrap_or(u32::MAX);
-        merged.names.append(&mut sink.names);
-        merged
-            .name_end
-            .extend(sink.name_end.iter().map(|end| end + names_offset));
-        merged.depth.append(&mut sink.depth);
-        merged.file_type.append(&mut sink.file_type);
-        merged.size.append(&mut sink.size);
-        merged.inode.append(&mut sink.inode);
-        merged.modified.append(&mut sink.modified);
-        merged.accessed.append(&mut sink.accessed);
-        merged.created.append(&mut sink.created);
-        merged.multi_linked.extend(
-            sink.multi_linked
-                .drain(..)
-                .map(|(i, inode)| (i + offset, inode)),
-        );
-        merged.link_target.extend(
-            sink.link_target
-                .drain(..)
-                .map(|(i, target)| (i + offset, target)),
-        );
-        merged.ignored += sink.ignored;
-
-        // Styles are small ids into per-sink tables; translate them into the merged table.
-        let remap: Vec<u16> = sink
-            .style_table
-            .iter()
-            .map(|style| {
-                let found = merged.style_table.iter().position(|s| s == style);
-                let index = found.unwrap_or_else(|| {
-                    merged.style_table.push(*style);
-                    merged.style_table.len() - 1
-                });
-                u16::try_from(index).unwrap_or(0)
-            })
-            .collect();
-        merged
-            .style
-            .extend(sink.style.iter().map(|&s| remap[usize::from(s)]));
-
-        #[cfg(unix)]
-        {
-            merged.mode.append(&mut sink.mode);
-            merged.blocks.append(&mut sink.blocks);
-            merged.long.append(&mut sink.long);
-        }
+        (parent, spans)
     }
 
     /// Concatenates the sinks and resolves parent references to global indices. The largest sink
     /// goes first and keeps its columns in place; the others are appended to them, in index
-    /// order, into space reserved for the exact total.
+    /// order, into space reserved for the exact total. Large merges copy independent groups of
+    /// columns on separate threads, which also spreads the page faults of the new memory.
+    // One job per group of columns; the groups share the sinks' set-up, so they stay together.
+    #[allow(clippy::too_many_lines)]
     pub fn merge(mut sinks: Vec<Self>) -> Self {
         let Some(base) = (0..sinks.len()).max_by_key(|&i| sinks[i].len()) else {
             return Self::default();
@@ -437,47 +400,201 @@ impl Columns {
             total = total.saturating_add(u32::try_from(sinks[i].len()).unwrap_or(NONE));
         }
 
-        let parent = Self::global_parents(&sinks, &order, &offsets, total);
+        // Plain copies need no thread for one sink or a small tree.
+        let parallel = sinks.len() > 1 && total >= MERGE_PAR_MIN;
 
-        // Every column grows once, to its final size.
-        macro_rules! reserve {
-            ($($col:ident),*) => {{
-                $(
-                    let sum: usize = sinks.iter().map(|s| s.$col.len()).sum();
-                    let have = sinks[base].$col.len();
-                    sinks[base].$col.reserve_exact(sum - have);
-                )*
-            }};
-        }
-        reserve!(
-            names,
-            name_end,
-            depth,
-            file_type,
-            size,
-            inode,
-            style,
-            modified,
-            accessed,
-            created,
-            multi_linked,
-            link_target
-        );
-        #[cfg(unix)]
-        reserve!(mode, blocks, long);
+        let lens: Vec<usize> = order.iter().map(|&i| sinks[i].len()).collect();
+        let runs: Vec<Vec<ParentRun>> = order
+            .iter()
+            .map(|&i| std::mem::take(&mut sinks[i].parent_runs))
+            .collect();
+        let name_offsets: Vec<u32> = order
+            .iter()
+            .scan(0_u32, |at, &i| {
+                let offset = *at;
+                *at = at.saturating_add(u32::try_from(sinks[i].names.len()).unwrap_or(NONE));
+                Some(offset)
+            })
+            .collect();
 
         let probe = sinks[base].probe;
         let mut merged = std::mem::take(&mut sinks[base]);
         merged.probe = probe;
-        merged.parent = parent;
-        merged.parent_runs = vec![];
+        let mut rest: Vec<Self> = order
+            .iter()
+            .skip(1)
+            .map(|&i| std::mem::take(&mut sinks[i]))
+            .collect();
 
-        for &i in order.iter().skip(1) {
-            merged.append(&mut sinks[i], offsets[i]);
+        // The other sinks' column `$col`, moved out of them.
+        macro_rules! others {
+            ($col:ident) => {
+                rest.iter_mut()
+                    .map(|sink| std::mem::take(&mut sink.$col))
+                    .collect::<Vec<_>>()
+            };
         }
 
+        let mut jobs: Vec<Box<dyn FnOnce() + Send + '_>> = vec![];
+
+        // The biggest columns get a job each.
+        let (dst, src) = (&mut merged.names, others!(names));
+        jobs.push(Box::new(move || append_all(dst, src)));
+        let (dst, src) = (&mut merged.size, others!(size));
+        jobs.push(Box::new(move || append_all(dst, src)));
+
+        // The small dense columns.
+        {
+            let (name_end, depth, file_type) = (
+                &mut merged.name_end,
+                &mut merged.depth,
+                &mut merged.file_type,
+            );
+            let (ends, depths, types) = (others!(name_end), others!(depth), others!(file_type));
+            let (dst, spans) = (&mut merged.parent, &mut merged.runs);
+            let (runs, lens, offsets) = (&runs, &lens, &offsets);
+            let name_offsets = &name_offsets[1..];
+
+            jobs.push(Box::new(move || {
+                (*dst, *spans) = Self::global_parents(runs, lens, offsets, total);
+                append_all(depth, depths);
+                append_all(file_type, types);
+                name_end.reserve_exact(ends.iter().map(Vec::len).sum());
+                for (ends, &offset) in ends.iter().zip(name_offsets) {
+                    name_end.extend(ends.iter().map(|end| end + offset));
+                }
+            }));
+        }
+
+        // Columns only some options collect (the long view, time sorts) are empty otherwise.
+        if rest.iter().any(|s| {
+            !s.inode.is_empty()
+                || !s.modified.is_empty()
+                || !s.accessed.is_empty()
+                || !s.created.is_empty()
+        }) {
+            let (inode, modified, accessed, created) = (
+                &mut merged.inode,
+                &mut merged.modified,
+                &mut merged.accessed,
+                &mut merged.created,
+            );
+            let (i, m, a, c) = (
+                others!(inode),
+                others!(modified),
+                others!(accessed),
+                others!(created),
+            );
+            jobs.push(Box::new(move || {
+                append_all(inode, i);
+                append_all(modified, m);
+                append_all(accessed, a);
+                append_all(created, c);
+            }));
+        }
+        #[cfg(unix)]
+        if rest
+            .iter()
+            .any(|s| !s.mode.is_empty() || !s.blocks.is_empty() || !s.long.is_empty())
+        {
+            let (mode, blocks, long) = (&mut merged.mode, &mut merged.blocks, &mut merged.long);
+            let (m, b, l) = (others!(mode), others!(blocks), others!(long));
+            jobs.push(Box::new(move || {
+                append_all(mode, m);
+                append_all(blocks, b);
+                append_all(long, l);
+            }));
+        }
+
+        // Sparse columns, and styles, which are small ids into per-sink tables to translate
+        // into the merged table.
+        {
+            let (style, table) = (&mut merged.style, &mut merged.style_table);
+            let styles: Vec<(Vec<u16>, Vec<Style>)> = rest
+                .iter_mut()
+                .map(|sink| {
+                    (
+                        std::mem::take(&mut sink.style),
+                        std::mem::take(&mut sink.style_table),
+                    )
+                })
+                .collect();
+            let (multi, links) = (&mut merged.multi_linked, &mut merged.link_target);
+            let sparse: Vec<_> = rest
+                .iter_mut()
+                .map(|sink| {
+                    (
+                        std::mem::take(&mut sink.multi_linked),
+                        std::mem::take(&mut sink.link_target),
+                    )
+                })
+                .collect();
+            let offsets = order
+                .iter()
+                .skip(1)
+                .map(|&i| offsets[i])
+                .collect::<Vec<_>>();
+
+            jobs.push(Box::new(move || {
+                for (((s, t), (m, l)), &offset) in styles.into_iter().zip(sparse).zip(&offsets) {
+                    multi.extend(m.into_iter().map(|(i, inode)| (i + offset, inode)));
+                    links.extend(l.into_iter().map(|(i, target)| (i + offset, target)));
+
+                    let remap: Vec<u16> = t
+                        .iter()
+                        .map(|style| {
+                            let found = table.iter().position(|x| x == style);
+                            let index = found.unwrap_or_else(|| {
+                                table.push(*style);
+                                table.len() - 1
+                            });
+                            u16::try_from(index).unwrap_or(0)
+                        })
+                        .collect();
+                    style.extend(s.iter().map(|&s| remap[usize::from(s)]));
+                }
+            }));
+        }
+
+        run(jobs, parallel);
+
+        merged.ignored += rest.iter().map(|sink| sink.ignored).sum::<usize>();
         merged
     }
+}
+
+/// Entries at least this many make [`Columns::merge`] copy columns on several threads.
+const MERGE_PAR_MIN: u32 = 1 << 16;
+
+/// Appends `src` to `dst`, growing it once.
+fn append_all<T>(dst: &mut Vec<T>, src: Vec<Vec<T>>) {
+    dst.reserve_exact(src.iter().map(Vec::len).sum());
+    for mut part in src {
+        dst.append(&mut part);
+    }
+}
+
+/// Runs `jobs`, the first on this thread and the others on new ones if `parallel`.
+fn run(jobs: Vec<Box<dyn FnOnce() + Send + '_>>, parallel: bool) {
+    if !parallel {
+        for job in jobs {
+            job();
+        }
+        return;
+    }
+
+    std::thread::scope(|s| {
+        let mut jobs = jobs.into_iter();
+        let first = jobs.next();
+
+        for job in jobs {
+            s.spawn(job);
+        }
+
+        if let Some(job) = first {
+            job();
+        }
+    });
 }
 
 /// The size of an entry in the configured metric; `None` for entries without one (directories,
@@ -507,5 +624,79 @@ fn size(probe: Probe, record: &Record<'_>, file_type: Kind, scratch: &mut Vec<u8
         },
         #[cfg(unix)]
         DiskUsage::Block => Some(stat.blocks),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{Columns, ParentRun};
+    use crate::{fs::stat::Kind, walk::NodeRef};
+    use std::time::{Duration, SystemTime};
+
+    /// The time recorded for entry `k` of sink `id`.
+    fn stamp(id: usize, k: usize) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(id * 1_000_000 + k).unwrap_or(0))
+    }
+
+    /// A sink of `len` entries below entry 0 of sink 0, each with its own number in the columns
+    /// that only some options fill.
+    fn sink(id: usize, len: usize) -> Columns {
+        Columns {
+            names: (0..len)
+                .map(|k| b'a' + u8::try_from(k % 26).unwrap_or(0))
+                .collect(),
+            name_end: (1..=u32::try_from(len).unwrap_or(0)).collect(),
+            parent_runs: vec![ParentRun {
+                start: 0,
+                parent: Some(NodeRef { sink: 0, index: 0 }),
+            }],
+            depth: vec![1; len],
+            file_type: vec![Kind::File; len],
+            size: (0..len)
+                .map(|k| Some(u64::try_from(k).unwrap_or(0)))
+                .collect(),
+            created: (0..len).map(|k| Some(stamp(id, k))).collect(),
+            modified: (0..len).map(|k| Some(stamp(id, k))).collect(),
+            style_table: vec![nu_ansi_term::Style::default()],
+            ..Columns::default()
+        }
+    }
+
+    /// Merging puts the sinks' columns one after the other, the largest first, whether it copies
+    /// on one thread or on several.
+    #[test]
+    fn merge_concatenates_every_column() {
+        for lens in [[3, 5, 2], [40_000, 30_000, 50_000]] {
+            let merged = Columns::merge((0..3).map(|id| sink(id, lens[id])).collect());
+            let total: usize = lens.iter().sum();
+
+            assert_eq!(merged.len(), total);
+            assert_eq!(merged.parent.len(), total);
+            assert_eq!(merged.runs.len(), 3);
+
+            let first = (0..3).max_by_key(|&id| lens[id]).unwrap_or(0);
+            let mut at = 0;
+            for id in std::iter::once(first).chain((0..3).filter(|&id| id != first)) {
+                for k in 0..lens[id] {
+                    assert_eq!(merged.created[at], Some(stamp(id, k)));
+                    assert_eq!(merged.modified[at], Some(stamp(id, k)));
+                    assert_eq!(merged.size[at], Some(u64::try_from(k).unwrap_or(0)));
+                    assert_eq!(
+                        merged.name(at).as_encoded_bytes(),
+                        [b'a' + u8::try_from(k % 26).unwrap_or(0)]
+                    );
+                    at += 1;
+                }
+            }
+
+            // Entry 0 of sink 0 is where that sink starts in the merged columns.
+            let start = if first == 0 { 0 } else { lens[first] };
+            assert!(
+                merged
+                    .parent
+                    .iter()
+                    .all(|&p| usize::try_from(p) == Ok(start))
+            );
+        }
     }
 }
