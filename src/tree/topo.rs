@@ -371,6 +371,27 @@ mod spec {
         assert_eq!(listed, n - 1);
     }
 
+    /// Whether `order` lists every node exactly once, root first, each node after its parent.
+    /// `aggregate`, `prune` and `hide_small` require such an order; every pre-order of the whole
+    /// tree is one, which `preorder_is_a_valid_preorder` checks.
+    pub fn is_parent_first_order(parent: &[u32], root: u32, order: &[u32]) -> bool {
+        let n = parent.len();
+
+        if order.len() != n || order.first() != Some(&root) {
+            return false;
+        }
+
+        let mut pos = vec![usize::MAX; n];
+        for (k, &node) in order.iter().enumerate() {
+            if ix(node) >= n || pos[ix(node)] != usize::MAX {
+                return false;
+            }
+            pos[ix(node)] = k;
+        }
+
+        (0..n).all(|i| parent[i] == NONE || pos[ix(parent[i])] < pos[i])
+    }
+
     /// `sort_each` sorts every child list by the comparator and keeps its members, for any
     /// number of threads.
     #[cfg(test)]
@@ -429,6 +450,12 @@ mod spec {
         }
 
         assert!(subtrees_contiguous(&anc, &pos));
+
+        // With every node alive, the pre-order is an order the size and filter passes accept,
+        // which their proofs assume.
+        if alive.iter().all(|&a| a) {
+            assert!(is_parent_first_order(parent, root, &order));
+        }
     }
 
     /// Whether every listed subtree occupies consecutive positions: the listed descendants of
@@ -505,19 +532,17 @@ mod spec {
 
     /// A directory's size is the sum of the sizes of the files below it that reach it through
     /// counted nodes only, saturating at `u64::MAX`, or `None` when that sum is zero; files keep
-    /// their sizes.
+    /// their sizes. Holds for every `order` accepted by [`is_parent_first_order`].
     pub fn aggregate_sums_counted_files(
         parent: &[u32],
-        root: u32,
+        order: &[u32],
         counted: &[bool],
         is_dir: &[bool],
         files: &[Option<u64>],
     ) {
         let n = parent.len();
-        let children = Children::build(parent);
-        let order = preorder(&children, root, &all_alive(n));
         let mut size = files.to_vec();
-        aggregate(&order, parent, counted, is_dir, &mut size);
+        aggregate(order, parent, counted, is_dir, &mut size);
         let anc = ancestors(parent);
 
         for d in 0..n {
@@ -546,13 +571,16 @@ mod spec {
     }
 
     /// After pruning, the alive non-root nodes are exactly the files and the directories with
-    /// a file below them.
-    pub fn prune_removes_exactly_empty_dirs(parent: &[u32], root: u32, is_dir: &[bool]) {
+    /// a file below them. Holds for every `order` accepted by [`is_parent_first_order`].
+    pub fn prune_removes_exactly_empty_dirs(
+        parent: &[u32],
+        root: u32,
+        order: &[u32],
+        is_dir: &[bool],
+    ) {
         let n = parent.len();
-        let children = Children::build(parent);
-        let order = preorder(&children, root, &all_alive(n));
         let mut alive = all_alive(n);
-        prune(&order, parent, is_dir, &mut alive);
+        prune(order, parent, is_dir, &mut alive);
 
         let anc = ancestors(parent);
 
@@ -578,18 +606,18 @@ mod spec {
     }
 
     /// `--min-size` keeps the root and exactly the nodes with a node of at least `threshold`
-    /// in their subtree, and reports every other node as hidden.
+    /// in their subtree, and reports every other node as hidden. Holds for every `order`
+    /// accepted by [`is_parent_first_order`].
     pub fn hide_small_keeps_large_and_their_ancestors(
         parent: &[u32],
         root: u32,
+        order: &[u32],
         size: &[Option<u64>],
         threshold: u64,
     ) {
         let n = parent.len();
-        let children = Children::build(parent);
-        let order = preorder(&children, root, &all_alive(n));
         let mut alive = all_alive(n);
-        let hidden = hide_small(&order, parent, size, threshold, &mut alive);
+        let hidden = hide_small(order, parent, size, threshold, &mut alive);
         let anc = ancestors(parent);
 
         // How often each node is reported hidden.
@@ -647,6 +675,17 @@ mod test {
         }
 
         out
+    }
+
+    /// Nodes in breadth-first order from `root`: another parent-first order.
+    fn breadth_first(children: &super::Children, root: u32) -> Vec<u32> {
+        let mut order = vec![root];
+        let mut k = 0;
+        while k < order.len() {
+            order.extend_from_slice(children.of(order[k]));
+            k += 1;
+        }
+        order
     }
 
     /// The `n` low bits of `mask`.
@@ -761,13 +800,26 @@ mod test {
                     spec::last_child_is_unique(&parent, root, &alive);
                 }
 
+                // Two different parent-first orders: the pre-order production uses, and
+                // breadth-first.
+                let everyone = vec![true; n];
+                let orders = [
+                    super::preorder(&sorted, root, &everyone),
+                    breadth_first(&built, root),
+                ];
+                for order in &orders {
+                    assert!(spec::is_parent_first_order(&parent, root, order));
+                }
+
                 for mask in 0..1 << n {
                     let is_dir = &bits(mask, n);
                     if !spec::only_dirs_have_children(&parent, is_dir) {
                         continue;
                     }
 
-                    spec::prune_removes_exactly_empty_dirs(&parent, root, is_dir);
+                    for order in &orders {
+                        spec::prune_removes_exactly_empty_dirs(&parent, root, order, is_dir);
+                    }
                     spec::dirs_only_keeps_connected_dirs(&parent, root, is_dir);
 
                     // Distinct powers of two make every subset sum distinct; values near
@@ -782,8 +834,13 @@ mod test {
                     // stays counted.
                     for counted in (0..1 << n).filter(|m| m >> r & 1 == 1) {
                         let counted = bits(counted, n);
-                        spec::aggregate_sums_counted_files(&parent, root, &counted, is_dir, &small);
-                        spec::aggregate_sums_counted_files(&parent, root, &counted, is_dir, &huge);
+                        for order in &orders {
+                            for files in [&small, &huge] {
+                                spec::aggregate_sums_counted_files(
+                                    &parent, order, &counted, is_dir, files,
+                                );
+                            }
+                        }
                     }
 
                     // Sizes of 2^i, with and without the directories sized; thresholds at
@@ -794,9 +851,11 @@ mod test {
                     let thresholds = (0..=n).map(|i| 1_u64 << i).chain([0]);
                     for threshold in thresholds {
                         for sizes in [&all_sized, &files_sized] {
-                            spec::hide_small_keeps_large_and_their_ancestors(
-                                &parent, root, sizes, threshold,
-                            );
+                            for order in &orders {
+                                spec::hide_small_keeps_large_and_their_ancestors(
+                                    &parent, root, order, sizes, threshold,
+                                );
+                            }
                         }
                     }
                 }
@@ -906,8 +965,20 @@ mod proofs {
         spec::dedupe_counts_each_inode_once(&key);
     }
 
+    /// Any order of all nodes with each parent first (what `aggregate`, `prune` and
+    /// `hide_small` require). The pre-order harness proves that `preorder` produces one, so these
+    /// harnesses need not model `Children::build` and `preorder`, and they hold for every such
+    /// order.
+    fn any_parent_first_order<const N: usize>(parent: &[u32; N], root: u32) -> [u32; N] {
+        let order: [u8; N] = kani::any();
+        let order = order.map(u32::from);
+        kani::assume(spec::is_parent_first_order(parent, root, &order));
+        order
+    }
+
     fn aggregate_sums_counted_files<const N: usize>() {
         let (parent, root) = any_tree::<N>();
+        let order = any_parent_first_order(&parent, root);
         let counted: [bool; N] = kani::any();
         let is_dir: [bool; N] = kani::any();
         let files: [Option<u64>; N] = kani::any();
@@ -916,14 +987,15 @@ mod proofs {
             // Directories start without a size; files may have any size.
             kani::assume(!is_dir[i] || files[i].is_none());
         }
-        spec::aggregate_sums_counted_files(&parent, root, &counted, &is_dir, &files);
+        spec::aggregate_sums_counted_files(&parent, &order, &counted, &is_dir, &files);
     }
 
     fn prune_removes_exactly_empty_dirs<const N: usize>() {
         let (parent, root) = any_tree::<N>();
         let is_dir: [bool; N] = kani::any();
         kani::assume(spec::only_dirs_have_children(&parent, &is_dir));
-        spec::prune_removes_exactly_empty_dirs(&parent, root, &is_dir);
+        let order = any_parent_first_order(&parent, root);
+        spec::prune_removes_exactly_empty_dirs(&parent, root, &order, &is_dir);
     }
 
     fn dirs_only_keeps_connected_dirs<const N: usize>() {
@@ -936,7 +1008,8 @@ mod proofs {
     fn hide_small_keeps_large_and_their_ancestors<const N: usize>() {
         let (parent, root) = any_tree::<N>();
         let size: [Option<u64>; N] = kani::any();
-        spec::hide_small_keeps_large_and_their_ancestors(&parent, root, &size, kani::any());
+        let order = any_parent_first_order(&parent, root);
+        spec::hide_small_keeps_large_and_their_ancestors(&parent, root, &order, &size, kani::any());
     }
 
     /// One harness per property and tree size, so each CBMC problem stays small and
