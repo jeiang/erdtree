@@ -59,6 +59,13 @@ fn iso_strict_offsets() -> Result<(), Box<dyn std::error::Error>> {
         "Asia/Kathmandu",
         "Australia/Lord_Howe",
     ] {
+        // Sandboxed builds (e.g. `nix flake check`) may lack the tz database; chrono then
+        // falls back to UTC, which says nothing about offsets.
+        if zone != "UTC" && !has_zone(zone) {
+            eprintln!("skipping {zone}: not in the tz database");
+            continue;
+        }
+
         let out = utils::run_cmd_raw(
             &[
                 "-l",
@@ -85,4 +92,21 @@ fn iso_strict_offsets() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+/// Whether the tz database has `zone`, in `$TZDIR` or the usual locations.
+#[cfg(unix)]
+fn has_zone(zone: &str) -> bool {
+    std::env::var_os("TZDIR")
+        .map(std::path::PathBuf::from)
+        .into_iter()
+        .chain(
+            [
+                "/usr/share/zoneinfo",
+                "/usr/lib/zoneinfo",
+                "/usr/share/lib/zoneinfo",
+            ]
+            .map(Into::into),
+        )
+        .any(|dir| dir.join(zone).is_file())
 }
