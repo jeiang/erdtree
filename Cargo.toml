@@ -16,6 +16,7 @@ exclude = ["assets/*", "scripts/*", "example/*"]
 readme = "README.md"
 license = "MIT"
 rust-version = "1.88"
+build = "src/build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -24,7 +25,9 @@ name = "erd"
 path = "src/main.rs"
 
 [dependencies]
-chrono = "0.4.45"
+# `clock` (chrono's `Local`) links CoreFoundation through `iana-time-zone` on macOS, where
+# `src/render/long/zone.rs` stands in for it.
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 clap = { version = "4.6.7", features = ["derive"] }
 clap_complete = "4.6.11"
 config = { version = "0.15.27", default-features = false, features = ["toml"] }
@@ -42,6 +45,12 @@ same-file = "1.0.6"
 terminal_size = "0.4.4"
 thiserror = "2.0.21"
 
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+chrono = "0.4.45"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tz-rs = "0.7.3"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
 
@@ -52,6 +61,10 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 indoc = "2.0.8"
 strip-ansi-escapes = "0.2.1"
 tempfile = "3.27.0"
+
+# Tests compare `src/render/long/zone.rs` with chrono's `Local`.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+chrono = { version = "0.4.45", features = ["clock"] }
 
 # The profile that 'dist' will build with
 [profile.dist]

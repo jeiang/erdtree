@@ -2,7 +2,9 @@
 
 use super::super::bytes::push_pair;
 use crate::context::time::Format;
-use chrono::{DateTime, Datelike, Local, NaiveDateTime, Offset, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, NaiveDateTime, Timelike};
+#[cfg(not(target_os = "macos"))]
+use chrono::{Local, Offset, TimeZone};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Timestamps from 2100 on, and before 1970, take chrono's route: the fields below assume
@@ -29,6 +31,7 @@ struct Slot {
 }
 
 /// The UTC offset of the local time zone at `secs`, as chrono finds it.
+#[cfg(not(target_os = "macos"))]
 pub fn local_offset(secs: i64) -> i32 {
     DateTime::from_timestamp(secs, 0).map_or(0, |utc| {
         Local
@@ -36,6 +39,16 @@ pub fn local_offset(secs: i64) -> i32 {
             .fix()
             .local_minus_utc()
     })
+}
+
+/// The UTC offset of the local time zone at `secs`, as chrono's `Local` finds it, without
+/// linking CoreFoundation.
+#[cfg(target_os = "macos")]
+pub fn local_offset(secs: i64) -> i32 {
+    if DateTime::from_timestamp(secs, 0).is_none() {
+        return 0;
+    }
+    super::zone::local_offset(secs)
 }
 
 /// Remembers local UTC offsets by hour. An hour whose first and last second have the same

@@ -389,6 +389,17 @@ impl Context {
         })
     }
 
+    /// Canonicalizes the root like [`Self::dir_canonical`], but reports a failure instead of
+    /// falling back. A success is cached, so that the walk and its filters ask the filesystem
+    /// once.
+    pub fn try_dir_canonical(&self) -> std::io::Result<&Path> {
+        if let Some(dir) = self.canonical_dir.get() {
+            return Ok(dir);
+        }
+        let dir = std::fs::canonicalize(self.dir())?;
+        Ok(self.canonical_dir.get_or_init(|| dir))
+    }
+
     /// The max depth to print. Note that all directories are fully traversed to compute file
     /// sizes; this just determines how much to print.
     pub fn level(&self) -> usize {
