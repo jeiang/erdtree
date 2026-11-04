@@ -1,21 +1,5 @@
 use errno::Errno;
-use std::{ffi::CStr, fs::Metadata, os::unix::fs::MetadataExt, ptr};
-
-type Owner = String;
-type Group = String;
-
-impl UserGroupInfo for Metadata {}
-
-/// Trait that allows for files to query their owner and group.
-pub trait UserGroupInfo: MetadataExt {
-    /// Attempts to query both the owner and group of the implementor.
-    fn try_get_owner_and_group(&self) -> Result<(Owner, Group), Error> {
-        let user = try_get_user(self.uid())?;
-        let group = try_get_group(self.gid())?;
-
-        Ok((user, group))
-    }
-}
+use std::{ffi::CStr, ptr};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -59,7 +43,7 @@ fn with_buffer(
 }
 
 /// Attempts to return the name of the group associated with `gid`.
-fn try_get_group(gid: libc::gid_t) -> Result<String, Error> {
+pub fn try_get_group(gid: libc::gid_t) -> Result<String, Error> {
     // SAFETY: `sysconf` has no preconditions.
     let size = unsafe { libc::sysconf(libc::_SC_GETGR_R_SIZE_MAX) };
     let size = libc::c_int::try_from(size).unwrap_or(0);
@@ -86,7 +70,7 @@ fn try_get_group(gid: libc::gid_t) -> Result<String, Error> {
 }
 
 /// Attempts to return the name of the user associated with `uid`.
-fn try_get_user(uid: libc::uid_t) -> Result<String, Error> {
+pub fn try_get_user(uid: libc::uid_t) -> Result<String, Error> {
     // SAFETY: `sysconf` has no preconditions.
     let size = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
     let size = libc::c_int::try_from(size).unwrap_or(0);

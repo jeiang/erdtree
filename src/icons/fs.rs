@@ -1,6 +1,5 @@
-use ignore::DirEntry;
 use nu_ansi_term::{AnsiGenericString, Style};
-use std::{borrow::Cow, path::Path};
+use std::{borrow::Cow, ffi::OsStr, fs::FileType, path::Path};
 
 /// Computes a plain, colorless icon with given parameters.
 ///
@@ -8,35 +7,19 @@ use std::{borrow::Cow, path::Path};
 /// is as followed: file-type, file-extension, and then file-name. If an icon cannot be
 /// computed the fall-back default icon is used.
 ///
-/// If a directory entry is a link and the link target is provided, the link target will be
-/// used to determine the icon.
-pub fn compute(entry: &DirEntry, link_target: Option<&Path>) -> Cow<'static, str> {
-    let icon = entry
-        .file_type()
-        .and_then(super::icon_from_file_type)
-        .map(Cow::from);
-
-    if let Some(i) = icon {
-        return i;
+/// `ext_source` is the path whose extension is used: the symlink target for a symlink, else the
+/// entry's name.
+pub fn compute(file_type: FileType, ext_source: &Path, file_name: &OsStr) -> Cow<'static, str> {
+    if let Some(icon) = super::icon_from_file_type(file_type) {
+        return Cow::from(icon);
     }
 
-    let ext = match link_target {
-        Some(target) if entry.path_is_symlink() => target.extension(),
-        _ => entry.path().extension(),
-    };
-
-    let icon = ext
-        .and_then(super::icon_from_ext)
-        .map(|(_, i)| Cow::from(i));
-
-    if let Some(i) = icon {
-        return i;
+    if let Some((_, icon)) = ext_source.extension().and_then(super::icon_from_ext) {
+        return Cow::from(icon);
     }
 
-    let icon = super::icon_from_file_name(entry.file_name()).map(Cow::from);
-
-    if let Some(i) = icon {
-        return i;
+    if let Some(icon) = super::icon_from_file_name(file_name) {
+        return Cow::from(icon);
     }
 
     Cow::from(super::get_default_icon().1)
@@ -44,15 +27,11 @@ pub fn compute(entry: &DirEntry, link_target: Option<&Path>) -> Cow<'static, str
 
 /// Computes a plain, colored icon with given parameters. See [compute] for more details.
 pub fn compute_with_color(
-    entry: &DirEntry,
-    link_target: Option<&Path>,
+    file_type: FileType,
+    ext_source: &Path,
+    file_name: &OsStr,
     style: Option<Style>,
 ) -> Cow<'static, str> {
-    let icon = entry
-        .file_type()
-        .and_then(super::icon_from_file_type)
-        .map(Cow::from);
-
     let paint_icon = |icon| match style {
         Some(style) if !style.is_plain() => {
             let ansi_string: AnsiGenericString<str> = style.bold().paint(icon);
@@ -62,29 +41,16 @@ pub fn compute_with_color(
         _ => icon,
     };
 
-    if let Some(icon) = icon {
-        return paint_icon(icon);
+    if let Some(icon) = super::icon_from_file_type(file_type) {
+        return paint_icon(Cow::from(icon));
     }
 
-    let ext = match link_target {
-        Some(target) if entry.path_is_symlink() => target.extension(),
-        _ => entry.path().extension(),
-    };
-
-    let icon = ext
-        .and_then(super::icon_from_ext)
-        .map(|attrs| Cow::from(super::col(attrs.0, attrs.1)));
-
-    if let Some(i) = icon {
-        return i;
+    if let Some(attrs) = ext_source.extension().and_then(super::icon_from_ext) {
+        return Cow::from(super::col(attrs.0, attrs.1));
     }
 
-    let icon = super::icon_from_file_name(entry.file_name())
-        .map(Cow::from)
-        .map(paint_icon);
-
-    if let Some(i) = icon {
-        return i;
+    if let Some(icon) = super::icon_from_file_name(file_name) {
+        return paint_icon(Cow::from(icon));
     }
 
     let (code, icon) = super::get_default_icon();

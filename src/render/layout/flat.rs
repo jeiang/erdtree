@@ -1,29 +1,23 @@
-use crate::render::{
-    Engine, Flat,
-    grid::{self, Row},
+use crate::{
+    context::Context,
+    render::{Flat, Layout, Plan, grid},
+    tree::Tree,
 };
-use std::fmt::{self, Display};
 
-impl Display for Engine<Flat> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ctx = self.context();
-        let tree = self.tree();
-        let arena = tree.arena();
-        let order = tree.flat_order(ctx);
+impl Layout for Flat {
+    type Grid = grid::Flat;
+
+    /// The flat order reversed, root last.
+    fn plan(tree: &Tree, ctx: &Context) -> Plan {
         let max_depth = ctx.level();
+        let mut plan = Plan::with_capacity(tree.order().len(), false);
 
-        for node_id in order.into_iter().rev() {
-            let node = arena[node_id].get();
-
-            if node.depth() > max_depth {
-                continue;
+        for id in tree.flat_order(ctx).into_iter().rev() {
+            if tree.node(id).depth() <= max_depth {
+                plan.push(id);
             }
-
-            let row = Row::<grid::Flat>::new(node, ctx, None);
-
-            writeln!(f, "{row}")?;
         }
 
-        Ok(())
+        plan
     }
 }

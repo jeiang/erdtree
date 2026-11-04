@@ -1,7 +1,7 @@
 use std::{fs::Metadata, path::Path};
 
 /// Represents a file's underlying inode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Inode {
     pub ino: u64,
     pub dev: u64,
@@ -38,14 +38,8 @@ impl Inode {
     /// followed symlink resolves to its target, matching the Unix behavior.
     #[cfg(windows)]
     pub fn try_new(path: &Path, md: &Metadata, followed_link: bool) -> Result<Self, Error> {
-        use std::{
-            fs::OpenOptions,
-            mem::MaybeUninit,
-            os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
-        };
         use windows_sys::Win32::Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
         };
 
         if !md.is_file() {
@@ -60,25 +54,7 @@ impl Inode {
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
         };
 
-        // No access rights are requested; we only query metadata.
-        let file = OpenOptions::new()
-            .access_mode(0)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(flags)
-            .open(path)
-            .map_err(|_e| Error)?;
-
-        let mut raw = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
-
-        // SAFETY: the handle is valid for the lifetime of `file` and `raw` is a valid pointer to
-        // a `BY_HANDLE_FILE_INFORMATION`, which is fully initialized when the call succeeds.
-        let info = unsafe {
-            if GetFileInformationByHandle(file.as_raw_handle().cast(), raw.as_mut_ptr()) == 0 {
-                return Err(Error);
-            }
-            raw.assume_init()
-        };
-
+        let info = file_information(path, flags)?;
         let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
 
         Ok(Self::new(
@@ -93,4 +69,51 @@ impl Inode {
     pub fn try_new(_path: &Path, _md: &Metadata, _followed_link: bool) -> Result<Self, Error> {
         Err(Error)
     }
+}
+
+/// `GetFileInformationByHandle` for the file or directory at `path`, opened with `flags`.
+#[cfg(windows)]
+fn file_information(
+    path: &Path,
+    flags: u32,
+) -> Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION, Error> {
+    use std::{
+        fs::OpenOptions,
+        mem::MaybeUninit,
+        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        GetFileInformationByHandle,
+    };
+
+    // No access rights are requested; we only query metadata.
+    let file = OpenOptions::new()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(flags)
+        .open(path)
+        .map_err(|_e| Error)?;
+
+    let mut raw = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+
+    // SAFETY: the handle is valid for the lifetime of `file` and `raw` is a valid pointer to
+    // a `BY_HANDLE_FILE_INFORMATION`, which is fully initialized when the call succeeds.
+    unsafe {
+        if GetFileInformationByHandle(file.as_raw_handle().cast(), raw.as_mut_ptr()) == 0 {
+            return Err(Error);
+        }
+        Ok(raw.assume_init())
+    }
+}
+
+/// Serial number of the volume holding the file or directory at `path` (following symlinks),
+/// for `--one-file-system`.
+#[cfg(windows)]
+pub fn volume_serial(path: &Path) -> Option<u64> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+    file_information(path, FILE_FLAG_BACKUP_SEMANTICS)
+        .ok()
+        .map(|info| u64::from(info.dwVolumeSerialNumber))
 }

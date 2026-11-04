@@ -1,29 +1,23 @@
-use crate::render::{
-    Engine, FlatInverted,
-    grid::{self, Row},
+use crate::{
+    context::Context,
+    render::{FlatInverted, Layout, Plan, grid},
+    tree::Tree,
 };
-use std::fmt::{self, Display};
 
-impl Display for Engine<FlatInverted> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ctx = self.context();
-        let tree = self.tree();
-        let arena = tree.arena();
-        let order = tree.flat_order(ctx);
+impl Layout for FlatInverted {
+    type Grid = grid::Flat;
+
+    /// The flat order, root first.
+    fn plan(tree: &Tree, ctx: &Context) -> Plan {
         let max_depth = ctx.level();
+        let mut plan = Plan::with_capacity(tree.order().len(), false);
 
-        for node_id in order {
-            let node = arena[node_id].get();
-
-            if node.depth() > max_depth {
-                continue;
+        for id in tree.flat_order(ctx) {
+            if tree.node(id).depth() <= max_depth {
+                plan.push(id);
             }
-
-            let row = Row::<grid::Flat>::new(node, ctx, None);
-
-            writeln!(f, "{row}")?;
         }
 
-        Ok(())
+        plan
     }
 }

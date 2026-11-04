@@ -16,9 +16,9 @@ pub struct FileCount {
     pub num_ignored: usize,
 }
 
-impl AddAssign<&Node> for FileCount {
+impl AddAssign<Node<'_>> for FileCount {
     /// Update [Self] with information from [Node].
-    fn add_assign(&mut self, rhs: &Node) {
+    fn add_assign(&mut self, rhs: Node<'_>) {
         if rhs.is_dir() {
             self.num_dirs += 1;
         } else if rhs.is_symlink() {
@@ -28,10 +28,10 @@ impl AddAssign<&Node> for FileCount {
         }
     }
 }
-impl Add<&Node> for FileCount {
+impl Add<Node<'_>> for FileCount {
     type Output = Self;
     /// Update [Self] with information from [Node].
-    fn add(self, rhs: &Node) -> Self::Output {
+    fn add(self, rhs: Node<'_>) -> Self::Output {
         if rhs.is_dir() {
             Self {
                 num_dirs: self.num_dirs + 1,

@@ -1,96 +1,89 @@
 use crate::{
-    render::{
-        Engine, Regular,
-        grid::{self, Row},
-        theme,
-    },
+    context::Context,
+    render::{Layout, Plan, Regular, grid, theme},
     styles,
+    tree::Tree,
 };
-use indextree::NodeEdge;
-use std::fmt::{self, Display};
 
-impl Display for Engine<Regular> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ctx = self.context();
-        let tree = self.tree();
-        let root_id = tree.root_id();
-        let arena = tree.arena();
+impl Layout for Regular {
+    type Grid = grid::Tree;
+
+    /// The tree upside down: nodes in reverse pre-order, root last. This replays the edges of a
+    /// reverse depth-first traversal: before a leaf, the `End` edges of the directories whose
+    /// subtree it closes (outermost first), then the `Start` edge of each node.
+    fn plan(tree: &Tree, ctx: &Context) -> Plan {
+        let root = tree.root();
         let max_depth = ctx.level();
+        let order = tree.order();
+        let mut plan = Plan::with_capacity(order.len(), true);
 
+        let glyphs = theme::GlyphCache::new();
         let mut get_theme = if ctx.follow {
             theme::link_theme_getter()
         } else {
             theme::regular_theme_getter()
         };
 
-        let mut base_prefix_components = vec![""];
+        let mut base: Vec<&str> = vec![];
+        let mut closing = vec![];
 
-        let mut tree_edges = root_id.reverse_traverse(arena).skip(1).peekable();
+        for (k, &id) in order.iter().enumerate().rev() {
+            if !tree.has_children(id) {
+                // Directories whose last pre-order descendant is this leaf, innermost first.
+                closing.clear();
+                let mut cur = id;
+                while cur != root && tree.is_last(cur) {
+                    let parent = tree.parent(cur);
+                    if parent == root {
+                        break;
+                    }
+                    closing.push(parent);
+                    cur = parent;
+                }
 
-        while let Some(node_edge) = tree_edges.next() {
-            let current_node_id = match node_edge {
-                NodeEdge::Start(id) => id,
-
-                NodeEdge::End(id) => {
-                    let current_node = arena[id].get();
-
-                    if !current_node.is_dir() || id.children(arena).count() == 0 {
+                for &dir in closing.iter().rev() {
+                    let node = tree.node(dir);
+                    if !node.is_dir() {
                         continue;
                     }
 
-                    let theme = get_theme(current_node);
+                    let theme = glyphs.get(get_theme(node));
 
-                    let topmost_sibling = id.following_siblings(arena).nth(1).is_none();
-
-                    if topmost_sibling {
-                        base_prefix_components.push(styles::SEP);
+                    if tree.is_last(dir) {
+                        base.push(styles::SEP);
                     } else {
-                        base_prefix_components.push(theme.get("vt").unwrap());
+                        base.push(theme.vt);
                     }
-
-                    continue;
-                },
-            };
-
-            let current_node = arena[current_node_id].get();
-
-            let node_depth = current_node.depth();
-
-            let topmost_sibling = current_node_id.following_siblings(arena).nth(1).is_none();
-
-            let theme = get_theme(current_node);
-
-            if node_depth <= max_depth {
-                if node_depth == 0 {
-                    let row = Row::<grid::Tree>::new(current_node, ctx, Some(""));
-                    writeln!(f, "{row}")?;
-                } else {
-                    let prefix_part = if topmost_sibling {
-                        theme.get("drt").unwrap()
-                    } else {
-                        theme.get("vtrt").unwrap()
-                    };
-
-                    let mut current_prefix_components = base_prefix_components.clone();
-
-                    current_prefix_components.push(prefix_part);
-
-                    let prefix = current_prefix_components.join("");
-
-                    let row = Row::<grid::Tree>::new(current_node, ctx, Some(&prefix));
-                    writeln!(f, "{row}")?;
                 }
             }
 
-            if let Some(NodeEdge::Start(next_id)) = tree_edges.peek() {
-                let next_node = arena[*next_id].get();
+            let node = tree.node(id);
+            let depth = node.depth();
+            let theme = glyphs.get(get_theme(node));
 
-                if next_node.depth() < node_depth {
-                    base_prefix_components.pop();
+            if depth <= max_depth {
+                if depth == 0 {
+                    plan.push_with_prefix(id, [""]);
+                } else {
+                    let part = if tree.is_last(id) {
+                        theme.drt
+                    } else {
+                        theme.vtrt
+                    };
+
+                    plan.push_with_prefix(id, base.iter().copied().chain([part]));
                 }
+            }
+
+            // The next edge is the parent's `Start` exactly when this node is its first child.
+            if let Some(&prev) = k.checked_sub(1).and_then(|p| order.get(p))
+                && tree.has_children(prev)
+                && tree.node(prev).depth() < depth
+            {
+                base.pop();
             }
         }
 
-        Ok(())
+        plan
     }
 }

@@ -3,28 +3,28 @@ use crate::context::{Context, dir, sort};
 use std::cmp::Ordering;
 
 /// Comparator type used to sort [Node]s.
-pub type NodeComparator = dyn Fn(&Node, &Node) -> Ordering;
+pub type NodeComparator = dyn for<'a, 'b> Fn(Node<'a>, Node<'b>) -> Ordering + Send + Sync;
 
 /// Yields function pointer to the appropriate `Node` comparator.
 pub fn comparator(ctx: &Context) -> Box<NodeComparator> {
     let sort_type = ctx.sort;
 
     match ctx.dir_order {
-        dir::Order::First => {
-            Box::new(move |a, b| dir_first_comparator(a, b, base_comparator(sort_type)))
-        },
-        dir::Order::Last => {
-            Box::new(move |a, b| dir_last_comparator(a, b, base_comparator(sort_type)))
-        },
+        dir::Order::First => Box::new(move |a: Node<'_>, b: Node<'_>| {
+            dir_first_comparator(a, b, base_comparator(sort_type))
+        }),
+        dir::Order::Last => Box::new(move |a: Node<'_>, b: Node<'_>| {
+            dir_last_comparator(a, b, base_comparator(sort_type))
+        }),
         dir::Order::None => base_comparator(sort_type),
     }
 }
 
 /// Orders directories first. Provides a fallback if inputs are not directories.
 fn dir_first_comparator(
-    a: &Node,
-    b: &Node,
-    fallback: impl Fn(&Node, &Node) -> Ordering,
+    a: Node<'_>,
+    b: Node<'_>,
+    fallback: impl for<'a, 'b> Fn(Node<'a>, Node<'b>) -> Ordering + Send + Sync,
 ) -> Ordering {
     match (a.is_dir(), b.is_dir()) {
         (true, false) => Ordering::Greater,
@@ -35,9 +35,9 @@ fn dir_first_comparator(
 
 /// Orders directories last. Provides a fallback if inputs are not directories.
 fn dir_last_comparator(
-    a: &Node,
-    b: &Node,
-    fallback: impl Fn(&Node, &Node) -> Ordering,
+    a: Node<'_>,
+    b: Node<'_>,
+    fallback: impl for<'a, 'b> Fn(Node<'a>, Node<'b>) -> Ordering + Send + Sync,
 ) -> Ordering {
     match (a.is_dir(), b.is_dir()) {
         (true, false) => Ordering::Less,
@@ -73,14 +73,14 @@ mod time_stamping {
         use super::*;
 
         /// Comparator that sorts [Node]s by Last Access timestamp, newer to older.
-        pub fn comparator(a: &Node, b: &Node) -> Ordering {
+        pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
             let a_stamp = a.accessed().unwrap_or_else(SystemTime::now);
             let b_stamp = b.accessed().unwrap_or_else(SystemTime::now);
             b_stamp.cmp(&a_stamp)
         }
 
         /// Comparator that sorts [Node]s by Access timestamp, older to newer.
-        pub fn rev_comparator(a: &Node, b: &Node) -> Ordering {
+        pub fn rev_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
             comparator(b, a)
         }
     }
@@ -89,14 +89,14 @@ mod time_stamping {
         use super::*;
 
         /// Comparator that sorts [Node]s by Creation timestamp, newer to older.
-        pub fn comparator(a: &Node, b: &Node) -> Ordering {
+        pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
             let a_stamp = a.created().unwrap_or_else(SystemTime::now);
             let b_stamp = b.created().unwrap_or_else(SystemTime::now);
             b_stamp.cmp(&a_stamp)
         }
 
         /// Comparator that sorts [Node]s by Creation timestamp, older to newer.
-        pub fn rev_comparator(a: &Node, b: &Node) -> Ordering {
+        pub fn rev_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
             comparator(b, a)
         }
     }
@@ -105,32 +105,31 @@ mod time_stamping {
         use super::*;
 
         /// Comparator that sorts [Node]s by Alteration timestamp, newer to older.
-        pub fn comparator(a: &Node, b: &Node) -> Ordering {
+        pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
             let a_stamp = a.modified().unwrap_or_else(SystemTime::now);
             let b_stamp = b.modified().unwrap_or_else(SystemTime::now);
             b_stamp.cmp(&a_stamp)
         }
 
         /// Comparator that sorts [Node]s by Alteration timestamp, older to newer.
-        pub fn rev_comparator(a: &Node, b: &Node) -> Ordering {
+        pub fn rev_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
             comparator(b, a)
         }
     }
 }
 
 mod sizing {
-    use crate::disk_usage::file_size::FileSize;
     use crate::tree::node::Node;
     use core::cmp::Ordering;
 
     /// Comparator that sorts [Node]s by size, largest to smallest.
-    pub fn comparator(a: &Node, b: &Node) -> Ordering {
-        let a_size = a.file_size().map_or(0, FileSize::value);
-        let b_size = b.file_size().map_or(0, FileSize::value);
+    pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
+        let a_size = a.size_value().unwrap_or(0);
+        let b_size = b.size_value().unwrap_or(0);
         b_size.cmp(&a_size)
     }
     /// Comparator that sorts [Node]s by size, smallest to largest.
-    pub fn rev_comparator(a: &Node, b: &Node) -> Ordering {
+    pub fn rev_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
         comparator(b, a)
     }
 }
@@ -140,19 +139,19 @@ mod naming {
     use core::cmp::Ordering;
 
     /// Comparator based on [Node] file names in lexicographical order.
-    pub fn comparator(a: &Node, b: &Node) -> Ordering {
+    pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
         a.file_name().cmp(b.file_name())
     }
 
     /// Comparator based on [Node] file names in reversed lexicographical order.
-    pub fn rev_comparator(a: &Node, b: &Node) -> Ordering {
+    pub fn rev_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
         comparator(b, a)
     }
 
     /// Comparator based on [Node] file names in case-insensitive lexicographical order. Names
     /// are lowercased with full Unicode case mapping (lossily, for non-UTF-8 names) and ties
     /// are broken by the case-sensitive [`comparator`] so the order is deterministic.
-    pub fn ci_comparator(a: &Node, b: &Node) -> Ordering {
+    pub fn ci_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
         let a_name = a.file_name().to_string_lossy();
         let b_name = b.file_name().to_string_lossy();
         let a_folded = a_name.chars().flat_map(char::to_lowercase);
@@ -162,7 +161,7 @@ mod naming {
     }
 
     /// Exact reverse of [`ci_comparator`].
-    pub fn rev_ci_comparator(a: &Node, b: &Node) -> Ordering {
+    pub fn rev_ci_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
         ci_comparator(b, a)
     }
 }

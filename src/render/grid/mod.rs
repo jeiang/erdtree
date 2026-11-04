@@ -14,7 +14,7 @@ pub mod cell;
 pub struct Row<'a, T> {
     prefix: Option<&'a str>,
     ctx: &'a Context,
-    node: &'a Node,
+    node: Node<'a>,
     layout: PhantomData<T>,
 }
 
@@ -35,7 +35,7 @@ fn flat_row(size: &str, path: &str) -> String {
 }
 
 impl<'a, T> Row<'a, T> {
-    pub const fn new(node: &'a Node, ctx: &'a Context, prefix: Option<&'a str>) -> Self {
+    pub const fn new(node: Node<'a>, ctx: &'a Context, prefix: Option<&'a str>) -> Self {
         Self {
             prefix,
             node,
@@ -60,21 +60,24 @@ impl Display for Row<'_, Tree> {
             },
         );
 
-        let row = if ctx.long {
-            let optionals = long::Optionals::from(ctx);
-            let long_display = long::Display::new(optionals, node, ctx);
-
-            format!("{long_display} {size} {name}")
-        } else {
-            format!("{size} {name}")
-        };
+        let long_display = ctx
+            .long
+            .then(|| long::Display::new(long::Optionals::from(ctx), node, ctx));
 
         if let (true, Some(window_width)) = (ctx.truncate, ctx.window_width) {
+            let row = long_display.map_or_else(
+                || format!("{size} {name}"),
+                |long_display| format!("{long_display} {size} {name}"),
+            );
             let out = <str as Escaped>::truncate(&row, window_width);
-            write!(f, "{out}")
-        } else {
-            write!(f, "{row}")
+            return write!(f, "{out}");
         }
+
+        if let Some(long_display) = long_display {
+            write!(f, "{long_display} ")?;
+        }
+
+        write!(f, "{size} {name}")
     }
 }
 

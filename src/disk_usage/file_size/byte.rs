@@ -1,10 +1,7 @@
 use super::super::units::{BinPrefix, PrefixKind, SiPrefix, UnitPrefix};
-use filesize::PathExt;
 use std::{
-    cell::{Ref, RefCell},
     fmt::{self, Display},
-    fs::Metadata,
-    path::Path,
+    io::{Cursor, Write},
 };
 
 /// Concerned with measuring file size in bytes, whether logical or physical determined by `kind`.
@@ -15,11 +12,6 @@ pub struct Metric {
     #[allow(dead_code)]
     kind: MetricKind,
     prefix_kind: PrefixKind,
-
-    /// To prevent allocating the same string twice. We allocate the first time
-    /// in [`crate::tree::Tree::update_column_properties`] in order to compute the max column width for
-    /// human-readable size and cache it. It will then be used again when preparing the output.
-    cached_display: RefCell<String>,
 }
 
 /// Represents the appropriate method in which to compute bytes. `Logical` represent the total amount
@@ -31,121 +23,72 @@ pub enum MetricKind {
 }
 
 impl Metric {
-    /// Initializes a [Metric] that stores the total amount of bytes in a file.
-    pub fn init_logical(
-        metadata: &Metadata,
+    /// A [Metric] of `value` bytes.
+    pub const fn new(
+        value: u64,
+        kind: MetricKind,
         prefix_kind: PrefixKind,
         human_readable: bool,
     ) -> Self {
-        let value = metadata.len();
-        let kind = MetricKind::Logical;
-
         Self {
             value,
             human_readable,
             kind,
             prefix_kind,
-            cached_display: RefCell::default(),
         }
     }
 
     /// Initializes an empty [Metric] used to represent the total amount of bytes of a file.
-    pub fn init_empty_logical(human_readable: bool, prefix_kind: PrefixKind) -> Self {
-        Self {
-            value: 0,
-            human_readable,
-            kind: MetricKind::Logical,
-            prefix_kind,
-            cached_display: RefCell::default(),
-        }
+    pub const fn init_empty_logical(human_readable: bool, prefix_kind: PrefixKind) -> Self {
+        Self::new(0, MetricKind::Logical, prefix_kind, human_readable)
     }
 
     /// Initializes an empty [Metric] used to represent the total disk space of a file in bytes.
-    pub fn init_empty_physical(human_readable: bool, prefix_kind: PrefixKind) -> Self {
-        Self {
-            value: 0,
-            human_readable,
-            kind: MetricKind::Physical,
-            prefix_kind,
-            cached_display: RefCell::default(),
-        }
+    pub const fn init_empty_physical(human_readable: bool, prefix_kind: PrefixKind) -> Self {
+        Self::new(0, MetricKind::Physical, prefix_kind, human_readable)
     }
 
-    /// Initializes a [Metric] that stores the total amount of bytes used to store a file on disk.
-    pub fn init_physical(
-        path: &Path,
-        metadata: &Metadata,
-        prefix_kind: PrefixKind,
-        human_readable: bool,
-    ) -> Self {
-        let value = path.size_on_disk_fast(metadata).unwrap_or(metadata.len());
-        let kind = MetricKind::Physical;
+    /// The number and the unit as displayed, e.g. `("1.0", "KiB")`. The number is formatted into
+    /// `buf`, so nothing is allocated.
+    pub fn parts<'b>(&self, buf: &'b mut [u8; 32]) -> (&'b str, &'static str) {
+        let value = self.value;
+        let (unit, base) = match self.prefix_kind {
+            PrefixKind::Si if self.human_readable => {
+                let unit = SiPrefix::from(value);
+                (
+                    unit.as_str(),
+                    (unit != SiPrefix::Base).then(|| unit.base_value()),
+                )
+            },
+            PrefixKind::Bin if self.human_readable => {
+                let unit = BinPrefix::from(value);
+                (
+                    unit.as_str(),
+                    (unit != BinPrefix::Base).then(|| unit.base_value()),
+                )
+            },
+            PrefixKind::Si => (SiPrefix::Base.as_str(), None),
+            PrefixKind::Bin => (BinPrefix::Base.as_str(), None),
+        };
 
-        Self {
-            value,
-            human_readable,
-            kind,
-            prefix_kind,
-            cached_display: RefCell::default(),
-        }
-    }
+        let mut cursor = Cursor::new(&mut buf[..]);
+        // 32 bytes hold any u64 or one-decimal float below 2^64.
+        let _ = match base {
+            Some(base) => write!(cursor, "{:.1}", value as f64 / base as f64),
+            None => write!(cursor, "{value}"),
+        };
+        let len = usize::try_from(cursor.position()).unwrap_or(0);
 
-    /// Returns an immutable borrow of the `cached_display`.
-    pub fn cached_display(&self) -> Ref<'_, String> {
-        self.cached_display.borrow()
+        // Only ASCII digits and '.' were written.
+        (std::str::from_utf8(&buf[..len]).unwrap_or_default(), unit)
     }
 }
 
 impl Display for Metric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        {
-            let cached_display = self.cached_display();
-
-            if !cached_display.is_empty() {
-                return write!(f, "{cached_display}");
-            }
-        }
-
-        let value = self.value as f64;
-
-        let display = match self.prefix_kind {
-            PrefixKind::Si => {
-                if self.human_readable {
-                    let unit = SiPrefix::from(self.value);
-
-                    if unit == SiPrefix::Base {
-                        format!("{} {unit}", self.value)
-                    } else {
-                        let base_value = unit.base_value();
-                        let size = value / (base_value as f64);
-                        format!("{size:.1} {unit}")
-                    }
-                } else {
-                    format!("{} {}", self.value, SiPrefix::Base)
-                }
-            },
-            PrefixKind::Bin => {
-                if self.human_readable {
-                    let unit = BinPrefix::from(self.value);
-
-                    if unit == BinPrefix::Base {
-                        format!("{} {unit}", self.value)
-                    } else {
-                        let base_value = unit.base_value();
-                        let size = value / (base_value as f64);
-                        format!("{size:.1} {unit}")
-                    }
-                } else {
-                    format!("{} {}", self.value, BinPrefix::Base)
-                }
-            },
-        };
-
-        write!(f, "{display}")?;
-
-        self.cached_display.replace(display);
-
-        Ok(())
+        let mut buf = [0; 32];
+        let (number, unit) = self.parts(&mut buf);
+        write!(f, "{number} {unit}")
     }
 }
 
@@ -156,7 +99,6 @@ fn test_metric() {
         kind: MetricKind::Logical,
         human_readable: false,
         prefix_kind: PrefixKind::Bin,
-        cached_display: RefCell::<String>::default(),
     };
     assert_eq!(format!("{metric}"), "100 B");
 
@@ -165,7 +107,6 @@ fn test_metric() {
         kind: MetricKind::Logical,
         human_readable: true,
         prefix_kind: PrefixKind::Si,
-        cached_display: RefCell::<String>::default(),
     };
     assert_eq!(format!("{metric}"), "1.0 KB");
 
@@ -174,7 +115,6 @@ fn test_metric() {
         kind: MetricKind::Logical,
         human_readable: true,
         prefix_kind: PrefixKind::Bin,
-        cached_display: RefCell::<String>::default(),
     };
     assert_eq!(format!("{metric}"), "1000 B");
 
@@ -183,7 +123,6 @@ fn test_metric() {
         kind: MetricKind::Logical,
         human_readable: true,
         prefix_kind: PrefixKind::Bin,
-        cached_display: RefCell::<String>::default(),
     };
     assert_eq!(format!("{metric}"), "1.0 KiB");
 
@@ -192,7 +131,6 @@ fn test_metric() {
         kind: MetricKind::Logical,
         human_readable: true,
         prefix_kind: PrefixKind::Bin,
-        cached_display: RefCell::<String>::default(),
     };
     assert_eq!(format!("{metric}"), "1.0 MiB");
 
@@ -201,7 +139,6 @@ fn test_metric() {
         kind: MetricKind::Logical,
         human_readable: false,
         prefix_kind: PrefixKind::Bin,
-        cached_display: RefCell::<String>::default(),
     };
     assert_eq!(format!("{metric}"), "123454 B");
 }

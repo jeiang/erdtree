@@ -1,18 +1,8 @@
-use std::{
-    fmt::{self, Display},
-    fs::Metadata,
-    os::unix::fs::MetadataExt,
-};
+use std::fmt::{self, Display};
 
 #[derive(Default)]
 pub struct Metric {
     pub value: u64,
-}
-
-impl Metric {
-    pub fn init(md: &Metadata) -> Self {
-        Self { value: md.blocks() }
-    }
 }
 
 impl Display for Metric {

@@ -3,9 +3,54 @@ use crate::{
     tree::node::Node,
 };
 use nu_ansi_term::Color;
-use std::borrow::Cow;
+use std::fmt;
 
-type Theme = Box<dyn FnMut(&Node) -> &'static ThemesMap>;
+type Theme = Box<dyn FnMut(Node<'_>) -> &'static ThemesMap>;
+
+/// Box-drawing pieces of a theme, looked up once instead of per row.
+pub struct Glyphs {
+    pub vt: &'static str,
+    pub vtrt: &'static str,
+    pub uprt: &'static str,
+    pub drt: &'static str,
+}
+
+impl Glyphs {
+    fn of(theme: &'static ThemesMap) -> Self {
+        let get = |key| theme.get(key).map_or("", String::as_str);
+        Self {
+            vt: get("vt"),
+            vtrt: get("vtrt"),
+            uprt: get("uprt"),
+            drt: get("drt"),
+        }
+    }
+}
+
+/// [`Glyphs`] of the regular and the link theme.
+pub struct GlyphCache {
+    tree: (&'static ThemesMap, Glyphs),
+    link: Option<(&'static ThemesMap, Glyphs)>,
+}
+
+impl GlyphCache {
+    pub fn new() -> Self {
+        let tree = styles::get_tree_theme().unwrap();
+        let link = styles::get_link_theme().ok();
+        Self {
+            tree: (tree, Glyphs::of(tree)),
+            link: link.map(|link| (link, Glyphs::of(link))),
+        }
+    }
+
+    /// Glyphs of `theme`, which must come from a theme getter of this module.
+    pub fn get(&self, theme: &'static ThemesMap) -> &Glyphs {
+        match &self.link {
+            Some((link, glyphs)) if std::ptr::eq(theme, *link) => glyphs,
+            _ => &self.tree.1,
+        }
+    }
+}
 
 /// Returns a closure that retrieves the regular theme.
 pub fn regular_theme_getter() -> Theme {
@@ -38,10 +83,9 @@ pub fn link_theme_getter() -> Theme {
     })
 }
 
-/// Stylizes the input `file_name` with the provided `style`. If `None` is provided then the
-/// underlying `String` is returned unmodified as a [Cow]. If the provided [Node] is a symlink then
-/// it will be styled accordingly. With `classify`, the [`Node::indicator`] follows the name.
-pub fn stylize_file_name(node: &Node, classify: bool) -> Cow<'_, str> {
+/// Writes the file name of `node` with its style. A symlink is followed by an arrow and its
+/// target. With `classify`, the [`Node::indicator`] follows the name.
+pub fn write_file_name(f: &mut fmt::Formatter<'_>, node: Node<'_>, classify: bool) -> fmt::Result {
     let name = node.file_name().to_string_lossy();
     let style = node.style();
     let ind = if classify {
@@ -52,30 +96,33 @@ pub fn stylize_file_name(node: &Node, classify: bool) -> Cow<'_, str> {
 
     let Some(target_name) = node.symlink_target_file_name() else {
         if let Some(style) = style.filter(|style| !style.is_plain()) {
-            return Cow::from(format!("{}{ind}", style.bold().paint(name)));
+            let bold = style.bold();
+            return write!(f, "{}{name}{}{ind}", bold.prefix(), bold.suffix());
         }
 
-        if ind.is_empty() {
-            return name;
-        }
-
-        return Cow::from(format!("{name}{ind}"));
+        return write!(f, "{name}{ind}");
     };
 
-    if let Some(color) = style {
-        let styled_name = color.paint(name);
-        let target_name = Color::Red.paint(format!("\u{2192} {}", target_name.to_string_lossy()));
+    let target = target_name.to_string_lossy();
 
-        return Cow::from(format!("{styled_name}{ind} {target_name}"));
+    if let Some(color) = style {
+        let red = Color::Red.normal();
+        return write!(
+            f,
+            "{}{name}{}{ind} {}\u{2192} {target}{}",
+            color.prefix(),
+            color.suffix(),
+            red.prefix(),
+            red.suffix()
+        );
     }
 
-    let target = target_name.to_string_lossy();
-    Cow::from(format!("{name}{ind} \u{2192} {target}"))
+    write!(f, "{name}{ind} \u{2192} {target}")
 }
 
 /// Styles the symbolic notation of file permissions.
 #[cfg(unix)]
-pub fn style_sym_permissions(node: &Node) -> String {
+pub fn style_sym_permissions(node: Node<'_>) -> String {
     use crate::fs::permissions::FileModeXAttrs;
 
     let perms = node.mode().expect("Expected permissions to be initialized");
@@ -104,7 +151,7 @@ pub fn style_sym_permissions(node: &Node) -> String {
 
 /// Styles the octal notation of file permissions.
 #[cfg(unix)]
-pub fn style_oct_permissions(node: &Node) -> String {
+pub fn style_oct_permissions(node: Node<'_>) -> String {
     let perms = node.mode().expect("Expected permissions to be initialized");
     let oct = format!("{perms:04o}");
 
