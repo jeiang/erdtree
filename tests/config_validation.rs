@@ -188,3 +188,46 @@ fn config_exclude_non_string_element_errors() {
     let out = run_with_toml("exclude = [1]\n", &["tests/data"]);
     assert!(!out.status.success());
 }
+
+#[test]
+fn config_value_applies_and_cli_value_wins() {
+    let level1 = stdout(&run_with_toml("", &["--level", "1", "tests/data"]));
+    let level2 = stdout(&run_with_toml("", &["--level", "2", "tests/data"]));
+    assert_ne!(level1, level2);
+
+    let from_config = run_with_toml("level = 1\n", &["tests/data"]);
+    assert_eq!(stdout(&from_config), level1);
+
+    let overridden = run_with_toml("level = 1\n", &["--level", "2", "tests/data"]);
+    assert_eq!(stdout(&overridden), level2);
+}
+
+#[test]
+fn usage_errors_and_help_are_unchanged_with_and_without_config() {
+    for config in [None, Some("level = 1\n")] {
+        let run = |args: &[&str]| match config {
+            Some(config) => run_with_toml(config, args),
+            None => Command::new(env!("CARGO_BIN_EXE_erd"))
+                .arg("--no-config")
+                .args(args)
+                .output()
+                .unwrap(),
+        };
+
+        let out = run(&["--bogus"]);
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("unexpected argument"),
+            "{}",
+            stderr(&out)
+        );
+
+        let out = run(&["--help"]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert!(stdout(&out).contains("Usage: erd"), "{}", stdout(&out));
+
+        let out = run(&["--version"]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert!(stdout(&out).starts_with("erdtree "), "{}", stdout(&out));
+    }
+}

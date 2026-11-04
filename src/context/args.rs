@@ -19,100 +19,142 @@ pub trait Reconciler: CommandFactory + FromArgMatches {
     /// 3. If an argument is sourced from its default value because a user didn't provide it via
     ///    the CLI, then select the argument from the config if it exists.
     fn compute_args() -> Result<ArgMatches, Error> {
-        let cmd = Self::command().args_override_self(true);
+        // Fast path: parse once with the relations enforced. Success means the plain parse of the
+        // slow path would succeed too (relations only add constraints) with identical values. On
+        // any error, help or version request, take the slow path so that output, error order and
+        // exit status stay exactly as they were.
+        let mut cmd = with_relations(Self::command().args_override_self(true));
 
-        let user_args = Command::clone(&cmd).get_matches();
-
-        if user_args.get_one::<bool>("no_config").is_some_and(|b| *b) {
-            return validate(&cmd, std::env::args_os().skip(1));
+        match cmd.try_get_matches_from_mut(std::env::args_os()) {
+            Ok(user_args) => return reconcile(cmd, user_args, true),
+            // Relations do not change help or version text.
+            Err(err) if !err.use_stderr() => err.exit(),
+            Err(_) => {},
         }
 
-        let maybe_config_args = {
-            let named_table = user_args.get_one::<String>("config");
+        // Exits for usage errors, like `Command::get_matches`.
+        let user_args = Self::command()
+            .args_override_self(true)
+            .try_get_matches_from(std::env::args_os())
+            .unwrap_or_else(|err| err.exit());
 
-            if let Some(rc) = load_rc_config_args() {
-                if named_table.is_some() {
-                    return Err(Error::Rc);
-                }
+        // A command that has parsed once cannot take `mut_arg`; build another for the relations.
+        let cmd = with_relations(Self::command().args_override_self(true));
 
-                Some(rc?)
-            } else {
-                let toml = load_toml_config_args(named_table.map(String::as_str))?;
-
-                if named_table.is_some() && toml.is_none() {
-                    return Err(Error::NoToml);
-                }
-
-                toml
-            }
-        };
-
-        let Some(config_args) = maybe_config_args else {
-            return validate(&cmd, std::env::args_os().skip(1));
-        };
-
-        let mut final_args = init_empty_args();
-
-        for arg in cmd.get_arguments() {
-            let arg_id = arg.get_id();
-            let id_str = arg_id.as_str();
-
-            if id_str == "dir" {
-                if let Some(dirs) = user_args.try_get_many::<PathBuf>(id_str)? {
-                    final_args.extend(dirs.map(OsString::from));
-                }
-                continue;
-            }
-
-            let argument_source = user_args
-                .value_source(id_str)
-                .map_or(&config_args, |source| {
-                    if source == ValueSource::CommandLine {
-                        &user_args
-                    } else {
-                        &config_args
-                    }
-                });
-
-            let Some(key) = arg.get_long().map(|l| format!("--{l}")).map(OsString::from) else {
-                continue;
-            };
-
-            match arg.get_action() {
-                ArgAction::SetTrue => {
-                    if argument_source
-                        .try_get_one::<bool>(id_str)?
-                        .is_some_and(|b| *b)
-                    {
-                        final_args.push(key);
-                    }
-                },
-                ArgAction::SetFalse => {},
-                ArgAction::Append => {
-                    // Repeatable options need the key before every value.
-                    let Ok(Some(raw)) = argument_source.try_get_raw(id_str) else {
-                        continue;
-                    };
-                    for value in raw {
-                        final_args.push(key.clone());
-                        final_args.push(value.to_os_string());
-                    }
-                },
-                _ => {
-                    let Ok(Some(raw)) = argument_source.try_get_raw(id_str) else {
-                        continue;
-                    };
-                    final_args.push(key);
-                    final_args.extend(raw.map(OsStr::to_os_string));
-                },
-            }
-        }
-
-        validate(&cmd, final_args.into_iter().skip(1))
+        reconcile(cmd, user_args, false)
     }
 }
 
 impl Reconciler for Context {}
+
+/// Merges the config file, if any, into `user_args`, the matches of the command-line. `cmd` must
+/// carry the relations. `validated` tells that `user_args` was parsed with `cmd` already.
+fn reconcile(
+    mut cmd: Command,
+    user_args: ArgMatches,
+    validated: bool,
+) -> Result<ArgMatches, Error> {
+    let maybe_config_args = {
+        if user_args.get_one::<bool>("no_config").is_some_and(|b| *b) {
+            return cli_only(&mut cmd, user_args, validated);
+        }
+
+        let named_table = user_args.get_one::<String>("config");
+
+        if let Some(rc) = load_rc_config_args() {
+            if named_table.is_some() {
+                return Err(Error::Rc);
+            }
+
+            Some(rc?)
+        } else {
+            let toml = load_toml_config_args(named_table.map(String::as_str))?;
+
+            if named_table.is_some() && toml.is_none() {
+                return Err(Error::NoToml);
+            }
+
+            toml
+        }
+    };
+
+    let Some(config_args) = maybe_config_args else {
+        return cli_only(&mut cmd, user_args, validated);
+    };
+
+    let mut final_args = init_empty_args();
+
+    for arg in cmd.get_arguments() {
+        let arg_id = arg.get_id();
+        let id_str = arg_id.as_str();
+
+        if id_str == "dir" {
+            if let Some(dirs) = user_args.try_get_many::<PathBuf>(id_str)? {
+                final_args.extend(dirs.map(OsString::from));
+            }
+            continue;
+        }
+
+        let argument_source = user_args
+            .value_source(id_str)
+            .map_or(&config_args, |source| {
+                if source == ValueSource::CommandLine {
+                    &user_args
+                } else {
+                    &config_args
+                }
+            });
+
+        let Some(key) = arg.get_long().map(|l| format!("--{l}")).map(OsString::from) else {
+            continue;
+        };
+
+        match arg.get_action() {
+            ArgAction::SetTrue => {
+                if argument_source
+                    .try_get_one::<bool>(id_str)?
+                    .is_some_and(|b| *b)
+                {
+                    final_args.push(key);
+                }
+            },
+            ArgAction::SetFalse => {},
+            ArgAction::Append => {
+                // Repeatable options need the key before every value.
+                let Ok(Some(raw)) = argument_source.try_get_raw(id_str) else {
+                    continue;
+                };
+                for value in raw {
+                    final_args.push(key.clone());
+                    final_args.push(value.to_os_string());
+                }
+            },
+            _ => {
+                let Ok(Some(raw)) = argument_source.try_get_raw(id_str) else {
+                    continue;
+                };
+                final_args.push(key);
+                final_args.extend(raw.map(OsStr::to_os_string));
+            },
+        }
+    }
+
+    validate(&mut cmd, final_args.into_iter().skip(1))
+}
+
+/// The matches when no config applies: `user_args` as is when `cmd` parsed it already, else the
+/// command-line parsed again with the relations enforced.
+fn cli_only(
+    cmd: &mut Command,
+    user_args: ArgMatches,
+    validated: bool,
+) -> Result<ArgMatches, Error> {
+    if validated {
+        Ok(user_args)
+    } else {
+        validate(cmd, std::env::args_os().skip(1))
+    }
+}
 
 /// Adds the relations between arguments (`requires` and mutual exclusion) to `cmd`.
 ///
@@ -137,16 +179,17 @@ fn with_relations(cmd: Command) -> Command {
         .group(ArgGroup::new("searching").args(["glob", "iglob"]))
 }
 
-/// Parses `args` (without the binary name) against `cmd` with all argument relations enforced.
-/// The real binary name is prepended so usage errors read `Usage: erd ...`.
-fn validate(cmd: &Command, args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches, Error> {
+/// Parses `args` (without the binary name) against `cmd`, which must carry the argument
+/// relations. The real binary name is prepended so usage errors read `Usage: erd ...`.
+fn validate(
+    cmd: &mut Command,
+    args: impl IntoIterator<Item = OsString>,
+) -> Result<ArgMatches, Error> {
     let bin = std::env::args_os()
         .next()
         .unwrap_or_else(|| OsString::from("erd"));
     let full = std::iter::once(bin).chain(args);
-    with_relations(cmd.clone())
-        .try_get_matches_from(full)
-        .map_err(Error::ArgParse)
+    cmd.try_get_matches_from_mut(full).map_err(Error::ArgParse)
 }
 
 /// Creates a properly formatted `Vec<OsString>` that [`clap::Command`] would understand.

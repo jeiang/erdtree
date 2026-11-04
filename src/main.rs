@@ -23,7 +23,7 @@ use progress::{Indicator, IndicatorHandle, Message};
 use render::{Engine, Flat, FlatInverted, Inverted, Regular};
 use std::{
     error::Error,
-    io::{self, BufWriter, ErrorKind, Write, stdout},
+    io::{self, BufWriter, ErrorKind, IsTerminal, Write, stdout},
     process::ExitCode,
 };
 use tree::{Tree, count::FileCount};
@@ -87,6 +87,11 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
+    // Color is only ever used on a terminal unless forced; parse the theme while clap works.
+    if stdout().is_terminal() && std::env::var_os("LS_COLORS").is_some_and(|v| !v.is_empty()) {
+        styles::prefetch_ls_colors();
+    }
+
     let ctx = Context::try_init()?;
 
     if let Some(shell) = ctx.completions {
@@ -96,7 +101,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     styles::init(ctx.no_color());
 
-    let indicator = Indicator::maybe_init(&ctx)?;
+    let indicator = Indicator::maybe_init(&ctx);
     let no_report = ctx.no_report;
     // `--summarize` prints one line per root, like `du -s a b`.
     let separator = if ctx.summarize { "" } else { "\n" };
