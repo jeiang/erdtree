@@ -177,7 +177,7 @@ pub struct Context {
     #[arg(long, value_enum, default_value_t)]
     pub dir_order: dir::Order,
 
-    /// Number of threads to use; defaults to the number of available CPU cores
+    /// Number of threads to use; defaults to the number of available CPU cores, and the walk then adds threads while it waits on the file system
     #[arg(short = 'T', long, default_value_t = Context::num_threads(), hide_default_value = true)]
     pub threads: usize,
 
