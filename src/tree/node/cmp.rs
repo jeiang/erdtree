@@ -1,22 +1,128 @@
 use super::Node;
-use crate::context::{Context, dir, sort};
-use std::cmp::Ordering;
+use crate::{
+    context::{Context, dir, sort},
+    tree::{Tree, topo::Key},
+};
+use std::{
+    cmp::Ordering,
+    sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
+};
 
 /// Comparator type used to sort [Node]s.
 pub type NodeComparator = dyn for<'a, 'b> Fn(Node<'a>, Node<'b>) -> Ordering + Send + Sync;
 
 /// Yields function pointer to the appropriate `Node` comparator.
 pub fn comparator(ctx: &Context) -> Box<NodeComparator> {
-    let sort_type = ctx.sort;
+    let base = base_comparator(ctx.sort);
 
     match ctx.dir_order {
-        dir::Order::First => Box::new(move |a: Node<'_>, b: Node<'_>| {
-            dir_first_comparator(a, b, base_comparator(sort_type))
-        }),
-        dir::Order::Last => Box::new(move |a: Node<'_>, b: Node<'_>| {
-            dir_last_comparator(a, b, base_comparator(sort_type))
-        }),
-        dir::Order::None => base_comparator(sort_type),
+        dir::Order::First => {
+            Box::new(move |a: Node<'_>, b: Node<'_>| dir_first_comparator(a, b, &*base))
+        },
+        dir::Order::Last => {
+            Box::new(move |a: Node<'_>, b: Node<'_>| dir_last_comparator(a, b, &*base))
+        },
+        dir::Order::None => base,
+    }
+}
+
+/// Packed sort keys for the order of [`comparator`], to sort by cheap integer compares first.
+///
+/// The key of a node is a pair of integers such that a smaller key never belongs to a node that
+/// the comparator puts later: wherever keys differ they agree with the comparator, and only
+/// nodes with equal keys need the comparator itself. The high word holds the directory class
+/// (`--dir-order`) and the size or timestamp (clamped to 63 bits, so extremes tie and fall back
+/// to the comparator); the low word holds the first 8 bytes of the name, case-folded and
+/// reversed as the sort type requires.
+pub struct SortKeys<'a> {
+    tree: &'a Tree,
+    sort: sort::Type,
+    dir_order: dir::Order,
+
+    /// Set when a key had to clamp its value, so that unequal nodes may share a key.
+    clamped: AtomicBool,
+
+    /// Whether ties of the sort type are broken by name, as in the order of child lists. Flat
+    /// layouts compare by the sort type alone, where a name in the key would break ties wrongly.
+    by_name: bool,
+}
+
+/// Largest value of the 63 bits below the directory class.
+const MAX63: u64 = u64::MAX >> 1;
+
+impl<'a> SortKeys<'a> {
+    /// Keys for the sort of `ctx`. With `by_name`, nodes that tie are ordered by name.
+    pub const fn new(tree: &'a Tree, ctx: &Context, by_name: bool) -> Self {
+        Self {
+            tree,
+            sort: ctx.sort,
+            dir_order: ctx.dir_order,
+            clamped: AtomicBool::new(false),
+            by_name,
+        }
+    }
+
+    /// Whether nodes with the same key (of a sort type that does not look at names) tie in the
+    /// comparator, for all keys computed so far.
+    pub fn is_exact(&self) -> bool {
+        !self.clamped.load(AtomicOrdering::Relaxed)
+    }
+
+    /// Key of node `i`.
+    pub fn key(&self, i: u32) -> Key {
+        let node = Node::new(self.tree, i);
+
+        let class = match self.dir_order {
+            dir::Order::First => u64::from(node.is_dir()),
+            dir::Order::Last => u64::from(!node.is_dir()),
+            dir::Order::None => 0,
+        };
+
+        let name = || node.file_name();
+        let plain = || naming::prefix(name());
+
+        let clamp = |value: u64| {
+            if value >= MAX63 {
+                self.clamped.store(true, AtomicOrdering::Relaxed);
+            }
+            value.min(MAX63)
+        };
+        let stamp = |stamp| {
+            let (key, exact) = time_stamping::key(stamp);
+            if !exact {
+                self.clamped.store(true, AtomicOrdering::Relaxed);
+            }
+            key
+        };
+
+        let (primary, lo) = match self.sort {
+            sort::Type::Name => (0, plain()),
+            sort::Type::Rname => (0, !plain()),
+            sort::Type::Nameci => (0, naming::ci_prefix(name())),
+            sort::Type::Rnameci => (0, !naming::ci_prefix(name())),
+            sort::Type::Size => (
+                MAX63 - clamp(node.size_value().unwrap_or(0)),
+                self.tie(name),
+            ),
+            sort::Type::Rsize => (clamp(node.size_value().unwrap_or(0)), self.tie(name)),
+            sort::Type::Access => (MAX63 - stamp(node.accessed()), self.tie(name)),
+            sort::Type::Raccess => (stamp(node.accessed()), self.tie(name)),
+            sort::Type::Create => (MAX63 - stamp(node.created()), self.tie(name)),
+            sort::Type::Rcreate => (stamp(node.created()), self.tie(name)),
+            sort::Type::Mod => (MAX63 - stamp(node.modified()), self.tie(name)),
+            sort::Type::Rmod => (stamp(node.modified()), self.tie(name)),
+        };
+
+        (class << 63 | primary, lo)
+    }
+
+    /// Low word for sort types that break ties by name.
+    fn tie<'n>(&self, name: impl FnOnce() -> &'n std::ffi::OsStr) -> u64 {
+        if self.by_name {
+            naming::prefix(name())
+        } else {
+            0
+        }
     }
 }
 
@@ -75,6 +181,24 @@ mod time_stamping {
 
     fn or_now(stamp: Option<SystemTime>) -> SystemTime {
         stamp.unwrap_or(*NOW)
+    }
+
+    /// A 63-bit key that grows with the timestamp (a missing one counts as now): nanoseconds
+    /// around the epoch, clamped, so about the years 1824 to 2116 are distinct and timestamps
+    /// outside tie. The flag tells whether the key is exact, as opposed to clamped.
+    pub fn key(stamp: Option<SystemTime>) -> (u64, bool) {
+        const ZERO: i128 = 1 << 62;
+        let max63 = i128::from(u64::MAX >> 1);
+
+        let nanos = |d: std::time::Duration| i128::try_from(d.as_nanos()).unwrap_or(i128::MAX);
+        let since_epoch = match or_now(stamp).duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => nanos(d),
+            Err(e) => -nanos(e.duration()),
+        };
+
+        let shifted = since_epoch + ZERO;
+        let key = u64::try_from(shifted.clamp(0, max63)).unwrap_or(0);
+        (key, 0 < shifted && shifted < max63)
     }
 
     pub mod accessed {
@@ -145,6 +269,7 @@ mod sizing {
 mod naming {
     use crate::tree::node::Node;
     use core::cmp::Ordering;
+    use std::ffi::OsStr;
 
     /// Comparator based on [Node] file names in lexicographical order.
     pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
@@ -156,10 +281,70 @@ mod naming {
         comparator(b, a)
     }
 
+    /// The first 8 bytes of `name`, as a number that orders like the bytes: the order of names
+    /// on Unix. Other platforms have no such prefix and give 0, which only costs speed.
+    pub fn prefix(name: &OsStr) -> u64 {
+        if cfg!(not(unix)) {
+            return 0;
+        }
+
+        let bytes = name.as_encoded_bytes();
+        let mut head = [0_u8; 8];
+        let len = bytes.len().min(8);
+        head[..len].copy_from_slice(&bytes[..len]);
+        u64::from_be_bytes(head)
+    }
+
+    /// The first 8 bytes of the case-folded name that [`ci_comparator`] compares, as a number
+    /// that orders like those bytes.
+    pub fn ci_prefix(name: &OsStr) -> u64 {
+        let bytes = name.as_encoded_bytes();
+        let mut head = [0_u8; 8];
+        let ascii = &bytes[..bytes.len().min(8)];
+
+        if ascii.is_ascii() {
+            for (slot, byte) in head.iter_mut().zip(ascii) {
+                *slot = byte.to_ascii_lowercase();
+            }
+        } else {
+            // UTF-8 orders like the code points, so the bytes of the folded text order like
+            // its characters.
+            let folded = name.to_string_lossy();
+            let mut filled = 0;
+            for c in folded.chars().flat_map(char::to_lowercase) {
+                let mut utf8 = [0_u8; 4];
+                for &byte in c.encode_utf8(&mut utf8).as_bytes() {
+                    if filled < 8 {
+                        head[filled] = byte;
+                        filled += 1;
+                    }
+                }
+                if filled == 8 {
+                    break;
+                }
+            }
+        }
+
+        u64::from_be_bytes(head)
+    }
+
     /// Comparator based on [Node] file names in case-insensitive lexicographical order. Names
     /// are lowercased with full Unicode case mapping (lossily, for non-UTF-8 names) and ties
     /// are broken by the case-sensitive [`comparator`] so the order is deterministic.
     pub fn ci_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
+        // ASCII lowercases byte by byte, to the same order as the general path below.
+        let (a_bytes, b_bytes) = (
+            a.file_name().as_encoded_bytes(),
+            b.file_name().as_encoded_bytes(),
+        );
+        if a_bytes.is_ascii() && b_bytes.is_ascii() {
+            return a_bytes
+                .iter()
+                .map(u8::to_ascii_lowercase)
+                .cmp(b_bytes.iter().map(u8::to_ascii_lowercase))
+                .then_with(|| comparator(a, b));
+        }
+
         let a_name = a.file_name().to_string_lossy();
         let b_name = b.file_name().to_string_lossy();
         let a_folded = a_name.chars().flat_map(char::to_lowercase);

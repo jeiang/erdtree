@@ -2,19 +2,18 @@ use crate::{
     context::{Context, column},
     disk_usage::file_size::FileSize,
     fs::inode::Inode,
-    utils,
     walk::{Walker, rules},
 };
 use columns::{Collector, Columns, Probe};
 use count::FileCount;
 use error::Error;
-use node::{Node, cmp::NodeComparator};
-#[cfg(unix)]
-use std::collections::HashMap;
+use node::{Node, cmp::SortKeys};
 use std::{
-    convert::TryFrom, fs, path::PathBuf, result::Result as StdResult, sync::atomic::AtomicU64,
+    cmp::Ordering, convert::TryFrom, fs, path::PathBuf, result::Result as StdResult,
+    sync::atomic::AtomicU64,
 };
 use topo::{Children, NONE, ix};
+use widths::Scope;
 
 /// Struct-of-arrays storage for walked entries.
 pub mod columns;
@@ -31,34 +30,59 @@ pub mod error;
 /// A borrowed view of one entry of a [`Tree`].
 pub mod node;
 
+/// Parallel sorting of keyed items.
+mod psort;
+
+/// Column widths from maxima over columns.
+pub mod widths;
+
+/// Trees with at least this many nodes compute column widths while the child lists are sorted.
+const OVERLAP_MIN: usize = 1 << 16;
+
+/// Counts of at least this many nodes use all threads.
+const PAR_COUNT_MIN: usize = 1 << 18;
+
 /// The walked file-system hierarchy, stored as columns indexed by node.
 pub struct Tree {
     cols: Columns,
     root: u32,
-    root_path: PathBuf,
     children: Children,
 
     /// Nodes still shown after `--prune`, `--dirs-only` and `--min-size`.
     alive: Vec<bool>,
 
-    /// Alive nodes in display pre-order (children sorted).
+    /// Alive nodes in display pre-order (children sorted), down to the display level unless a
+    /// filter needs the whole tree.
     order: Vec<u32>,
 
     /// Whether a node is the last alive child of its parent.
     last: Vec<bool>,
 
+    /// Bit `i` is set when node `i` is a symlink (has a link target).
+    link: Vec<u64>,
+
+    /// Nodes at this depth or deeper have no shown children: the display level, when `order`
+    /// stops there. [`u32::MAX`] when `order` goes all the way down.
+    shown_depth: u32,
+
+    /// Whether there is nothing to show below the root.
+    stump: bool,
+
     /// Byte-metric display settings, to rebuild [`FileSize`] values.
     size_format: SizeFormat,
 
-    /// Owner and group names by id, for the long view.
+    /// Owner and group names by id, sorted by id, for the long view.
     #[cfg(unix)]
-    users: HashMap<u32, Option<String>>,
+    users: Vec<(u32, Option<String>)>,
     #[cfg(unix)]
-    groups: HashMap<u32, Option<String>>,
+    groups: Vec<(u32, Option<String>)>,
 
     /// Counts added to the summary: entries hidden by `--min-size`, and entries skipped by the
     /// walk (`--report-ignored`).
     hidden: FileCount,
+
+    /// The summary count, see [`Self::file_count`].
+    count: FileCount,
 }
 
 /// How sizes are displayed.
@@ -71,13 +95,21 @@ struct SizeFormat {
 
 pub type Result<T> = StdResult<T, Error>;
 
+/// Number of threads for CPU-bound work: `--threads`, or one per core for 0.
+fn thread_count(ctx: &Context) -> usize {
+    if ctx.threads == 0 {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    } else {
+        ctx.threads
+    }
+}
+
 impl Tree {
     /// Walks the root of `ctx` and builds the [Tree]; also computes the column widths that
     /// rendering needs into the returned [Context]. The tree may be a stump (see
     /// [`Self::is_stump`]). `progress` counts walked entries.
     pub fn try_init(mut ctx: Context, progress: Option<&AtomicU64>) -> Result<(Self, Context)> {
         let mut walker = walker(&ctx)?;
-        let root_path = walker.root.clone();
         let probe = Probe::new(&ctx);
         walker.fields = probe.fields();
 
@@ -85,7 +117,7 @@ impl Tree {
         let cols = Columns::merge(sinks.into_iter().map(|c| c.columns).collect());
 
         let mut col_props = column::Properties::from(&ctx);
-        let tree = Self::assemble(cols, root_path, &ctx, &mut col_props)?;
+        let tree = Self::assemble(cols, &ctx, &mut col_props)?;
 
         ctx.update_column_properties(&col_props);
 
@@ -97,13 +129,17 @@ impl Tree {
     }
 
     /// Builds the topology, sizes, order and filters from the merged columns.
+    ///
+    /// The `depth` column must hold each node's distance from the root (parent depth plus
+    /// one, root 0), as the walk records it: that gives a parent-first order without a
+    /// traversal, and cuts the display order off at `--level`.
     fn assemble(
         mut cols: Columns,
-        root_path: PathBuf,
         ctx: &Context,
         col_props: &mut column::Properties,
     ) -> Result<Self> {
         let n = cols.len();
+        let threads = thread_count(ctx);
         let root = cols
             .parent
             .iter()
@@ -111,111 +147,241 @@ impl Tree {
             .and_then(|r| u32::try_from(r).ok())
             .ok_or(Error::MissingRoot)?;
 
-        cols.link_target.sort_unstable_by_key(|(i, _)| *i);
+        debug_assert!(
+            cols.parent
+                .iter()
+                .zip(&cols.depth)
+                .all(|(&p, &d)| p == NONE && d == 0 || p != NONE && cols.depth[ix(p)] + 1 == d),
+            "depth is the distance from the root"
+        );
+
+        if !cols.link_target.is_sorted_by_key(|(i, _)| *i) {
+            cols.link_target.sort_unstable_by_key(|(i, _)| *i);
+        }
+
+        let mut link = vec![0_u64; n.div_ceil(64)];
+        for &(i, _) in &cols.link_target {
+            link[ix(i) / 64] |= 1 << (i % 64);
+        }
 
         let is_dir: Vec<bool> = cols.file_type.iter().map(|kind| kind.is_dir()).collect();
-        let mut children = Children::build(&cols.parent);
+        let children = Children::build(&cols.parent);
+
+        // Nothing is hidden by a filter, so the display order can stop at `--level`.
+        let min_size = ctx.min_size.map(|m| m.value).filter(|&v| v > 0);
+        let filtered = ctx.prune || ctx.pattern.is_some() || ctx.dirs_only || min_size.is_some();
+        let cap = if filtered {
+            u32::MAX
+        } else {
+            u32::try_from(ctx.level()).unwrap_or(u32::MAX)
+        };
 
         let mut tree = Self {
             root,
-            root_path,
-            children: Children::build(&[]),
+            children,
             alive: vec![true; n],
             order: vec![],
             last: vec![],
+            link,
+            shown_depth: cap,
+            stump: false,
             size_format: SizeFormat {
                 disk_usage: ctx.disk_usage,
                 human: ctx.human,
                 unit: ctx.unit,
             },
             #[cfg(unix)]
-            users: HashMap::new(),
+            users: vec![],
             #[cfg(unix)]
-            groups: HashMap::new(),
+            groups: vec![],
             hidden: FileCount::default(),
+            count: FileCount::default(),
             cols,
         };
 
         // Sizes: each inode with several links counts once, in the directory that comes
         // first by path.
-        let counted = tree.dedupe_hard_links();
-        let all = topo::preorder(&children, root, &tree.alive);
+        let counted = tree.dedupe_hard_links(threads);
+
+        // Any parent-first order serves `aggregate`, `prune` and `hide_small`.
+        let parent_first = topo::by_depth(&tree.cols.depth).unwrap_or_else(|| {
+            topo::preorder(
+                &tree.children,
+                root,
+                &tree.alive,
+                &tree.cols.depth,
+                u32::MAX,
+            )
+        });
         topo::aggregate(
-            &all,
+            &parent_first,
             &tree.cols.parent,
             &counted,
-            &is_dir,
             &mut tree.cols.size,
         );
+        drop(counted);
 
-        #[cfg(unix)]
-        tree.resolve_owners();
+        tree.sort_children(ctx, col_props, min_size.is_none());
+        tree.filter_and_order(ctx, col_props, &parent_first, &is_dir);
 
-        for i in 0..n {
-            tree.update_column_properties(col_props, ctx, i);
-        }
+        Ok(tree)
+    }
 
-        let comparator = node::cmp::comparator(ctx);
-        {
-            let view = &tree;
-            children.sort_each(ctx.threads, |a, b| {
-                let (a, b) = (view.node(a), view.node(b));
-                comparator(a, b).then_with(|| a.file_name().cmp(b.file_name()))
-            });
-        }
-
-        tree.children = children;
+    /// Applies `--prune`, patterns, `--dirs-only` and `--min-size`, then builds the display
+    /// order and the summary count. `parent_first` lists every node, each after its parent.
+    fn filter_and_order(
+        &mut self,
+        ctx: &Context,
+        col_props: &mut column::Properties,
+        parent_first: &[u32],
+        is_dir: &[bool],
+    ) {
+        let tree = self;
+        let (root, cap) = (tree.root, tree.shown_depth);
+        let n = tree.cols.len();
+        let threads = thread_count(ctx);
+        let min_size = ctx.min_size.map(|m| m.value).filter(|&v| v > 0);
+        let filtered = ctx.prune || ctx.pattern.is_some() || ctx.dirs_only || min_size.is_some();
 
         if ctx.prune || ctx.pattern.is_some() {
-            let order = topo::preorder(&tree.children, root, &tree.alive);
-            topo::prune(&order, &tree.cols.parent, &is_dir, &mut tree.alive);
+            topo::prune(parent_first, &tree.cols.parent, is_dir, &mut tree.alive);
         }
 
         if ctx.dirs_only {
-            topo::dirs_only(&tree.cols.parent, &is_dir, &mut tree.alive);
+            topo::dirs_only(&tree.cols.parent, is_dir, &mut tree.alive);
         }
 
-        tree.order = topo::preorder(&tree.children, root, &tree.alive);
-
-        if let Some(min_size) = ctx.min_size
-            && min_size.value > 0
-        {
+        if let Some(min_size) = min_size {
+            let shown: Vec<u32> = parent_first
+                .iter()
+                .copied()
+                .filter(|&i| tree.alive[ix(i)])
+                .collect();
             let hidden = topo::hide_small(
-                &tree.order,
+                &shown,
                 &tree.cols.parent,
                 &tree.cols.size,
-                min_size.value,
+                min_size,
                 &mut tree.alive,
             );
 
             tree.hidden = hidden
                 .into_iter()
                 .fold(FileCount::default(), |acc, i| acc + tree.node(i));
+        }
 
-            tree.order = topo::preorder(&tree.children, root, &tree.alive);
+        tree.order = topo::preorder(&tree.children, root, &tree.alive, &tree.cols.depth, cap);
 
+        if min_size.is_some() {
             // Hidden entries must not leave the size columns wider than needed.
             *col_props = column::Properties::from(ctx);
-            for k in 0..tree.order.len() {
-                tree.update_column_properties(col_props, ctx, ix(tree.order[k]));
-            }
+            let stats = tree.scan(ctx, Scope::Listed(&tree.order), threads);
+            tree.apply_widths(ctx, col_props, &stats);
         }
 
         tree.hidden.num_ignored = tree.cols.ignored;
-        tree.last = topo::last_alive_child(&tree.children, &tree.order, &tree.alive);
 
-        Ok(tree)
+        // Without filters every node is shown, whatever the level cuts off the display.
+        tree.count = if filtered {
+            tree.order
+                .iter()
+                .skip(1)
+                .fold(tree.hidden, |acc, &i| acc + tree.node(i))
+        } else {
+            tree.count_all(threads)
+        };
+        tree.stump = if filtered {
+            tree.order.len() <= 1
+        } else {
+            n <= 1
+        };
+        tree.last = topo::last_alive_child(&tree.children, &tree.order, &tree.alive);
+    }
+
+    /// Sorts the child lists of the directories shown (down to the display level), and with
+    /// `scan_now` also widens `col_props` to fit every node. The widths do not depend on the
+    /// order, so large trees find them while the lists are sorted.
+    fn sort_children(&mut self, ctx: &Context, col_props: &mut column::Properties, scan_now: bool) {
+        let threads = thread_count(ctx);
+        let cap = self.shown_depth;
+        let comparator = node::cmp::comparator(ctx);
+        let mut children = std::mem::replace(&mut self.children, Children::build(&[]));
+
+        let stats = {
+            let view = &*self;
+            let keys = SortKeys::new(view, ctx, true);
+            let overlap = scan_now && self.cols.len() >= OVERLAP_MIN && threads > 1;
+
+            std::thread::scope(|s| {
+                let job = overlap.then(|| s.spawn(|| view.scan(ctx, Scope::All, 1)));
+
+                children.sort_each(
+                    threads,
+                    |p| view.cols.depth[ix(p)] < cap,
+                    |i| keys.key(i),
+                    |a, b| {
+                        let (a, b) = (view.node(a), view.node(b));
+                        comparator(a, b).then_with(|| a.file_name().cmp(b.file_name()))
+                    },
+                );
+
+                job.map_or_else(
+                    || scan_now.then(|| view.scan(ctx, Scope::All, threads)),
+                    |job| Some(job.join().unwrap_or_else(|e| std::panic::resume_unwind(e))),
+                )
+            })
+        };
+
+        self.children = children;
+
+        if let Some(stats) = stats {
+            self.apply_widths(ctx, col_props, &stats);
+        }
+    }
+
+    /// The summary count of an unfiltered tree: every node below the root, plus those skipped
+    /// by the walk.
+    fn count_all(&self, threads: usize) -> FileCount {
+        let n = self.cols.len();
+        let count = |range: std::ops::Range<usize>| {
+            range
+                .filter(|&i| i != ix(self.root))
+                .fold(FileCount::default(), |acc, i| {
+                    acc + self.node(u32::try_from(i).unwrap_or(NONE))
+                })
+        };
+
+        let mut total = if n < PAR_COUNT_MIN || threads < 2 {
+            count(0..n)
+        } else {
+            let width = n.div_ceil(threads);
+            std::thread::scope(|s| {
+                let count = &count;
+                let mut jobs = vec![];
+                for t in 1..threads {
+                    jobs.push(s.spawn(move || count((t * width).min(n)..((t + 1) * width).min(n))));
+                }
+
+                jobs.into_iter().fold(count(0..width.min(n)), |acc, job| {
+                    acc + job.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
+                })
+            })
+        };
+
+        total.num_ignored = self.cols.ignored;
+        total
     }
 
     /// Hard-link deduplication (see [`topo::dedupe`]): among entries sharing an inode (hard
     /// links, or a directory reached again through a followed symlink), one counts towards its
     /// directory's size: preferably one not reached through a symlink, then the least path.
-    fn dedupe_hard_links(&self) -> Vec<bool> {
-        let mut linked: Vec<(u32, Inode)> = self.cols.multi_linked.clone();
+    fn dedupe_hard_links(&mut self, threads: usize) -> Vec<bool> {
+        let mut linked: Vec<(u32, Inode)> = std::mem::take(&mut self.cols.multi_linked);
 
-        topo::dedupe(self.cols.len(), &mut linked, |a, b| {
-            let rank = |i| (self.through_symlink(i), self.path_of(i));
-            rank(a).cmp(&rank(b))
+        topo::dedupe(self.cols.len(), &mut linked, threads, |a, b| {
+            self.through_symlink(a)
+                .cmp(&self.through_symlink(b))
+                .then_with(|| self.path_cmp(a, b))
         })
     }
 
@@ -224,7 +390,7 @@ impl Tree {
         let mut cur = i;
 
         while cur != NONE {
-            if self.cols.link_target(cur).is_some() {
+            if self.is_link(cur) {
                 return true;
             }
             cur = self.cols.parent[ix(cur)];
@@ -233,31 +399,49 @@ impl Tree {
         false
     }
 
-    /// Resolves the owner and group names of every entry that has long-view attributes.
-    #[cfg(unix)]
-    fn resolve_owners(&mut self) {
-        for attrs in self.cols.long.iter().filter(|a| a.read) {
-            self.users
-                .entry(attrs.uid)
-                .or_insert_with(|| crate::fs::ug::try_get_user(attrs.uid).ok());
-            self.groups
-                .entry(attrs.gid)
-                .or_insert_with(|| crate::fs::ug::try_get_group(attrs.gid).ok());
+    /// Whether node `i` is a symlink (has a link target).
+    #[inline]
+    pub(crate) fn is_link(&self, i: u32) -> bool {
+        self.link[ix(i) / 64] >> (i % 64) & 1 == 1
+    }
+
+    /// Order of the paths of nodes `a` and `b`, as [`Path::cmp`](std::path::Path::cmp) orders
+    /// [`Self::path_of`]: component by component, a directory before what it contains. Both
+    /// paths start with the root's, so this compares the names below their closest common
+    /// ancestor, without building either path.
+    fn path_cmp(&self, a: u32, b: u32) -> Ordering {
+        let (depth, parent) = (&self.cols.depth, &self.cols.parent);
+        let (mut x, mut y) = (a, b);
+
+        while depth[ix(x)] > depth[ix(y)] {
+            x = parent[ix(x)];
         }
+        while depth[ix(y)] > depth[ix(x)] {
+            y = parent[ix(y)];
+        }
+
+        if x == y {
+            // One is above the other, or they are the same node.
+            return depth[ix(a)].cmp(&depth[ix(b)]);
+        }
+
+        while parent[ix(x)] != parent[ix(y)] {
+            x = parent[ix(x)];
+            y = parent[ix(y)];
+        }
+
+        self.cols.name(ix(x)).cmp(self.cols.name(ix(y)))
     }
 
     /// The summary count: every shown entry below the root, plus those hidden by `--min-size`
-    /// or skipped by the walk.
-    pub fn file_count(&self) -> FileCount {
-        self.order
-            .iter()
-            .skip(1)
-            .fold(self.hidden, |acc, &i| acc + self.node(i))
+    /// or skipped by the walk. Not cut off by `--level`.
+    pub const fn file_count(&self) -> FileCount {
+        self.count
     }
 
     /// Returns `true` if there are no entries to show excluding the root.
     pub const fn is_stump(&self) -> bool {
-        self.order.len() <= 1
+        self.stump
     }
 
     /// The root node.
@@ -265,7 +449,8 @@ impl Tree {
         self.root
     }
 
-    /// Shown nodes in display pre-order, root first.
+    /// Shown nodes in display pre-order, root first. Stops at the display level (`--level`)
+    /// unless a filter is active; layouts show nothing deeper either way.
     pub fn order(&self) -> &[u32] {
         &self.order
     }
@@ -288,25 +473,11 @@ impl Tree {
         self.cols.parent[ix(i)]
     }
 
-    /// Whether `i` has a shown child.
+    /// Whether `i` has a shown child: one in [`Self::order`].
     #[inline]
     pub fn has_children(&self, i: u32) -> bool {
-        self.children.of(i).iter().any(|&c| self.alive[ix(c)])
-    }
-
-    /// Path of node `i` (the canonical root joined with the names below it).
-    pub fn path_of(&self, i: u32) -> PathBuf {
-        let mut names = vec![];
-        let mut cur = i;
-
-        while cur != self.root && cur != NONE {
-            names.push(self.cols.name(ix(cur)));
-            cur = self.cols.parent[ix(cur)];
-        }
-
-        let mut path = self.root_path.clone();
-        path.extend(names.iter().rev());
-        path
+        self.cols.depth[ix(i)] < self.shown_depth
+            && self.children.of(i).iter().any(|&c| self.alive[ix(c)])
     }
 
     /// Path of node `i` relative to the root; the root's own name for the root.
@@ -336,61 +507,45 @@ impl Tree {
     /// list a directory before its contents.
     #[must_use]
     pub fn flat_order(&self, ctx: &Context) -> Vec<u32> {
-        let mut ids = self.order.clone();
-
-        if ctx.sort.is_name() || ids.is_empty() {
-            return ids;
+        if ctx.sort.is_name() || self.order.len() <= 1 {
+            return self.order.clone();
         }
 
-        let comparator: Box<NodeComparator> = node::cmp::comparator(ctx);
-        ids[1..].sort_by(|&a, &b| comparator(self.node(a), self.node(b)));
+        // The flat layouts show nothing deeper than the level, and a stable sort of a subset
+        // lists it as the sort of the whole does, so sort just the visible nodes.
+        let level = ctx.level();
+        let rest: Vec<u32> = self.order[1..]
+            .iter()
+            .copied()
+            .filter(|&i| ix(self.cols.depth[ix(i)]) <= level)
+            .collect();
+
+        // Sort positions in `rest`, breaking ties by position to keep the stable order.
+        let comparator = node::cmp::comparator(ctx);
+        let keys = SortKeys::new(self, ctx, false);
+        let node = |k: u32| self.node(rest[ix(k)]);
+        let mut positions: Vec<u32> = (0..rest.len())
+            .map(|k| u32::try_from(k).unwrap_or(NONE))
+            .collect();
+
+        topo::sort_keyed(
+            &mut positions,
+            thread_count(ctx),
+            &|k| keys.key(rest[ix(k)]),
+            // Names are not in the keys: unless a key was clamped, equal keys are ties.
+            &|a, b| {
+                if keys.is_exact() {
+                    a.cmp(&b)
+                } else {
+                    comparator(node(a), node(b)).then_with(|| a.cmp(&b))
+                }
+            },
+        );
+
+        let mut ids = Vec::with_capacity(rest.len() + 1);
+        ids.push(self.order[0]);
+        ids.extend(positions.iter().map(|&k| rest[ix(k)]));
         ids
-    }
-
-    /// Widens [`column::Properties`] to fit node `i`.
-    fn update_column_properties(
-        &self,
-        col_props: &mut column::Properties,
-        ctx: &Context,
-        i: usize,
-    ) {
-        let node = self.node(u32::try_from(i).unwrap_or(NONE));
-
-        if let Some(value) = node.size_value() {
-            if ctx.byte_metric() && ctx.human {
-                let file_size = node.file_size().unwrap_or_else(|| FileSize::from(ctx));
-                let (size, unit) = human_widths(&file_size);
-                col_props.max_size_width = col_props.max_size_width.max(size);
-                col_props.max_size_unit_width = col_props.max_size_unit_width.max(unit);
-            } else {
-                col_props.max_size_width = col_props.max_size_width.max(utils::num_integral(value));
-            }
-        }
-
-        #[cfg(unix)]
-        if ctx.long {
-            if let Some(owner) = node.owner() {
-                col_props.max_owner_width = col_props.max_owner_width.max(owner.len());
-            }
-
-            if let Some(group) = node.group() {
-                col_props.max_group_width = col_props.max_group_width.max(group.len());
-            }
-
-            if let Some(ino) = node.ino() {
-                col_props.max_ino_width = col_props.max_ino_width.max(utils::num_integral(ino));
-            }
-
-            if let Some(nlink) = node.nlink() {
-                col_props.max_nlink_width =
-                    col_props.max_nlink_width.max(utils::num_integral(nlink));
-            }
-
-            if let Some(blocks) = node.blocks() {
-                col_props.max_block_width =
-                    col_props.max_block_width.max(utils::num_integral(blocks));
-            }
-        }
     }
 }
 

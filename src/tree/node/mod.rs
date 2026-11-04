@@ -17,6 +17,7 @@ use crate::{
     disk_usage::file_size::block,
     fs::permissions::{FileMode, SymbolicNotation},
     tree::error::Error,
+    tree::widths::lookup,
 };
 
 /// Ordering and sorting rules for [Node].
@@ -44,13 +45,6 @@ impl<'a> Node<'a> {
     /// Depth below the root, which is depth 0.
     pub fn depth(self) -> usize {
         ix(self.tree.cols.depth[ix(self.i)])
-    }
-
-    /// Number of blocks allocated to the entry, if any.
-    #[cfg(unix)]
-    pub fn blocks(self) -> Option<u64> {
-        let blocks = *self.tree.cols.blocks.get(ix(self.i))?;
-        (blocks != 0).then_some(blocks)
     }
 
     /// Timestamp of the last modification, if collected (sort or long view).
@@ -92,12 +86,14 @@ impl<'a> Node<'a> {
 
     /// Whether the entry is a symlink.
     pub fn is_symlink(self) -> bool {
-        self.symlink_target_path().is_some()
+        self.tree.is_link(self.i)
     }
 
     /// Target of the symlink.
     pub fn symlink_target_path(self) -> Option<&'a Path> {
-        self.tree.cols.link_target(self.i)
+        self.is_symlink()
+            .then(|| self.tree.cols.link_target(self.i))
+            .flatten()
     }
 
     /// Target of the symlink, as shown after the arrow.
@@ -210,8 +206,8 @@ impl<'a> Node<'a> {
     #[cfg(unix)]
     fn owner_and_group(self) -> Option<(&'a str, &'a str)> {
         let attrs = self.tree.cols.long.get(ix(self.i)).filter(|a| a.read)?;
-        let owner = self.tree.users.get(&attrs.uid)?.as_deref()?;
-        let group = self.tree.groups.get(&attrs.gid)?.as_deref()?;
+        let owner = lookup(&self.tree.users, attrs.uid)?;
+        let group = lookup(&self.tree.groups, attrs.gid)?;
         Some((owner, group))
     }
 
