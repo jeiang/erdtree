@@ -16,6 +16,6 @@ impl Layout for FlatInverted {
             }
         }
 
-        Rows::Plan(plan.with_paths(tree, max_depth))
+        Rows::Plan(plan.with_paths(tree, max_depth, ctx.threads))
     }
 }

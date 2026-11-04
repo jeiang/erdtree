@@ -80,9 +80,9 @@ impl Plan {
     }
 
     /// Makes the rows flat rows whose paths are made from the directories of `tree` down to
-    /// `level`.
-    pub fn with_paths(mut self, tree: &Tree, level: usize) -> Self {
-        self.paths = Some(paths::DirPaths::new(tree, level));
+    /// `level`, found with `threads` threads.
+    pub fn with_paths(mut self, tree: &Tree, level: usize, threads: usize) -> Self {
+        self.paths = Some(paths::DirPaths::new(tree, level, threads));
         self
     }
 
