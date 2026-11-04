@@ -616,6 +616,39 @@ impl Context {
     /// clap evaluates the default at every command build.
     pub fn num_threads() -> usize {
         static THREADS: OnceLock<usize> = OnceLock::new();
-        *THREADS.get_or_init(|| available_parallelism().map_or(3, NonZeroUsize::get))
+        *THREADS.get_or_init(|| {
+            let available = available_parallelism().map_or(3, NonZeroUsize::get);
+            Self::performance_cores().map_or(available, |cores| cores.min(available))
+        })
+    }
+
+    /// The number of performance cores on Apple silicon, where a walk with more threads than
+    /// that is slower: threads on efficiency cores hold the kernel's file system locks longer,
+    /// so every thread waits for them and kernel time grows several times over. `None` when the
+    /// machine does not tell cores apart.
+    #[cfg(target_os = "macos")]
+    fn performance_cores() -> Option<usize> {
+        let mut cores: libc::c_int = 0;
+        let mut len = size_of::<libc::c_int>();
+        // SAFETY: the name is NUL-terminated and `cores` has room for the `len` bytes asked for.
+        let ret = unsafe {
+            libc::sysctlbyname(
+                c"hw.perflevel0.physicalcpu".as_ptr(),
+                (&raw mut cores).cast(),
+                &raw mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if ret != 0 || len != size_of::<libc::c_int>() {
+            return None;
+        }
+        usize::try_from(cores).ok().filter(|&n| n > 0)
+    }
+
+    /// Cores are not told apart outside macOS.
+    #[cfg(not(target_os = "macos"))]
+    const fn performance_cores() -> Option<usize> {
+        None
     }
 }
