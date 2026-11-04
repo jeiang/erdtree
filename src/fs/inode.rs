@@ -1,4 +1,5 @@
-use std::{fs::Metadata, path::Path};
+use super::stat::Stat;
+use std::path::Path;
 
 /// Represents a file's underlying inode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -20,15 +21,13 @@ impl Inode {
 pub struct Error;
 
 impl Inode {
-    /// Computes the inode of the entry at `path` given its `md`, which describes the link target
-    /// if `followed_link` is `true` and the entry itself otherwise.
+    /// Computes the inode of the entry at `path` given its `stat`, which describes the link
+    /// target if `followed_link` is `true` and the entry itself otherwise.
     #[cfg(unix)]
     // Same signature as the fallible Windows implementation.
     #[allow(clippy::unnecessary_wraps)]
-    pub fn try_new(_path: &Path, md: &Metadata, _followed_link: bool) -> Result<Self, Error> {
-        use std::os::unix::fs::MetadataExt;
-
-        Ok(Self::new(md.ino(), md.dev(), md.nlink()))
+    pub const fn try_new(_path: &Path, stat: &Stat, _followed_link: bool) -> Result<Self, Error> {
+        Ok(Self::new(stat.ino, stat.dev, stat.nlink))
     }
 
     /// Computes the inode of the file at `path`. Windows does not expose the file index through
@@ -37,12 +36,12 @@ impl Inode {
     /// (directories, unfollowed symlinks) is reported as having insufficient information. A
     /// followed symlink resolves to its target, matching the Unix behavior.
     #[cfg(windows)]
-    pub fn try_new(path: &Path, md: &Metadata, followed_link: bool) -> Result<Self, Error> {
+    pub fn try_new(path: &Path, stat: &Stat, followed_link: bool) -> Result<Self, Error> {
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
         };
 
-        if !md.is_file() {
+        if !stat.kind.is_file() {
             return Err(Error);
         }
 
@@ -66,7 +65,7 @@ impl Inode {
 
     /// Platforms without a notion of inodes.
     #[cfg(not(any(unix, windows)))]
-    pub fn try_new(_path: &Path, _md: &Metadata, _followed_link: bool) -> Result<Self, Error> {
+    pub fn try_new(_path: &Path, _stat: &Stat, _followed_link: bool) -> Result<Self, Error> {
         Err(Error)
     }
 }

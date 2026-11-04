@@ -1,22 +1,17 @@
 use super::{SizeFormat, Tree, topo::ix};
 use crate::{
     disk_usage::file_size::{DiskUsage, FileSize, byte, line_count, word_count},
-    icons,
+    fs::stat::Kind,
 };
 use nu_ansi_term::Style;
-use std::{
-    borrow::Cow,
-    ffi::OsStr,
-    fs::FileType,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{ffi::OsStr, path::Path, time::SystemTime};
 
 #[cfg(unix)]
 use crate::{
     disk_usage::file_size::block,
     fs::permissions::{FileMode, SymbolicNotation},
     tree::error::Error,
+    tree::widths::lookup,
 };
 
 /// Ordering and sorting rules for [Node].
@@ -44,13 +39,6 @@ impl<'a> Node<'a> {
     /// Depth below the root, which is depth 0.
     pub fn depth(self) -> usize {
         ix(self.tree.cols.depth[ix(self.i)])
-    }
-
-    /// Number of blocks allocated to the entry, if any.
-    #[cfg(unix)]
-    pub fn blocks(self) -> Option<u64> {
-        let blocks = self.tree.cols.blocks[ix(self.i)];
-        (blocks != 0).then_some(blocks)
     }
 
     /// Timestamp of the last modification, if collected (sort or long view).
@@ -92,12 +80,14 @@ impl<'a> Node<'a> {
 
     /// Whether the entry is a symlink.
     pub fn is_symlink(self) -> bool {
-        self.symlink_target_path().is_some()
+        self.tree.is_link(self.i)
     }
 
     /// Target of the symlink.
     pub fn symlink_target_path(self) -> Option<&'a Path> {
-        self.tree.cols.link_target(self.i)
+        self.is_symlink()
+            .then(|| self.tree.cols.link_target(self.i))
+            .flatten()
     }
 
     /// Target of the symlink, as shown after the arrow.
@@ -120,8 +110,6 @@ impl<'a> Node<'a> {
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::FileTypeExt;
-
             if ft.is_fifo() {
                 return Some("|");
             }
@@ -130,7 +118,14 @@ impl<'a> Node<'a> {
                 return Some("=");
             }
 
-            if ft.is_file() && self.tree.cols.mode[ix(self.i)] & 0o111 != 0 {
+            if ft.is_file()
+                && self
+                    .tree
+                    .cols
+                    .mode
+                    .get(ix(self.i))
+                    .is_some_and(|mode| mode & 0o111 != 0)
+            {
                 return Some("*");
             }
         }
@@ -139,13 +134,8 @@ impl<'a> Node<'a> {
     }
 
     /// Type of the entry, or of its target when it is a followed symlink.
-    pub fn file_type(self) -> FileType {
+    pub fn file_type(self) -> Kind {
         self.tree.cols.file_type[ix(self.i)]
-    }
-
-    /// Path relative to the root; the root's own name for the root.
-    pub fn relative_path(self) -> PathBuf {
-        self.tree.relative_path_of(self.i)
     }
 
     /// Raw size in the configured metric.
@@ -191,6 +181,12 @@ impl<'a> Node<'a> {
         Ok(permissions.try_mode_symbolic_notation()?)
     }
 
+    /// Raw `st_mode` of the entry (long view).
+    #[cfg(unix)]
+    pub fn st_mode(self) -> u32 {
+        self.tree.cols.mode[ix(self.i)]
+    }
+
     /// Whether the entry has extended attributes (long view).
     #[cfg(unix)]
     pub fn has_xattrs(self) -> bool {
@@ -203,45 +199,15 @@ impl<'a> Node<'a> {
 
     /// Owner and group names, if both could be resolved (long view, up to the display level).
     #[cfg(unix)]
-    fn owner_and_group(self) -> Option<(&'a str, &'a str)> {
+    pub fn owner_and_group(self) -> Option<(&'a str, &'a str)> {
         let attrs = self.tree.cols.long.get(ix(self.i)).filter(|a| a.read)?;
-        let owner = self.tree.users.get(&attrs.uid)?.as_deref()?;
-        let group = self.tree.groups.get(&attrs.gid)?.as_deref()?;
+        let owner = lookup(&self.tree.users, attrs.uid)?;
+        let group = lookup(&self.tree.groups, attrs.gid)?;
         Some((owner, group))
-    }
-
-    /// Owner name (long view).
-    #[cfg(unix)]
-    pub fn owner(self) -> Option<&'a str> {
-        self.owner_and_group().map(|(owner, _)| owner)
-    }
-
-    /// Group name (long view).
-    #[cfg(unix)]
-    pub fn group(self) -> Option<&'a str> {
-        self.owner_and_group().map(|(_, group)| group)
     }
 
     /// `LS_COLORS` style, if colors are enabled.
     pub fn style(self) -> Option<Style> {
-        self.tree.cols.style.get(ix(self.i)).copied()
-    }
-
-    /// See [`crate::icons::fs::compute`].
-    pub fn compute_icon(self, no_color: bool) -> Cow<'static, str> {
-        let ext_source = self
-            .symlink_target_path()
-            .unwrap_or_else(|| Path::new(self.file_name()));
-
-        if no_color {
-            icons::fs::compute(self.file_type(), ext_source, self.file_name())
-        } else {
-            icons::fs::compute_with_color(
-                self.file_type(),
-                ext_source,
-                self.file_name(),
-                self.style(),
-            )
-        }
+        self.tree.cols.style_at(ix(self.i))
     }
 }

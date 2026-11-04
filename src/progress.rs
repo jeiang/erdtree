@@ -23,6 +23,9 @@ const REFRESH: Duration = Duration::from_millis(50);
 pub struct Indicator<'a> {
     count: u64,
     stdout: io::StdoutLock<'a>,
+    /// Whether the cursor was hidden, so that it has to be restored. Nothing is written to the
+    /// terminal before the walk has been running for one [`REFRESH`] tick.
+    hidden: bool,
 }
 
 /// This struct is how the outside world will inform the [`Indicator`] about the progress of the
@@ -69,6 +72,7 @@ impl Default for Indicator<'_> {
         Self {
             count: u64::default(),
             stdout: io::stdout().lock(),
+            hidden: false,
         }
     }
 }
@@ -133,34 +137,26 @@ impl Drop for IndicatorHandle {
 }
 
 impl Drop for Indicator<'_> {
-    /// The cursor is hidden for the lifetime of the [`Indicator`]; always show it again, including
-    /// when the owning thread fails with an error or panics.
+    /// Once the cursor is hidden, always show it again, including when the owning thread fails
+    /// with an error or panics.
     fn drop(&mut self) {
-        let _ = self.stdout.execute(cursor::Show);
+        if self.hidden {
+            let _ = self.stdout.execute(cursor::Show);
+        }
     }
 }
 
 impl Indicator<'_> {
-    /// Initializes an [`Indicator`] returning an atomic reference counter of an [`IndicatorHandle`] if
-    /// a progress indicator is enabled via [`Context`]. Upon initialization an interrupt handler is
-    /// also registered; failing to register it is an error.
-    pub fn maybe_init(ctx: &Context) -> Result<Option<IndicatorHandle>, Error> {
+    /// Initializes an [`Indicator`] returning an [`IndicatorHandle`] if a progress indicator is
+    /// enabled via [`Context`]. The interrupt handler is registered, and the terminal touched,
+    /// only once the walk outlasts one [`REFRESH`] tick; failing to register the handler is then
+    /// reported when the thread is joined.
+    pub fn maybe_init(ctx: &Context) -> Option<IndicatorHandle> {
         if !ctx.stdout_is_tty || ctx.no_progress {
-            return Ok(None);
+            return None;
         }
 
-        let indicator = Indicator::measure();
-        let mailbox = indicator.mailbox();
-
-        let int_handler = move || {
-            let _ = mailbox.try_send(Message::Finish);
-            let _ = tty::restore();
-        };
-
-        // On failure `indicator` is dropped here, which tears the thread down.
-        ctrlc::set_handler(int_handler)?;
-
-        Ok(Some(indicator))
+        Some(Indicator::measure())
     }
 
     /// Initializes a worker thread that owns [`Indicator`] that awaits on [`Message`]s to traverse
@@ -171,11 +167,10 @@ impl Indicator<'_> {
         let indexed = Arc::new(AtomicU64::new(0));
         let counter = Arc::clone(&indexed);
 
+        let interrupt_mailbox = tx.clone();
+
         let join_handle = thread::spawn(move || {
             let mut indicator = Self::default();
-
-            indicator.stdout.execute(cursor::SavePosition)?;
-            indicator.stdout.execute(cursor::Hide)?;
 
             loop {
                 match rx.recv_timeout(REFRESH) {
@@ -186,6 +181,9 @@ impl Indicator<'_> {
                     Err(RecvTimeoutError::Timeout) => {
                         let count = counter.load(Ordering::Relaxed);
                         if count != indicator.count {
+                            if !indicator.hidden {
+                                indicator.start(&interrupt_mailbox)?;
+                            }
                             indicator.index(count)?;
                             indicator.stdout.execute(cursor::RestorePosition)?;
                         }
@@ -198,8 +196,29 @@ impl Indicator<'_> {
         IndicatorHandle::new(Some(join_handle), tx, indexed)
     }
 
-    /// Clears the indicator and shows the cursor again.
+    /// Registers the interrupt handler, then saves the cursor position and hides the cursor. The
+    /// handler comes first so that an interrupt can never leave the cursor hidden. A `SIGINT`
+    /// before this point meets the default handler, and the terminal is untouched.
+    fn start(&mut self, mailbox: &SyncSender<Message>) -> Result<(), Error> {
+        let mailbox = mailbox.clone();
+
+        ctrlc::set_handler(move || {
+            let _ = mailbox.try_send(Message::Finish);
+            let _ = tty::restore();
+        })?;
+
+        self.hidden = true;
+        self.stdout.execute(cursor::SavePosition)?;
+        self.stdout.execute(cursor::Hide)?;
+        Ok(())
+    }
+
+    /// Clears the indicator and shows the cursor again, unless nothing was ever drawn.
     fn finish(&mut self) -> Result<(), Error> {
+        if !self.hidden {
+            return Ok(());
+        }
+
         let stdout = &mut self.stdout;
         stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
         stdout.execute(cursor::RestorePosition)?;

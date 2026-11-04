@@ -6,7 +6,9 @@ use super::disk_usage::{
 
 use crate::walk::Entry;
 use args::Reconciler;
-use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum, error::ErrorKind};
+use clap::{
+    CommandFactory, FromArgMatches, Parser, ValueEnum, error::ErrorKind, parser::ValueSource,
+};
 use color::Coloring;
 use error::Error;
 use ignore::overrides::{Override, OverrideBuilder};
@@ -17,6 +19,7 @@ use std::{
     io::{IsTerminal, stdout},
     num::NonZeroUsize,
     path::{Path, PathBuf},
+    sync::OnceLock,
     thread::available_parallelism,
 };
 
@@ -174,7 +177,7 @@ pub struct Context {
     #[arg(long, value_enum, default_value_t)]
     pub dir_order: dir::Order,
 
-    /// Number of threads to use; defaults to the number of available CPU cores
+    /// Number of threads to use; defaults to the number of available CPU cores, and the walk then adds threads while it waits on the file system
     #[arg(short = 'T', long, default_value_t = Context::num_threads(), hide_default_value = true)]
     pub threads: usize,
 
@@ -290,6 +293,15 @@ pub struct Context {
     /// Width of the terminal emulator's window
     #[clap(skip)]
     pub window_width: Option<usize>,
+
+    /// Whether `--threads` was given on the command line or in the config, which fixes the number
+    /// of walk workers. Otherwise the walk may add workers when the file system is slow.
+    #[clap(skip)]
+    pub threads_explicit: bool,
+
+    /// Canonical form of the root, computed on first use by [`Context::dir_canonical`].
+    #[clap(skip)]
+    canonical_dir: OnceLock<PathBuf>,
 }
 
 type Predicate = Result<Box<dyn Fn(&Entry<'_>) -> bool + Send + Sync + 'static>, Error>;
@@ -298,9 +310,11 @@ impl Context {
     /// Initializes [Context], optionally reading in the configuration file to override defaults.
     /// Arguments provided will take precedence over config.
     pub fn try_init() -> Result<Self, Error> {
-        Self::compute_args().and_then(|args| {
+        Self::compute_args().and_then(|mut args| {
             color::no_color_env();
-            let mut ctx = Self::from_arg_matches(&args).map_err(Error::Config)?;
+            let threads_explicit = args.value_source("threads") == Some(ValueSource::CommandLine);
+            let mut ctx = Self::from_arg_matches_mut(&mut args).map_err(Error::Config)?;
+            ctx.threads_explicit = threads_explicit;
             ctx.validate_min_size()?;
 
             if ctx.summarize {
@@ -361,14 +375,18 @@ impl Context {
             .iter()
             .map(|dir| Self {
                 dir: vec![dir.clone()],
+                canonical_dir: OnceLock::new(),
                 ..self.clone()
             })
             .collect()
     }
 
-    /// Returns canonical [Path] of the root directory to be traversed.
-    pub fn dir_canonical(&self) -> PathBuf {
-        std::fs::canonicalize(self.dir()).unwrap_or_else(|_| self.dir().to_path_buf())
+    /// Returns canonical [Path] of the root directory to be traversed. The filesystem is asked
+    /// once per [`Context`]; the root itself is used when it cannot be canonicalized.
+    pub fn dir_canonical(&self) -> &Path {
+        self.canonical_dir.get_or_init(|| {
+            std::fs::canonicalize(self.dir()).unwrap_or_else(|_| self.dir().to_path_buf())
+        })
     }
 
     /// The max depth to print. Note that all directories are fully traversed to compute file
@@ -593,8 +611,11 @@ impl Context {
             .any(|comp| re.is_match(comp.as_os_str().to_string_lossy().borrow()))
     }
 
-    /// The default number of threads to use for disk-reads and parallel processing.
-    fn num_threads() -> usize {
-        available_parallelism().map_or(3, NonZeroUsize::get)
+    /// The default number of threads to use for disk-reads and parallel processing. The answer is
+    /// cached because `available_parallelism` costs about ten syscalls on Linux (cgroup files) and
+    /// clap evaluates the default at every command build.
+    pub fn num_threads() -> usize {
+        static THREADS: OnceLock<usize> = OnceLock::new();
+        *THREADS.get_or_init(|| available_parallelism().map_or(3, NonZeroUsize::get))
     }
 }

@@ -2,10 +2,17 @@ use crate::hash;
 use error::Error;
 use lscolors::LsColors;
 use nu_ansi_term::{Color, Style};
-use std::{collections::HashMap, sync::OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    thread::JoinHandle,
+};
 
 /// Errors for this module.
 pub mod error;
+
+/// `LS_COLORS` style of a directory entry.
+pub mod entry;
 
 /// Used as general placeholder for an empty field.
 pub const PLACEHOLDER: &str = "-";
@@ -183,9 +190,31 @@ pub fn get_datetime_style() -> Result<&'static Style, Error<'static>> {
 /// Initializes [`LS_COLORS`] by reading in the `LS_COLORS` environment variable. If it isn't set, a
 /// default determined by `lscolors` crate will be used.
 fn init_ls_colors() {
+    let prefetched = PREFETCH
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+        .and_then(|handle| handle.join().ok());
+
     LS_COLORS
-        .set(LsColors::from_env().unwrap_or_default())
+        .set(
+            prefetched
+                .unwrap_or_else(LsColors::from_env)
+                .unwrap_or_default(),
+        )
         .unwrap();
+}
+
+/// A helper thread started by [`prefetch_ls_colors`].
+static PREFETCH: Mutex<Option<JoinHandle<Option<LsColors>>>> = Mutex::new(None);
+
+/// Starts parsing `LS_COLORS` on a helper thread so that it overlaps with argument parsing; a
+/// large theme takes milliseconds to build. [`init`] picks up the result, and parses on the
+/// calling thread when this was not called or the thread failed.
+pub fn prefetch_ls_colors() {
+    if let Ok(mut slot) = PREFETCH.lock() {
+        *slot = Some(std::thread::spawn(LsColors::from_env));
+    }
 }
 
 /// Colorless themes

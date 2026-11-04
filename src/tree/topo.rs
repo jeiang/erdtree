@@ -3,6 +3,7 @@
 //! arrays, or recurses, so these functions are cheap on trees with millions of nodes and small
 //! enough to verify exhaustively for bounded sizes with Kani (see `proofs` below).
 
+use super::psort;
 use std::cmp::Ordering;
 
 /// Parent of the root.
@@ -14,100 +15,399 @@ pub const fn ix(i: u32) -> usize {
     i as usize
 }
 
-/// Children of every node in compressed sparse row form: the children of `p` are
-/// `list[start[p]..start[p + 1]]`, in increasing index order until sorted with
-/// [`Children::sort_each`].
+/// Node index from a position; [`NONE`] when it does not fit.
+#[inline]
+fn id(i: usize) -> u32 {
+    u32::try_from(i).unwrap_or(NONE)
+}
+
+/// A packed sort key: compared as the pair `(hi, lo)`.
+pub type Key = (u64, u64);
+
+/// Lists with more entries than this are sorted by all threads together; shorter ones by one
+/// thread each.
+const BIG_RUN: usize = 1 << 15;
+
+/// Child lists totalling at most this many entries are sorted on the calling thread.
+const INLINE_MAX: usize = 1 << 14;
+
+/// Sorts of at least this many items use several threads.
+const PAR_SORT_MIN: usize = 1 << 15;
+
+/// A sort key with the node it belongs to.
+#[derive(Clone, Copy, Default)]
+struct Item {
+    hi: u64,
+    lo: u64,
+    node: u32,
+}
+
+/// Orders items by key and, only when the keys are equal, by `cmp` on the nodes.
+#[inline]
+fn item_cmp(a: &Item, b: &Item, cmp: &impl Fn(u32, u32) -> Ordering) -> Ordering {
+    a.hi.cmp(&b.hi)
+        .then_with(|| a.lo.cmp(&b.lo))
+        .then_with(|| cmp(a.node, b.node))
+}
+
+/// Sorts `ids` on the calling thread by `key`, then `cmp` for equal keys, using `buf` as
+/// scratch. `cmp` must be a total order on `ids` and `key` must never disagree with it: if
+/// `key(a) < key(b)` then `cmp(a, b)` is [`Ordering::Less`].
+fn sort_keyed_seq(
+    ids: &mut [u32],
+    buf: &mut Vec<Item>,
+    key: &impl Fn(u32) -> Key,
+    cmp: &impl Fn(u32, u32) -> Ordering,
+) {
+    buf.clear();
+    buf.extend(ids.iter().map(|&node| {
+        let (hi, lo) = key(node);
+        Item { hi, lo, node }
+    }));
+    buf.sort_unstable_by(|a, b| item_cmp(a, b, cmp));
+
+    for (slot, item) in ids.iter_mut().zip(buf.iter()) {
+        *slot = item.node;
+    }
+}
+
+/// Like [`sort_keyed_seq`] with up to `threads` threads when `ids` has at least `par_min`
+/// entries: keys are computed and chunks sorted in parallel, then merged.
+fn sort_keyed_par(
+    ids: &mut [u32],
+    threads: usize,
+    par_min: usize,
+    key: &(impl Fn(u32) -> Key + Sync),
+    cmp: &(impl Fn(u32, u32) -> Ordering + Sync),
+) {
+    if threads < 2 || ids.len() < par_min.max(2) {
+        sort_keyed_seq(ids, &mut Vec::new(), key, cmp);
+        return;
+    }
+
+    let len = ids.len();
+    let width = len.div_ceil(threads);
+    let mut items: Vec<Item> = Vec::with_capacity(len);
+    let item_cmp = &|a: &Item, b: &Item| item_cmp(a, b, cmp);
+
+    // Each thread keys and sorts its share of `ids`, written straight into the new memory.
+    std::thread::scope(|s| {
+        for (out, ids) in items
+            .spare_capacity_mut()
+            .chunks_mut(width)
+            .zip(ids.chunks(width))
+        {
+            s.spawn(move || {
+                for (slot, &node) in out.iter_mut().zip(ids) {
+                    let (hi, lo) = key(node);
+                    slot.write(Item { hi, lo, node });
+                }
+
+                // SAFETY: every slot of `out` was just written, and `MaybeUninit<Item>` has the
+                // layout of `Item`.
+                let out = unsafe { &mut *(std::ptr::from_mut(out) as *mut [Item]) };
+                out.sort_unstable_by(item_cmp);
+            });
+        }
+    });
+
+    // SAFETY: the threads wrote the first `len` slots.
+    unsafe { items.set_len(len) };
+
+    psort::merge_runs(&mut items, width, threads, item_cmp);
+
+    for (slot, item) in ids.iter_mut().zip(&items) {
+        *slot = item.node;
+    }
+}
+
+/// Sorts `ids` by `key`, then `cmp` (see [`Children::sort_each`] for the contract), with
+/// several threads when `ids` is long.
+pub fn sort_keyed(
+    ids: &mut [u32],
+    threads: usize,
+    key: &(impl Fn(u32) -> Key + Sync),
+    cmp: &(impl Fn(u32, u32) -> Ordering + Sync),
+) {
+    sort_keyed_par(ids, threads, PAR_SORT_MIN, key, cmp);
+}
+
+/// The range of the list that holds the children of `p`, given the end of every range.
+#[inline]
+const fn range_of(end: &[u32], p: u32) -> std::ops::Range<usize> {
+    let start = if p == 0 { 0 } else { end[ix(p) - 1] };
+    ix(start)..ix(end[ix(p)])
+}
+
+/// Runs `part(0)` to `part(parts - 1)`, the first on this thread and the others on new ones, and
+/// returns their results in order. A single part starts no thread.
+fn run_parts<R: Send>(parts: usize, part: impl Fn(usize) -> R + Sync) -> Vec<R> {
+    if parts < 2 {
+        return vec![part(0)];
+    }
+
+    std::thread::scope(|s| {
+        let part = &part;
+        let jobs: Vec<_> = (1..parts).map(|t| s.spawn(move || part(t))).collect();
+        let mut all = vec![part(0)];
+
+        for job in jobs {
+            all.push(job.join().unwrap_or_else(|e| std::panic::resume_unwind(e)));
+        }
+
+        all
+    })
+}
+
+/// The nodes `start..end` all have the parent `parent`.
+#[derive(Clone, Copy, Debug)]
+pub struct Run {
+    pub start: u32,
+    pub end: u32,
+    pub parent: u32,
+}
+
+impl Run {
+    /// The run of nodes `i..j` of parent `p`.
+    fn new(p: u32, i: usize, j: usize) -> Self {
+        Self {
+            start: id(i),
+            end: id(j),
+            parent: p,
+        }
+    }
+}
+
+/// Calls `visit(p, i, j)` for each maximal run `parent[i..j]` of equal parents `p` other than [`NONE`].
+fn for_each_run(parent: &[u32], mut visit: impl FnMut(u32, usize, usize)) {
+    let len = parent.len();
+    let mut from = 0;
+
+    while from < len {
+        let owner = parent[from];
+        let mut to = from + 1;
+
+        while to < len && parent[to] == owner {
+            to += 1;
+        }
+
+        if owner != NONE {
+            visit(owner, from, to);
+        }
+
+        from = to;
+    }
+}
+
+/// Children of every node: the children of `p` are `list[start(p)..end[p]]`, in increasing
+/// index order until sorted with [`Children::sort_each`]. The children of one parent are
+/// consecutive in `list`, different parents' ranges are disjoint, and the ranges follow each
+/// other in the order of the parents, so a parent's range starts where the previous one ends.
+///
+/// The walk appends the entries of a directory in few runs of equal parents, so the lists are
+/// built by copying those runs, not by placing every node.
 pub struct Children {
-    start: Vec<u32>,
+    /// End of each parent's range in `list`.
+    end: Vec<u32>,
     list: Vec<u32>,
+
+    /// Parents with at least two children, in increasing order of start.
+    runs: Vec<u32>,
 }
 
 impl Children {
-    /// Groups nodes by parent (a counting sort). Nodes whose parent is [`NONE`] are roots and
-    /// appear in no list.
+    /// Groups nodes by parent. Nodes whose parent is [`NONE`] are roots and appear in no list.
     pub fn build(parent: &[u32]) -> Self {
-        let n = parent.len();
-        let mut start = vec![0_u32; n + 1];
+        let mut runs = vec![];
+        for_each_run(parent, |p, i, j| runs.push(Run::new(p, i, j)));
+        Self::from_runs(parent.len(), &runs)
+    }
 
-        for &p in parent {
-            if p != NONE {
-                start[ix(p) + 1] += 1;
+    /// Groups `n` nodes by parent, given the runs of equal parents: each node with a parent is
+    /// in exactly one run. A run's nodes are consecutive, and a parent may have several runs.
+    pub fn from_runs(n: usize, runs: &[Run]) -> Self {
+        let mut end = vec![0_u32; n];
+
+        for run in runs {
+            end[ix(run.parent)] += run.end - run.start;
+        }
+
+        // Turn the counts into the start of each range.
+        let mut multi = vec![];
+        let mut sum = 0_u32;
+        for (p, slot) in end.iter_mut().enumerate() {
+            let count = *slot;
+            if count >= 2 {
+                multi.push(id(p));
             }
+            *slot = sum;
+            sum += count;
         }
 
-        for i in 0..n {
-            start[i + 1] += start[i];
-        }
-
-        let mut fill = start.clone();
         // At most `n` children in total. Allocating `n` (a length known from the input size)
-        // rather than `start[n]` keeps the allocation size concrete for Kani.
+        // rather than `sum` keeps the allocation size concrete for Kani.
         let mut list = vec![0_u32; n];
 
-        for (child, &p) in parent.iter().enumerate() {
-            if p != NONE {
-                let slot = &mut fill[ix(p)];
-                list[ix(*slot)] = u32::try_from(child).unwrap_or(NONE);
-                *slot += 1;
+        // Fill the ranges in index order; each `end` moves from the start to the end of its range.
+        for run in runs {
+            let at = ix(end[ix(run.parent)]);
+            let len = ix(run.end - run.start);
+            for (slot, child) in list[at..at + len].iter_mut().zip(run.start..run.end) {
+                *slot = child;
             }
+            end[ix(run.parent)] += run.end - run.start;
         }
 
-        list.truncate(ix(start[n]));
+        list.truncate(ix(sum));
 
-        Self { start, list }
+        Self {
+            end,
+            list,
+            runs: multi,
+        }
     }
 
     /// Children of `p`.
     #[inline]
     pub fn of(&self, p: u32) -> &[u32] {
-        &self.list[ix(self.start[ix(p)])..ix(self.start[ix(p) + 1])]
+        &self.list[range_of(&self.end, p)]
     }
 
-    /// Sorts every child list with `cmp`, splitting the lists over `threads` threads in chunks
-    /// of about equal numbers of children.
-    pub fn sort_each(&mut self, threads: usize, cmp: impl Fn(u32, u32) -> Ordering + Sync) {
-        let parents = self.start.len().saturating_sub(1);
-        let total = self.list.len();
-        let threads = threads.max(1);
-        let start = &self.start;
+    /// Calls `f(p, kids)` for each parent `p` in increasing order, with those of its children
+    /// that sit at positions `lo..hi` of the lists (parents with none are skipped).
+    fn for_each_list(&self, lo: usize, hi: usize, mut f: impl FnMut(u32, &[u32])) {
+        let mut p = self.end.partition_point(|&e| ix(e) <= lo);
 
-        // Parent ranges whose children make up about `total / threads` entries each.
-        let mut bounds: Vec<usize> = (0..=threads)
-            .map(|t| {
-                let target = u32::try_from(total * t / threads).unwrap_or(u32::MAX);
-                start[..parents].partition_point(|&s| s < target)
-            })
-            .collect();
-        bounds[threads] = parents;
-        bounds.dedup();
+        while p < self.end.len() {
+            let range = range_of(&self.end, id(p));
+            if range.start >= hi {
+                break;
+            }
+            if !range.is_empty() {
+                f(id(p), &self.list[range.start.max(lo)..range.end.min(hi)]);
+            }
+            p += 1;
+        }
+    }
+
+    /// Sorts the child list of every parent `p` with `wanted(p)`; other lists keep their order.
+    /// Lists are ordered by `key`, and by `cmp` among equal keys, with up to `threads` threads.
+    ///
+    /// `cmp` must be a total order on every list and `key` must be monotone with it: if
+    /// `key(a) < key(b)` then `cmp(a, b)` is [`Ordering::Less`] (equal keys carry no
+    /// information). The result is then exactly the sorted list, as any sort by `cmp` gives.
+    /// Small inputs are sorted on the calling thread; lists longer than the others are sorted
+    /// by all threads together.
+    pub fn sort_each(
+        &mut self,
+        threads: usize,
+        wanted: impl Fn(u32) -> bool,
+        key: impl Fn(u32) -> Key + Sync,
+        cmp: impl Fn(u32, u32) -> Ordering + Sync,
+    ) {
+        self.sort_each_with(threads, INLINE_MAX, BIG_RUN, wanted, key, cmp);
+    }
+
+    /// [`Self::sort_each`] with the size thresholds as parameters: totals up to `inline_max`
+    /// entries are sorted on the calling thread, lists longer than `big_run` by all threads.
+    fn sort_each_with(
+        &mut self,
+        threads: usize,
+        inline_max: usize,
+        big_run: usize,
+        wanted: impl Fn(u32) -> bool,
+        key: impl Fn(u32) -> Key + Sync,
+        cmp: impl Fn(u32, u32) -> Ordering + Sync,
+    ) {
+        let end = &self.end;
+        let range = |p: u32| range_of(end, p);
+        let len = |p: u32| range(p).len();
+        let work: Vec<u32> = self.runs.iter().copied().filter(|&p| wanted(p)).collect();
+        let total: usize = work.iter().map(|&p| len(p)).sum();
+        let threads = threads.max(1);
+        let (key, cmp) = (&key, &cmp);
+
+        if threads == 1 || total <= inline_max {
+            let mut buf = vec![];
+            for &p in &work {
+                sort_keyed_seq(&mut self.list[range(p)], &mut buf, key, cmp);
+            }
+            return;
+        }
+
+        let (big, small): (Vec<u32>, Vec<u32>) = work.iter().partition(|&&p| len(p) > big_run);
+        let small_total: usize = small.iter().map(|&p| len(p)).sum();
+
+        // Consecutive lists, in `list` order, of about equal total length per thread.
+        let target = small_total.div_ceil(threads).max(1);
+        let mut groups: Vec<&[u32]> = vec![];
+        let (mut first, mut sum) = (0, 0);
+        for (k, &p) in small.iter().enumerate() {
+            sum += len(p);
+            if sum >= target {
+                groups.push(&small[first..=k]);
+                first = k + 1;
+                sum = 0;
+            }
+        }
+        if first < small.len() {
+            groups.push(&small[first..]);
+        }
 
         let mut rest = self.list.as_mut_slice();
         let mut taken = 0;
 
         std::thread::scope(|s| {
-            for w in bounds.windows(2) {
-                let (first, last) = (w[0], w[1]);
-                let end = ix(start[last]);
-                let (mine, tail) = rest.split_at_mut(end - taken);
-                rest = tail;
-                let base = taken;
-                taken = end;
-                let cmp = &cmp;
+            let mut mine = None;
 
-                s.spawn(move || {
-                    for p in first..last {
-                        let range = ix(start[p]) - base..ix(start[p + 1]) - base;
-                        mine[range].sort_by(|&a, &b| cmp(a, b));
+            for group in groups {
+                let (lo, hi) = match (group.first(), group.last()) {
+                    (Some(&f), Some(&l)) => (range(f).start, range(l).end),
+                    _ => continue,
+                };
+                let (_, tail) = rest.split_at_mut(lo - taken);
+                let (slice, tail) = tail.split_at_mut(hi - lo);
+                rest = tail;
+                taken = hi;
+
+                let job = move || {
+                    let mut buf = vec![];
+                    for &p in group {
+                        let r = range(p);
+                        sort_keyed_seq(&mut slice[r.start - lo..r.end - lo], &mut buf, key, cmp);
                     }
-                });
+                };
+
+                // The first group runs on this thread, after the others are started.
+                if mine.is_none() {
+                    mine = Some(job);
+                } else {
+                    s.spawn(job);
+                }
+            }
+
+            if let Some(mut job) = mine {
+                job();
             }
         });
+
+        for &p in &big {
+            sort_keyed_par(&mut self.list[range(p)], threads, 0, key, cmp);
+        }
     }
 }
 
 /// Pre-order (parent before children, siblings in child-list order) of the nodes reachable from
-/// `root` through `alive` nodes. Dead nodes and their subtrees are skipped.
-pub fn preorder(children: &Children, root: u32, alive: &[bool]) -> Vec<u32> {
+/// `root` through `alive` nodes, down to depth `max_depth` (`depth` holds every node's distance
+/// from the root, which is 0). Dead nodes and their subtrees are skipped, and so are the
+/// children of nodes at `max_depth`.
+pub fn preorder(
+    children: &Children,
+    root: u32,
+    alive: &[bool],
+    depth: &[u32],
+    max_depth: u32,
+) -> Vec<u32> {
     let mut order = Vec::with_capacity(alive.len());
     // Every node is pushed at most once (by its parent), so the stack never grows past this.
     let mut stack = Vec::with_capacity(alive.len());
@@ -119,19 +419,70 @@ pub fn preorder(children: &Children, root: u32, alive: &[bool]) -> Vec<u32> {
         }
 
         order.push(node);
-        stack.extend(children.of(node).iter().rev().copied());
+
+        if depth[ix(node)] < max_depth {
+            stack.extend(children.of(node).iter().rev().copied());
+        }
     }
 
     order
 }
 
-/// For every node in `order` (a pre-order), whether it is the last node among the alive
-/// children of its parent. The root is its own last sibling.
-pub fn last_alive_child(children: &Children, order: &[u32], alive: &[bool]) -> Vec<bool> {
-    let mut last = vec![false; alive.len()];
+/// Trees with at least this many nodes find their last children with several threads.
+const PAR_LAST_MIN: usize = 1 << 18;
 
-    for &node in order {
-        if let Some(&child) = children.of(node).iter().rev().find(|&&c| alive[ix(c)]) {
+/// For every node in `order` (a pre-order), whether it is the last node among the alive children
+/// of its parent. The root is its own last sibling. Other nodes may be marked too. Uses up to
+/// `threads` threads when `order` is long.
+pub fn last_alive_child(
+    children: &Children,
+    order: &[u32],
+    alive: &[bool],
+    threads: usize,
+) -> Vec<bool> {
+    last_alive_child_with(children, order, alive, threads, PAR_LAST_MIN)
+}
+
+/// [`last_alive_child`] with the size from which several threads are used as a parameter.
+fn last_alive_child_with(
+    children: &Children,
+    order: &[u32],
+    alive: &[bool],
+    threads: usize,
+    par_min: usize,
+) -> Vec<bool> {
+    let n = alive.len();
+    let mut last = vec![false; n];
+    let last_of = |p: u32| {
+        children
+            .of(p)
+            .iter()
+            .rev()
+            .find(|&&c| alive[ix(c)])
+            .copied()
+    };
+
+    if order.len() < n / 4 {
+        // Few nodes are listed: look at those parents only.
+        for child in order.iter().filter_map(|&p| last_of(p)) {
+            last[ix(child)] = true;
+        }
+    } else {
+        // Most nodes are listed: go over all the parents, a share per thread.
+        let parts = if threads < 2 || n < par_min {
+            1
+        } else {
+            threads
+        };
+        let part = |t: usize| -> Vec<u32> {
+            (n * t / parts..n * (t + 1) / parts)
+                .filter_map(|p| last_of(id(p)))
+                .collect()
+        };
+
+        let found = run_parts(parts, part);
+
+        for &child in found.iter().flatten() {
             last[ix(child)] = true;
         }
     }
@@ -143,55 +494,207 @@ pub fn last_alive_child(children: &Children, order: &[u32], alive: &[bool]) -> V
     last
 }
 
-/// Marks hard-link duplicates among `n` nodes. `linked` lists the nodes whose inode has more
-/// than one link, with that inode as key; among the nodes sharing a key only the least by `rank`
-/// keeps `counted[i] == true`. All other nodes are counted. `linked` is reordered.
-pub fn dedupe<K: Ord>(
-    n: usize,
+/// Finds hard-link duplicates. `linked` lists the nodes whose inode has more than one link, with
+/// that inode as key; among the nodes sharing a key only the least by `rank` (the first of
+/// equals, in `linked` order) counts. Returns the nodes that do not count, in increasing order;
+/// all other nodes count. `linked` is reordered. Sorting uses up to `threads` threads for long
+/// lists, and `rank` runs once for each node beyond the first of its key.
+pub fn dedupe<K: Ord + Copy + Send + Sync>(
     linked: &mut [(u32, K)],
+    threads: usize,
     mut rank: impl FnMut(u32, u32) -> Ordering,
-) -> Vec<bool> {
-    let mut counted = vec![true; n];
+) -> Vec<u32> {
+    let mut uncounted = vec![];
 
-    linked.sort_by(|(a, ka), (b, kb)| ka.cmp(kb).then_with(|| rank(*a, *b)));
+    // By key, then node: a total order, so the unstable sort has one result.
+    psort::sort_by(linked, threads, PAR_SORT_MIN, |(a, ka), (b, kb)| {
+        ka.cmp(kb).then_with(|| a.cmp(b))
+    });
 
-    for pair in linked.windows(2) {
-        if pair[0].1 == pair[1].1 {
-            counted[ix(pair[1].0)] = false;
+    // `best` is the least node so far in the current key group.
+    let mut best = 0;
+
+    for m in 1..linked.len() {
+        if linked[m].1 != linked[m - 1].1 {
+            best = m;
+        } else if rank(linked[m].0, linked[best].0).is_lt() {
+            uncounted.push(linked[best].0);
+            best = m;
+        } else {
+            uncounted.push(linked[m].0);
         }
     }
 
-    counted
+    uncounted.sort_unstable();
+    uncounted
 }
 
-/// Directory sizes: each directory gets the sum of the sizes of its `counted` children, or
-/// `None` when that sum is zero; other nodes keep their size. `order` must be a pre-order of
-/// every node. Sums saturate instead of overflowing.
-pub fn aggregate(
-    order: &[u32],
-    parent: &[u32],
-    counted: &[bool],
-    is_dir: &[bool],
-    size: &mut [Option<u64>],
-) {
-    let mut acc = vec![0_u64; size.len()];
+/// Nodes ordered by depth (a counting sort, nodes of equal depth in index order), or `None`
+/// when a depth is at least the number of nodes, which no tree has. If every node is deeper
+/// than its parent, as with distances from the root, this is a parent-first order of all
+/// nodes (see `spec::is_parent_first_order`), and cheaper than a pre-order.
+pub fn by_depth(depth: &[u32]) -> Option<Vec<u32>> {
+    let n = depth.len();
+    let mut next = vec![0_u32; n + 1];
 
-    for &node in order.iter().rev() {
-        let i = ix(node);
-
-        if is_dir[i] {
-            size[i] = (acc[i] > 0).then_some(acc[i]);
+    for &d in depth {
+        if ix(d) >= n {
+            return None;
         }
+        next[ix(d) + 1] += 1;
+    }
 
-        let p = parent[i];
-        if p != NONE && counted[i] {
-            acc[ix(p)] = acc[ix(p)].saturating_add(size[i].unwrap_or(0));
+    for i in 0..n {
+        next[i + 1] += next[i];
+    }
+
+    let mut order = vec![0_u32; n];
+
+    for (i, &d) in depth.iter().enumerate() {
+        let slot = &mut next[ix(d)];
+        order[ix(*slot)] = id(i);
+        *slot += 1;
+    }
+
+    Some(order)
+}
+
+/// Trees with at least this many child-list entries are aggregated by several threads.
+const PAR_AGG_MIN: usize = 1 << 17;
+
+/// Directory sizes: each directory gets the sum of the sizes of its children that count (all but
+/// the `uncounted` nodes, in increasing order), or `None` when that sum is zero; other nodes
+/// keep their size. Only directories have children (`is_dir`) and they must start without a
+/// size. `depth` holds every node's distance from the root. Sums saturate instead of
+/// overflowing, so the order of the additions does not matter.
+///
+/// The sums over each directory's files need no particular order, so threads share them out by
+/// position in the child lists. What is left is adding the sizes of directories with children to
+/// their parents, deepest first, which takes one step per directory.
+pub fn aggregate(
+    children: &Children,
+    parent: &[u32],
+    depth: &[u32],
+    is_dir: &[bool],
+    uncounted: &[u32],
+    size: &mut [Option<u64>],
+    threads: usize,
+) {
+    aggregate_with(
+        children,
+        parent,
+        depth,
+        is_dir,
+        uncounted,
+        size,
+        threads,
+        PAR_AGG_MIN,
+    );
+}
+
+/// [`aggregate`] with the threshold for using several threads as a parameter.
+#[allow(clippy::too_many_arguments)] // The inputs are separate arrays; the threshold is for tests.
+fn aggregate_with(
+    children: &Children,
+    parent: &[u32],
+    depth: &[u32],
+    is_dir: &[bool],
+    uncounted: &[u32],
+    size: &mut [Option<u64>],
+    threads: usize,
+    par_min: usize,
+) {
+    let mask = if uncounted.is_empty() {
+        vec![]
+    } else {
+        let mut mask = vec![false; size.len()];
+        for &i in uncounted {
+            mask[ix(i)] = true;
+        }
+        mask
+    };
+    let counted = |i: usize| mask.is_empty() || !mask[i];
+
+    // Sums of the sizes of the files in each list, for the list positions `lo..hi`. A directory
+    // is listed once per part that holds some of its children.
+    let total = children.list.len();
+    let parts = if threads < 2 || total < par_min {
+        1
+    } else {
+        threads
+    };
+    let sizes: &[Option<u64>] = size;
+    let part = |t: usize| {
+        let mut sums = vec![];
+        children.for_each_list(total * t / parts, total * (t + 1) / parts, |p, kids| {
+            let mut sum = 0_u64;
+            for &c in kids {
+                let c = ix(c);
+                if !is_dir[c]
+                    && counted(c)
+                    && let Some(s) = sizes[c].filter(|&s| s > 0)
+                {
+                    sum = sum.saturating_add(s);
+                }
+            }
+            sums.push((p, sum));
+        });
+        sums
+    };
+
+    let sums: Vec<(u32, u64)> = run_parts(parts, part).into_iter().flatten().collect();
+
+    // The directories with children, once each, in increasing order.
+    let mut dirs: Vec<u32> = Vec::with_capacity(sums.len());
+    for &(p, sum) in &sums {
+        if dirs.last() != Some(&p) {
+            dirs.push(p);
+        }
+        if sum > 0 {
+            let total = &mut size[ix(p)];
+            *total = Some(total.unwrap_or(0).saturating_add(sum));
+        }
+    }
+    drop(sums);
+
+    // Deepest first, so a directory is complete when it is added to its parent. A directory
+    // has at most as many ancestors as there are directories, so the depths are small numbers.
+    let deepest = dirs.iter().map(|&p| ix(depth[ix(p)])).max().unwrap_or(0);
+    if deepest < dirs.len() {
+        let mut next = vec![0_usize; deepest + 2];
+        for &p in &dirs {
+            next[deepest - ix(depth[ix(p)]) + 1] += 1;
+        }
+        for i in 0..=deepest {
+            next[i + 1] += next[i];
+        }
+        let mut ordered = vec![0_u32; dirs.len()];
+        for &p in &dirs {
+            let slot = &mut next[deepest - ix(depth[ix(p)])];
+            ordered[*slot] = p;
+            *slot += 1;
+        }
+        dirs = ordered;
+    } else {
+        dirs.sort_unstable_by_key(|&p| std::cmp::Reverse(depth[ix(p)]));
+    }
+
+    for &d in &dirs {
+        let i = ix(d);
+        let up = parent[i];
+
+        if up != NONE
+            && counted(i)
+            && let Some(s) = size[i].filter(|&s| s > 0)
+        {
+            let total = &mut size[ix(up)];
+            *total = Some(total.unwrap_or(0).saturating_add(s));
         }
     }
 }
 
 /// `--prune`: kills every alive non-root directory without an alive non-directory descendant.
-/// `order` must be a pre-order of the alive nodes.
+/// Every node must be alive, and `order` must list every node, each after its parent.
 pub fn prune(order: &[u32], parent: &[u32], is_dir: &[bool], alive: &mut [bool]) {
     let mut has_file = vec![false; alive.len()];
 
@@ -409,18 +912,40 @@ mod spec {
         })
     }
 
-    /// `sort_each` sorts every child list by the comparator and keeps its members, for any
-    /// number of threads.
+    /// `sort_each` sorts every wanted child list by the comparator and keeps its members, and
+    /// leaves the other lists alone, for any number of threads, whichever way the lists are
+    /// split between threads: `inline_max` and `big_run` choose the sequential, grouped and
+    /// whole-list parallel paths. The comparator is descending order and the key a coarse
+    /// version of it, so equal keys need the comparator to decide.
     #[cfg(test)]
-    pub fn sort_each_sorts_every_list(parent: &[u32], threads: usize) {
+    pub fn sort_each_sorts_every_list(
+        parent: &[u32],
+        threads: usize,
+        inline_max: usize,
+        big_run: usize,
+    ) {
         let original = Children::build(parent);
-        let mut sorted = Children::build(parent);
-        sorted.sort_each(threads, |a, b| b.cmp(&a));
+        // Descending, as keys: a larger node has a smaller key, two nodes share a key.
+        let key = |i: u32| (u64::from(!i / 2), 0);
 
-        for p in 0..parent.len() {
-            let mut expected = original.of(id(p)).to_vec();
-            expected.sort_by(|a, b| b.cmp(a));
-            assert_eq!(sorted.of(id(p)), expected.as_slice());
+        for wanted_mod in [1, 2] {
+            let mut sorted = Children::build(parent);
+            sorted.sort_each_with(
+                threads,
+                inline_max,
+                big_run,
+                |p| p % wanted_mod == 0,
+                key,
+                |a, b| b.cmp(&a),
+            );
+
+            for p in 0..parent.len() {
+                let mut expected = original.of(id(p)).to_vec();
+                if id(p).is_multiple_of(wanted_mod) {
+                    expected.sort_by(|a, b| b.cmp(a));
+                }
+                assert_eq!(sorted.of(id(p)), expected.as_slice());
+            }
         }
     }
 
@@ -432,9 +957,11 @@ mod spec {
         children: &Children,
         root: u32,
         alive: &[bool],
+        max_depth: u32,
     ) {
         let n = parent.len();
-        let order = preorder(children, root, alive);
+        let depth = depths(parent);
+        let order = preorder(children, root, alive, &depth, max_depth);
 
         let mut pos = vec![usize::MAX; n];
         for (k, &node) in order.iter().enumerate() {
@@ -447,7 +974,7 @@ mod spec {
 
         for i in 0..n {
             let reachable = (0..n).all(|a| !has_ancestor(&anc, i, a) || alive[a]);
-            assert_eq!(pos[i] != usize::MAX, reachable);
+            assert_eq!(pos[i] != usize::MAX, reachable && depth[i] <= max_depth);
 
             if pos[i] != usize::MAX && id(i) != root {
                 assert!(pos[ix(parent[i])] < pos[i]);
@@ -468,15 +995,37 @@ mod spec {
 
         assert!(subtrees_contiguous(&anc, &pos));
 
-        // With every node alive, the pre-order is an order `aggregate` and `prune` accept, and
-        // with a connected alive set it is one `hide_small` accepts; their proofs assume this.
-        if alive.iter().all(|&a| a) {
+        // The listed nodes are connected, and the pre-order is a parent-first order of them:
+        // an order `hide_small` accepts. With every node listed it is also one `aggregate` and
+        // `prune` accept; their proofs assume this.
+        let listed: Vec<bool> = (0..n).map(|i| pos[i] != usize::MAX).collect();
+        assert!(is_parent_first_order_of(parent, root, &listed, &order));
+        if listed.iter().all(|&l| l) {
             assert!(is_parent_first_order(parent, root, &order));
         }
-        let connected = (0..n).all(|i| !alive[i] || parent[i] == NONE || alive[ix(parent[i])]);
-        if connected {
-            assert!(is_parent_first_order_of(parent, root, alive, &order));
-        }
+    }
+
+    /// Distance of every node from the root (which has depth 0), the `depth` column of a
+    /// walked tree. Supports up to 16 nodes.
+    pub fn depths(parent: &[u32]) -> Vec<u32> {
+        ancestors(parent)
+            .iter()
+            .map(|a| a.count_ones().saturating_sub(1))
+            .collect()
+    }
+
+    /// `by_depth` lists every node once, by increasing depth, which makes it a parent-first
+    /// order of all nodes; and it refuses depths no tree has.
+    pub fn by_depth_is_parent_first(parent: &[u32], root: u32) {
+        let depth = depths(parent);
+        let order = by_depth(&depth).unwrap();
+
+        assert!(is_parent_first_order(parent, root, &order));
+        assert!(order.windows(2).all(|w| depth[ix(w[0])] <= depth[ix(w[1])]));
+
+        let mut too_deep = depth;
+        too_deep[0] = id(parent.len());
+        assert!(by_depth(&too_deep).is_none());
     }
 
     /// Whether every listed subtree occupies consecutive positions: the listed descendants of
@@ -510,11 +1059,12 @@ mod spec {
     }
 
     /// Exactly one alive child of each listed node with alive children is marked last, and it
-    /// is the last alive one.
-    pub fn last_child_is_unique(parent: &[u32], root: u32, alive: &[bool]) {
+    /// is the last alive one, for any number of threads.
+    pub fn last_child_is_unique(parent: &[u32], root: u32, alive: &[bool], threads: usize) {
         let children = Children::build(parent);
-        let order = preorder(&children, root, alive);
-        let last = last_alive_child(&children, &order, alive);
+        let order = preorder(&children, root, alive, &depths(parent), u32::MAX);
+        let last = last_alive_child_with(&children, &order, alive, threads, 0);
+        assert!(last[ix(root)]);
 
         for &p in &order {
             let mut marked = 0;
@@ -532,26 +1082,38 @@ mod spec {
         }
     }
 
-    /// Each key group keeps exactly one counted member, the least by rank (here the index);
-    /// nodes without a key are counted.
+    /// Each key group keeps exactly one counted member, the least by rank (the index, or with
+    /// `reverse` the opposite); nodes without a key are counted.
     ///
     /// `linked` lists the nodes with a key, in increasing node order, as production builds it
     /// from its sparse list of multiply-linked inodes.
-    pub fn dedupe_counts_each_inode_once(n: usize, linked: &[(u32, u8)]) {
+    pub fn dedupe_counts_each_inode_once(n: usize, linked: &[(u32, u8)], reverse: bool) {
         let mut key = vec![None; n];
         for &(i, k) in linked {
             key[ix(i)] = Some(k);
         }
 
         let mut work = linked.to_vec();
-        let counted = dedupe(n, &mut work, |a, b| a.cmp(&b));
+        let uncounted = dedupe(
+            &mut work,
+            1,
+            |a, b| {
+                if reverse { b.cmp(&a) } else { a.cmp(&b) }
+            },
+        );
+        assert!(uncounted.windows(2).all(|w| w[0] < w[1]));
+        let counted: Vec<bool> = (0..n).map(|i| !uncounted.contains(&id(i))).collect();
 
         for i in 0..n {
             match key[i] {
                 None => assert!(counted[i]),
                 Some(k) => {
-                    let first = (0..n).find(|&j| key[j] == Some(k));
-                    assert_eq!(counted[i], first == Some(i));
+                    let kept = if reverse {
+                        (0..n).rev().find(|&j| key[j] == Some(k))
+                    } else {
+                        (0..n).find(|&j| key[j] == Some(k))
+                    };
+                    assert_eq!(counted[i], kept == Some(i));
                 },
             }
         }
@@ -559,17 +1121,29 @@ mod spec {
 
     /// A directory's size is the sum of the sizes of the files below it that reach it through
     /// counted nodes only, saturating at `u64::MAX`, or `None` when that sum is zero; files keep
-    /// their sizes. Holds for every `order` accepted by [`is_parent_first_order`].
+    /// their sizes. Holds for any number of threads, with `par_min` choosing whether the sums
+    /// over the child lists are shared out. `files` has no size for directories.
     pub fn aggregate_sums_counted_files(
         parent: &[u32],
-        order: &[u32],
         counted: &[bool],
         is_dir: &[bool],
         files: &[Option<u64>],
+        threads: usize,
+        par_min: usize,
     ) {
         let n = parent.len();
         let mut size = files.to_vec();
-        aggregate(order, parent, counted, is_dir, &mut size);
+        let uncounted: Vec<u32> = (0..n).filter(|&i| !counted[i]).map(id).collect();
+        aggregate_with(
+            &Children::build(parent),
+            parent,
+            &depths(parent),
+            is_dir,
+            &uncounted,
+            &mut size,
+            threads,
+            par_min,
+        );
         let anc = ancestors(parent);
 
         for d in 0..n {
@@ -825,22 +1399,39 @@ mod test {
                 // before the pre-order.
                 let built = Children::build(&parent);
                 let mut sorted = Children::build(&parent);
-                sorted.sort_each(2, |a, b| b.cmp(&a));
+                sorted.sort_each(2, |_| true, |i| (u64::from(!i), 0), |a, b| b.cmp(&a));
+                let depth = spec::depths(&parent);
 
-                // Masks with the root set: alive flags for the pre-order.
+                spec::by_depth_is_parent_first(&parent, root);
+
+                // Masks with the root set: alive flags for the pre-order, with and without a
+                // depth limit.
                 for mask in (0..1 << n).filter(|m| m >> r & 1 == 1) {
                     let alive = bits(mask, n);
-                    spec::preorder_is_a_valid_preorder(&parent, &built, root, &alive);
-                    spec::preorder_is_a_valid_preorder(&parent, &sorted, root, &alive);
-                    spec::last_child_is_unique(&parent, root, &alive);
+                    for max_depth in (0..=u32::try_from(n).unwrap()).chain([u32::MAX]) {
+                        spec::preorder_is_a_valid_preorder(
+                            &parent, &built, root, &alive, max_depth,
+                        );
+                        spec::preorder_is_a_valid_preorder(
+                            &parent, &sorted, root, &alive, max_depth,
+                        );
+                    }
+                    // Starting threads is slow: use them only for small trees.
+                    for threads in [1, 3] {
+                        if threads > 1 && n > 4 {
+                            continue;
+                        }
+                        spec::last_child_is_unique(&parent, root, &alive, threads);
+                    }
                 }
 
                 // Two different parent-first orders: the pre-order production uses, and
                 // breadth-first.
                 let everyone = vec![true; n];
                 let orders = [
-                    super::preorder(&sorted, root, &everyone),
+                    super::preorder(&sorted, root, &everyone, &depth, u32::MAX),
                     breadth_first(&built, root),
+                    super::by_depth(&depth).unwrap(),
                 ];
                 for order in &orders {
                     assert!(spec::is_parent_first_order(&parent, root, order));
@@ -869,10 +1460,15 @@ mod test {
                     // stays counted.
                     for counted in (0..1 << n).filter(|m| m >> r & 1 == 1) {
                         let counted = bits(counted, n);
-                        for order in &orders {
-                            for files in [&small, &huge] {
+                        // Starting threads is slow: share the sums out only for small trees.
+                        let few_uncounted = n <= 4;
+                        for files in [&small, &huge] {
+                            for (threads, par_min) in [(1, usize::MAX), (3, 0)] {
+                                if threads > 1 && !few_uncounted {
+                                    continue;
+                                }
                                 spec::aggregate_sums_counted_files(
-                                    &parent, order, &counted, is_dir, files,
+                                    &parent, &counted, is_dir, files, threads, par_min,
                                 );
                             }
                         }
@@ -894,9 +1490,11 @@ mod test {
                         continue;
                     }
 
-                    let mut alive_orders = vec![super::preorder(&sorted, root, &alive)];
+                    let mut alive_orders =
+                        vec![super::preorder(&sorted, root, &alive, &depth, u32::MAX)];
                     if alive.iter().all(|&a| a) {
                         alive_orders.push(breadth_first(&built, root));
+                        alive_orders.push(super::by_depth(&depth).unwrap());
                     }
 
                     for order in &alive_orders {
@@ -919,8 +1517,30 @@ mod test {
         for n in 1..=spec::MAX_TEST {
             for (parent, _) in trees(n) {
                 for threads in 1..=3 {
-                    spec::sort_each_sorts_every_list(&parent, threads);
+                    // Sequential, whole lists in parallel, and lists grouped per thread.
+                    for (inline_max, big_run) in [(usize::MAX, usize::MAX), (0, 1), (0, usize::MAX)]
+                    {
+                        spec::sort_each_sorts_every_list(&parent, threads, inline_max, big_run);
+                    }
                 }
+            }
+        }
+    }
+
+    /// `Children::build` lists the children of a parent whether they are consecutive or not.
+    #[test]
+    fn build_handles_runs_and_interleaving() {
+        let runs = [NONE, 0, 0, 0, 1, 1, 4, 4];
+        let mixed = [NONE, 0, 1, 0, 1, 0, 4, 4];
+
+        for parent in [runs, mixed] {
+            let children = super::Children::build(&parent);
+            for p in 0..parent.len() {
+                let expected: Vec<u32> = (0..parent.len())
+                    .filter(|&c| parent[c] == u32::try_from(p).unwrap())
+                    .map(|c| u32::try_from(c).unwrap())
+                    .collect();
+                assert_eq!(children.of(u32::try_from(p).unwrap()), expected.as_slice());
             }
         }
     }
@@ -939,7 +1559,9 @@ mod test {
                             .then(|| (u32::try_from(i).unwrap(), u8::try_from(choice - 1).unwrap()))
                     })
                     .collect();
-                spec::dedupe_counts_each_inode_once(n, &linked);
+                for reverse in [false, true] {
+                    spec::dedupe_counts_each_inode_once(n, &linked, reverse);
+                }
             }
         }
     }
@@ -1000,14 +1622,19 @@ mod proofs {
         let alive: [bool; N] = kani::any();
         kani::assume(alive[ix(root)]);
         let children = super::Children::build(&parent);
-        spec::preorder_is_a_valid_preorder(&parent, &children, root, &alive);
+        spec::preorder_is_a_valid_preorder(&parent, &children, root, &alive, kani::any());
+    }
+
+    fn by_depth_is_parent_first<const N: usize>() {
+        let (parent, root) = any_tree::<N>();
+        spec::by_depth_is_parent_first(&parent, root);
     }
 
     fn last_child_is_unique<const N: usize>() {
         let (parent, root) = any_tree::<N>();
         let alive: [bool; N] = kani::any();
         kani::assume(alive[ix(root)]);
-        spec::last_child_is_unique(&parent, root, &alive);
+        spec::last_child_is_unique(&parent, root, &alive, 1);
     }
 
     /// `M` of the `N` nodes are linked: their ids are symbolic and strictly increasing, their
@@ -1023,10 +1650,10 @@ mod proofs {
             kani::assume(j == 0 || u32::from(node) > linked[j - 1].0);
             linked[j] = (u32::from(node), key);
         }
-        spec::dedupe_counts_each_inode_once(N, &linked);
+        spec::dedupe_counts_each_inode_once(N, &linked, kani::any());
     }
 
-    /// Any order of all nodes with each parent first (what `aggregate` and `prune` require), so
+    /// Any order of all nodes with each parent first (what `prune` requires), so
     /// these harnesses need not model `Children::build` and `preorder` and hold for every such
     /// order. That `preorder` produces one is asserted by the pre-order spec, which the
     /// exhaustive tests check up to `spec::MAX_TEST` nodes and Kani only for 1 node.
@@ -1038,8 +1665,7 @@ mod proofs {
     }
 
     fn aggregate_sums_counted_files<const N: usize>() {
-        let (parent, root) = any_tree::<N>();
-        let order = any_parent_first_order(&parent, root);
+        let (parent, _) = any_tree::<N>();
         let counted: [bool; N] = kani::any();
         let is_dir: [bool; N] = kani::any();
         let files: [Option<u64>; N] = kani::any();
@@ -1048,7 +1674,7 @@ mod proofs {
             // Directories start without a size; files may have any size.
             kani::assume(!is_dir[i] || files[i].is_none());
         }
-        spec::aggregate_sums_counted_files(&parent, &order, &counted, &is_dir, &files);
+        spec::aggregate_sums_counted_files(&parent, &counted, &is_dir, &files, 1, usize::MAX);
     }
 
     fn prune_removes_exactly_empty_dirs<const N: usize>() {
@@ -1119,6 +1745,7 @@ mod proofs {
         children: children_partition_nodes, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
         preorder: preorder_is_a_valid_preorder, [n1 = 1, unwind 3];
         last_child: last_child_is_unique, [n1 = 1, unwind 3];
+        by_depth: by_depth_is_parent_first, [n1 = 1, unwind 4; n2 = 2, unwind 5; n3 = 3, unwind 6];
         aggregate: aggregate_sums_counted_files, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
         prune: prune_removes_exactly_empty_dirs, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
         dirs_only: dirs_only_keeps_connected_dirs, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];

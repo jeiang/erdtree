@@ -1,14 +1,34 @@
 use crate::hash;
-use nu_ansi_term::Color;
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
-    fs::FileType,
+    hash::{BuildHasherDefault, Hasher},
     sync::LazyLock,
 };
 
 /// Concerned with computing icons given filesystem parameters.
 pub mod fs;
+
+/// Multiplicative hasher for the icon tables. Their keys are short file names and extensions
+/// that come from the user's own tree, so `SipHash`'s resistance to crafted collisions would
+/// only cost time on every row.
+#[derive(Default)]
+struct FastHasher(u64);
+
+impl Hasher for FastHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(b)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+}
+
+/// A [`HashMap`] with the [`FastHasher`].
+type Map<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
 
 /// Attempts to return an icon given a file extension along with its default color code 8-bit
 /// value.
@@ -16,15 +36,15 @@ fn icon_from_ext(ext: &OsStr) -> Option<(u8, &'static str)> {
     EXT_ICON_MAP.get(ext).copied()
 }
 
-/// Attempts to return an icon based on file type.
-fn icon_from_file_type(ft: FileType) -> Option<&'static str> {
-    if ft.is_dir() {
-        return FILE_TYPE_ICON_MAP.get("dir").copied();
-    } else if ft.is_symlink() {
-        return FILE_TYPE_ICON_MAP.get("symlink").copied();
+/// The icon of a directory or symlink.
+const fn icon_from_file_type(is_dir: bool, is_symlink: bool) -> Option<&'static str> {
+    if is_dir {
+        Some("\u{f413}")
+    } else if is_symlink {
+        Some("\u{f482}")
+    } else {
+        None
     }
-
-    None
 }
 
 /// Attempts to get the icon associated with the special file kind.
@@ -32,37 +52,15 @@ fn icon_from_file_name(name: &OsStr) -> Option<&'static str> {
     FILE_NAME_ICON_MAP.get(name).copied()
 }
 
-/// Returns the default fallback icon.
-fn get_default_icon<'a>() -> (u8, &'a str) {
-    *DEFAULT_ICON
-}
-
-/// Convenience method to paint fixed colors.
-fn col(num: u8, code: &str) -> String {
-    Color::Fixed(num).paint(code).to_string()
-}
-
-/// Default fallback icon.
-static DEFAULT_ICON: LazyLock<(u8, &str)> = LazyLock::new(|| (66, "\u{f15b}"));
-
-/// Lazily evaluated static hash-map of special file-types and their corresponding styled icons.
-/// These icons will take on the color properties of their associated file which is based on
-/// `LS_COLORS`.
-///
-/// Dev icons sourced from [`exa`](https://github.com/ogham/exa/blob/master/src/output/icons.rs)
-static FILE_TYPE_ICON_MAP: LazyLock<HashMap<&str, &str>> = LazyLock::new(|| {
-    hash!(
-        "dir"     => "\u{f413}", // 
-        "symlink" => "\u{f482}"  // 
-    )
-});
+/// Default fallback icon: its 8-bit color code and glyph.
+const DEFAULT_ICON: (u8, &str) = (66, "\u{f15b}");
 
 /// Lazily evaluated static hash-map of special named and their corresponding icons. These icons
 /// will take on the color properties of their associated file which is based on `LS_COLORS`.
 ///
 /// Dev icons sourced from [`exa`](https://github.com/ogham/exa/blob/master/src/output/icons.rs)
-static FILE_NAME_ICON_MAP: LazyLock<HashMap<OsString, &str>> = LazyLock::new(|| {
-    hash!(
+static FILE_NAME_ICON_MAP: LazyLock<Map<OsString, &str>> = LazyLock::new(|| {
+    let table = hash!(
         OsString::from(".Trash")             => "\u{f1f8}", // 
         OsString::from(".atom")              => "\u{e764}", // 
         OsString::from(".bashprofile")       => "\u{e615}", // 
@@ -107,7 +105,8 @@ static FILE_NAME_ICON_MAP: LazyLock<HashMap<OsString, &str>> = LazyLock::new(|| 
         OsString::from("PKGBUILD")           => "\u{f303}", // 
         OsString::from("rubydoc")            => "\u{e73b}", // 
         OsString::from("yarn.lock")          => "\u{e718}"  // 
-    )
+    );
+    table.into_iter().collect()
 });
 
 /// Lazily evaluated static hash-map of various file extensions and their corresponding icons. The
@@ -115,8 +114,8 @@ static FILE_NAME_ICON_MAP: LazyLock<HashMap<OsString, &str>> = LazyLock::new(|| 
 /// as well as the Unicode scalar value for the corresponding icon.
 ///
 /// Dev icons and their color palettes sourced from [`nvim-web-devicons`](https://github.com/nvim-tree/nvim-web-devicons/blob/master/lua/nvim-web-devicons.lua).
-static EXT_ICON_MAP: LazyLock<HashMap<OsString, (u8, &str)>> = LazyLock::new(|| {
-    hash!(
+static EXT_ICON_MAP: LazyLock<Map<OsString, (u8, &str)>> = LazyLock::new(|| {
+    let table = hash!(
         OsString::from("ai")            => (185, "\u{e7b4}"),   // 
         OsString::from("awk")           => (59, "\u{e795}"),    // 
         OsString::from("bash")          => (113, "\u{e795}"),   // 
@@ -317,5 +316,6 @@ static EXT_ICON_MAP: LazyLock<HashMap<OsString, (u8, &str)>> = LazyLock::new(|| 
         OsString::from("yml")           => (66, "\u{e615}"),    // 
         OsString::from("zig")           => (208, "\u{f0e7}"),   // 
         OsString::from("zsh")           => (113, "\u{e795}")    // 
-    )
+    );
+    table.into_iter().collect()
 });
