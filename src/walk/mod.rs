@@ -208,6 +208,8 @@ pub struct Tuning {
     pub policy: adaptive::Policy,
     /// Number of workers added; for tests.
     pub grown: AtomicUsize,
+    /// Number of workers started besides the first; for tests.
+    pub started: AtomicUsize,
 }
 
 impl Tuning {
@@ -235,6 +237,7 @@ impl Default for Tuning {
             splits: AtomicUsize::new(0),
             policy: adaptive::Policy::default(),
             grown: AtomicUsize::new(0),
+            started: AtomicUsize::new(0),
         }
     }
 }
@@ -303,61 +306,82 @@ struct Run<'a, S, F> {
     shared: Shared,
     progress: Option<&'a AtomicU64>,
     make_sink: F,
-    /// Number of workers started, the first `threads` of them at the start.
+    /// Number of workers the walk may have now: `threads`, and more once it grows.
     workers: AtomicUsize,
-    /// Sinks of the extra workers, once they are done.
-    extras: Mutex<Vec<(u32, S)>>,
+    /// The sinks of workers that have not started, by sink index.
+    pool: Vec<Mutex<Option<S>>>,
+    /// Sink index of the next of the first `threads` workers to start. Worker 0 starts with the
+    /// walk; the others start when work is available for them.
+    next: AtomicUsize,
+    /// Sinks of the workers other than worker 0, once they are done.
+    finished: Mutex<Vec<(u32, S)>>,
     /// How many directory descriptors queued jobs may hold.
     #[cfg(target_os = "linux")]
     budget: Arc<Budget>,
 }
 
-/// Starts the worker with sink index `sink_index`.
-fn spawn_worker<'scope, 'env, S, F>(
+/// Runs the worker with sink index `sink_index` until the walk is done, and returns its sink.
+fn run_worker<'scope, 'env, S, F>(
     scope: &'scope thread::Scope<'scope, 'env>,
     run: &'env Run<'env, S, F>,
     sink_index: usize,
     sink: S,
     local: Vec<Task>,
-) -> std::io::Result<thread::ScopedJoinHandle<'scope, Option<S>>>
+) -> S
 where
     S: Sink + 'env,
     F: Fn(u32) -> S + Sync + 'env,
 {
-    let extra = sink_index > run.walker.threads.max(1);
+    let guard = QuitOnPanic(&run.shared);
+    let mut worker = Worker {
+        walker: run.walker,
+        sink_index: u32::try_from(sink_index).unwrap_or(u32::MAX),
+        shared: &run.shared,
+        run,
+        scope,
+        meter: adaptive::Meter::new(run.walker.tuning.policy),
+        sink,
+        local,
+        progress: run.progress,
+        root_device: None,
+        listing: Listing::default(),
+        #[cfg(target_os = "linux")]
+        dirent_buf: Vec::new(),
+        path_buf: Vec::new(),
+        deferred: 0,
+    };
+    worker.run();
+    mem::forget(guard);
+    worker.sink
+}
 
+/// Starts a thread for the worker with sink index `sink_index`, whose sink is in `run.pool`. A
+/// refused thread leaves the sink there.
+fn spawn_worker<'scope, 'env, S, F>(
+    scope: &'scope thread::Scope<'scope, 'env>,
+    run: &'env Run<'env, S, F>,
+    sink_index: usize,
+) -> std::io::Result<()>
+where
+    S: Sink + 'env,
+    F: Fn(u32) -> S + Sync + 'env,
+{
     thread::Builder::new().spawn_scoped(scope, move || {
-        let guard = QuitOnPanic(&run.shared);
-        let mut worker = Worker {
-            walker: run.walker,
-            sink_index: u32::try_from(sink_index).unwrap_or(u32::MAX),
-            shared: &run.shared,
-            run,
-            scope,
-            meter: adaptive::Meter::new(run.walker.tuning.policy),
-            sink,
-            local,
-            progress: run.progress,
-            root_device: None,
-            listing: Listing::default(),
-            #[cfg(target_os = "linux")]
-            dirent_buf: Vec::new(),
-            path_buf: Vec::new(),
-            deferred: 0,
-        };
-        worker.run();
-        mem::forget(guard);
+        let sink = run.pool[sink_index]
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
 
-        if extra {
-            run.extras
+        if let Some(sink) = sink {
+            let sink = run_worker(scope, run, sink_index, sink, vec![]);
+            run.finished
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .push((worker.sink_index, worker.sink));
-            None
-        } else {
-            Some(worker.sink)
+                .push((u32::try_from(sink_index).unwrap_or(u32::MAX), sink));
         }
-    })
+    })?;
+
+    Ok(())
 }
 
 impl Walker {
@@ -390,6 +414,20 @@ impl Walker {
         #[cfg(target_os = "linux")]
         let budget = Budget::new(at::raise_open_file_limit(), self.max_workers());
 
+        let root_sink = sinks.pop();
+        let mut sinks = sinks.into_iter();
+        let first = sinks.next();
+
+        // Sink `i` of the workers that start later waits in the pool, which has room for the
+        // extra workers too.
+        let mut pool: Vec<Mutex<Option<S>>> =
+            (0..=self.max_workers()).map(|_| Mutex::new(None)).collect();
+        for (i, sink) in sinks.enumerate() {
+            *pool[i + 1]
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = Some(sink);
+        }
+
         let run = Run {
             walker: self,
             shared: Shared {
@@ -402,44 +440,34 @@ impl Walker {
             progress,
             make_sink,
             workers: AtomicUsize::new(threads),
-            extras: Mutex::new(Vec::new()),
+            pool,
+            next: AtomicUsize::new(1),
+            finished: Mutex::new(Vec::new()),
             #[cfg(target_os = "linux")]
             budget,
         };
 
-        let mut root = Some(root);
-        let root_sink = sinks.pop();
-
         // Each worker owns its sink, so no two threads write next to each other in memory.
-        let mut sinks: Vec<S> = thread::scope(|s| {
-            let handles: Vec<_> = sinks
-                .into_iter()
-                .enumerate()
-                .map(|(i, sink)| {
-                    let local = if i == 0 {
-                        root.take().into_iter().map(Task::Dir).collect()
-                    } else {
-                        vec![]
-                    };
-                    spawn_worker(s, &run, i, sink, local).expect("failed to spawn a walk worker")
-                })
-                .collect();
-
-            handles
-                .into_iter()
-                .filter_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-                .collect()
+        // Worker 0 runs on this thread; a tree with no work to share never starts another.
+        let first = thread::scope(|s| {
+            first.map(|sink| run_worker(s, &run, 0, sink, vec![Task::Dir(root)]))
         });
 
-        sinks.extend(root_sink);
-
-        let mut extras = run
-            .extras
+        let mut all: Vec<(u32, S)> = run
+            .finished
             .into_inner()
             .unwrap_or_else(PoisonError::into_inner);
-        extras.sort_unstable_by_key(|(index, _)| *index);
-        sinks.extend(extras.into_iter().map(|(_, sink)| sink));
-        sinks
+        all.extend(first.map(|sink| (0, sink)));
+        all.extend(root_sink.map(|sink| (root_sink_index, sink)));
+
+        // Workers that never started still have their sinks, which keep the sink numbering whole.
+        for (i, slot) in run.pool.into_iter().enumerate() {
+            let sink = slot.into_inner().unwrap_or_else(PoisonError::into_inner);
+            all.extend(sink.map(|sink| (u32::try_from(i).unwrap_or(u32::MAX), sink)));
+        }
+
+        all.sort_unstable_by_key(|(index, _)| *index);
+        all.into_iter().map(|(_, sink)| sink).collect()
     }
 
     /// Records the root and returns the job that reads it.
@@ -606,19 +634,51 @@ where
             // Sink `threads` is the root's, so the extra workers follow it.
             let index = k + 1;
             let sink = (run.make_sink)(u32::try_from(index).unwrap_or(u32::MAX));
+            *run.pool[index]
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(sink);
             self.walker.tuning.grown.fetch_add(1, Ordering::Relaxed);
 
             // A refused thread leaves the walk with the workers it has.
-            if spawn_worker(self.scope, run, index, sink, vec![]).is_err() {
+            if spawn_worker(self.scope, run, index).is_err() {
                 run.workers.store(cap, Ordering::Relaxed);
                 return;
             }
         }
     }
 
-    /// Moves half of the local stack to the shared queue when a worker is idle.
+    /// Starts the next worker that has not started yet, if there is one. Returns whether it did.
+    fn start_helper(&self) -> bool {
+        let run = self.run;
+        let threads = self.walker.threads.max(1);
+
+        if run.next.load(Ordering::Relaxed) >= threads {
+            return false;
+        }
+
+        let index = run.next.fetch_add(1, Ordering::Relaxed);
+        if index >= threads {
+            return false;
+        }
+
+        if spawn_worker(self.scope, run, index).is_err() {
+            // The sink stays in the pool; the walk goes on with the workers it has.
+            run.next.store(threads, Ordering::Relaxed);
+            return false;
+        }
+
+        self.walker.tuning.started.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Moves half of the local stack to the shared queue when a worker is idle, or when one can
+    /// be started for it.
     fn share(&mut self) {
-        if self.local.len() < 2 || self.shared.idle.load(Ordering::Relaxed) == 0 {
+        if self.local.len() < 2 {
+            return;
+        }
+
+        if self.shared.idle.load(Ordering::Relaxed) == 0 && !self.start_helper() {
             return;
         }
 
@@ -745,23 +805,23 @@ where
         while at < hi {
             let end = (at + block).min(hi);
 
-            if self.shared.idle.load(Ordering::Relaxed) > 0 {
-                let rest = hi - end;
+            let rest = hi - end;
+            let idle = self.shared.idle.load(Ordering::Relaxed) > 0;
 
-                if rest >= 2 * block {
-                    let mid = end + rest / 2;
-                    tuning.splits.fetch_add(1, Ordering::Relaxed);
-                    self.give(Task::Chunk(Chunk {
-                        dir: Arc::clone(dir),
-                        lo: mid,
-                        hi,
-                    }));
-                    hi = mid;
-                }
-
-                // Subdirectories found so far can start elsewhere meanwhile.
-                self.share();
+            // Another worker takes the second half of what is left, or starts to.
+            if rest >= 2 * block && (idle || self.start_helper()) {
+                let mid = end + rest / 2;
+                tuning.splits.fetch_add(1, Ordering::Relaxed);
+                self.give(Task::Chunk(Chunk {
+                    dir: Arc::clone(dir),
+                    lo: mid,
+                    hi,
+                }));
+                hi = mid;
             }
+
+            // Subdirectories found so far can start elsewhere meanwhile.
+            self.share();
 
             let n = end.min(hi) - at;
             kept += self.walk_entries(dir, at, at + n);
@@ -1430,6 +1490,39 @@ mod test {
 
         assert_eq!(records.len(), 2, "{records:?}");
         assert_eq!(ignored, 3);
+    }
+
+    /// How many workers a walk with `threads` workers starts.
+    fn started(root: &Path, threads: usize) -> usize {
+        let walker = Walker {
+            root: root.to_path_buf(),
+            rules: Rules::root(rules::Options::new(true, true), Override::empty(), None),
+            follow_links: false,
+            same_file_system: false,
+            max_depth: None,
+            threads,
+            max_threads: threads,
+            filter: None,
+            count_ignored: false,
+            fields: Fields::default(),
+            tuning: Tuning::default(),
+        };
+
+        let sinks = walker.run(|_| Collect::default(), None);
+        assert_eq!(sinks.len(), threads + 1, "a sink per worker and the root's");
+        walker.tuning.started.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn workers_start_when_there_is_work_for_them() {
+        // Nothing to share: the first worker walks a directory of files alone.
+        let flat = tree(3, 0, 0);
+        assert_eq!(started(&flat.path().canonicalize().unwrap(), 4), 0);
+
+        // Subdirectories make work for others, but never more workers than `threads`.
+        let nested = tree(3, 30, 3);
+        let started = started(&nested.path().canonicalize().unwrap(), 4);
+        assert!((1..=3).contains(&started), "started {started}");
     }
 
     #[test]
