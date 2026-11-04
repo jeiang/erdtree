@@ -172,10 +172,11 @@ impl Tree {
         let is_dir: Vec<bool> = cols.file_type.iter().map(|kind| kind.is_dir()).collect();
         let children = Children::from_runs(n, &std::mem::take(&mut cols.runs));
 
-        // Nothing is hidden by a filter, so the display order can stop at `--level`.
+        // Nothing is hidden by a filter, so the display order can stop at `--level`. The link
+        // theme of `--follow` is stateful and must see the entries below it, too.
         let min_size = ctx.min_size.map(|m| m.value).filter(|&v| v > 0);
         let filtered = ctx.prune || ctx.pattern.is_some() || ctx.dirs_only || min_size.is_some();
-        let cap = if filtered {
+        let cap = if filtered || ctx.follow {
             u32::MAX
         } else {
             u32::try_from(ctx.level()).unwrap_or(u32::MAX)
