@@ -264,3 +264,74 @@ impl Listing {
         self.name(i).first() == Some(&b'.')
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod test {
+    use super::*;
+    use crate::fs::at;
+    use std::{collections::BTreeSet, fs};
+
+    #[test]
+    fn lists_what_read_dir_lists_in_inode_order_when_large() {
+        let dir = tempfile::tempdir().unwrap();
+
+        for i in 0..INODE_ORDER_MIN + 50 {
+            fs::write(dir.path().join(format!("f{i}")), "").unwrap();
+        }
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join(".gitignore"), "").unwrap();
+
+        let fd = at::open_dir_path(dir.path()).unwrap();
+        let mut listing = Listing::default();
+        let mut found = Found::default();
+        listing.fill(Arc::new(fd), &mut Vec::new(), &mut found);
+
+        assert!(found.has_git_ignore && !found.has_git_dir);
+
+        let got: BTreeSet<Vec<u8>> = (0..listing.len())
+            .map(|i| listing.name(i).to_vec())
+            .collect();
+        let want: BTreeSet<Vec<u8>> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_encoded_bytes())
+            .collect();
+        assert_eq!(got, want);
+        assert_eq!(listing.len(), INODE_ORDER_MIN + 52);
+
+        let fd = listing.dir.as_ref().unwrap().as_raw_fd();
+        let inodes: Vec<u64> = (0..listing.len()).map(|i| listing.ents[i].ino).collect();
+
+        if at::inode_order_is_useless(fd) {
+            // tmpfs, FUSE, network file systems: the order of the directory is kept.
+            return;
+        }
+        assert!(
+            inodes.is_sorted(),
+            "large directories are visited in inode order"
+        );
+
+        // Entry and name still belong together after sorting.
+        for i in 0..listing.len() {
+            let md = fs::symlink_metadata(dir.path().join(listing.os_name(i))).unwrap();
+            assert_eq!(
+                std::os::unix::fs::MetadataExt::ino(&md),
+                listing.ents[i].ino
+            );
+        }
+    }
+
+    #[test]
+    fn small_directories_are_listed_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..20 {
+            fs::write(dir.path().join(format!("f{i}")), "").unwrap();
+        }
+
+        let mut listing = Listing::default();
+        let fd = at::open_dir_path(dir.path()).unwrap();
+        listing.fill(Arc::new(fd), &mut Vec::new(), &mut Found::default());
+
+        assert_eq!(listing.len(), 20);
+        assert!((0..20).all(|i| listing.kind(i) == Some(Kind::File) || listing.kind(i).is_none()));
+    }
+}
