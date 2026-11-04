@@ -271,7 +271,7 @@ mod spec {
     use super::*;
 
     /// Largest tree checked by the exhaustive tests.
-    pub const MAX_TEST: usize = 5;
+    pub const MAX_TEST: usize = 6;
 
     /// Node index from a position.
     fn id(i: usize) -> u32 {
@@ -364,13 +364,32 @@ mod spec {
         assert_eq!(listed, n - 1);
     }
 
+    /// `sort_each` sorts every child list by the comparator and keeps its members, for any
+    /// number of threads.
+    #[cfg(test)]
+    pub fn sort_each_sorts_every_list(parent: &[u32], threads: usize) {
+        let original = Children::build(parent);
+        let mut sorted = Children::build(parent);
+        sorted.sort_each(threads, |a, b| b.cmp(&a));
+
+        for p in 0..parent.len() {
+            let mut expected = original.of(id(p)).to_vec();
+            expected.sort_by(|a, b| b.cmp(a));
+            assert_eq!(sorted.of(id(p)), expected.as_slice());
+        }
+    }
+
     /// The pre-order lists exactly the alive nodes whose ancestors are all alive, each once,
     /// root first, every node after its parent, siblings in child-list order, and every subtree
     /// contiguous.
-    pub fn preorder_is_a_valid_preorder(parent: &[u32], root: u32, alive: &[bool]) {
+    pub fn preorder_is_a_valid_preorder(
+        parent: &[u32],
+        children: &Children,
+        root: u32,
+        alive: &[bool],
+    ) {
         let n = parent.len();
-        let children = Children::build(parent);
-        let order = preorder(&children, root, alive);
+        let order = preorder(children, root, alive);
 
         let mut pos = vec![usize::MAX; n];
         for (k, &node) in order.iter().enumerate() {
@@ -478,8 +497,8 @@ mod spec {
     }
 
     /// A directory's size is the sum of the sizes of the files below it that reach it through
-    /// counted nodes only, or `None` when that sum is zero; files keep their sizes. Requires
-    /// sizes below 2^60 so the expected sum cannot overflow.
+    /// counted nodes only, saturating at `u64::MAX`, or `None` when that sum is zero; files keep
+    /// their sizes.
     pub fn aggregate_sums_counted_files(
         parent: &[u32],
         root: u32,
@@ -500,7 +519,7 @@ mod spec {
                 continue;
             }
 
-            let mut expected = 0_u64;
+            let mut expected = 0_u128;
             for f in 0..n {
                 if is_dir[f] || f == d || !has_ancestor(&anc, f, d) {
                     continue;
@@ -510,10 +529,11 @@ mod spec {
                 let reaches = (0..n)
                     .all(|m| !has_ancestor(&anc, f, m) || has_ancestor(&anc, d, m) || counted[m]);
                 if reaches {
-                    expected += files[f].unwrap_or(0);
+                    expected += u128::from(files[f].unwrap_or(0));
                 }
             }
 
+            let expected = u64::try_from(expected).unwrap_or(u64::MAX);
             assert_eq!(size[d], (expected > 0).then_some(expected));
         }
     }
@@ -713,20 +733,29 @@ mod test {
 
     #[test]
     fn exhaustive_small_trees() {
+        use super::Children;
+
         for n in 1..=spec::MAX_TEST {
             for (parent, root) in trees(n) {
                 let r = super::ix(root);
                 spec::children_partition_nodes(&parent);
 
+                // Child lists as built, and sorted (descending) as production sorts them
+                // before the pre-order.
+                let built = Children::build(&parent);
+                let mut sorted = Children::build(&parent);
+                sorted.sort_each(2, |a, b| b.cmp(&a));
+
+                // Masks with the root set: alive flags for the pre-order.
+                for mask in (0..1 << n).filter(|m| m >> r & 1 == 1) {
+                    let alive = bits(mask, n);
+                    spec::preorder_is_a_valid_preorder(&parent, &built, root, &alive);
+                    spec::preorder_is_a_valid_preorder(&parent, &sorted, root, &alive);
+                    spec::last_child_is_unique(&parent, root, &alive);
+                }
+
                 for mask in 0..1 << n {
-                    let flags = bits(mask, n);
-
-                    if flags[r] {
-                        spec::preorder_is_a_valid_preorder(&parent, root, &flags);
-                        spec::last_child_is_unique(&parent, root, &flags);
-                    }
-
-                    let is_dir = &flags;
+                    let is_dir = &bits(mask, n);
                     if !spec::only_dirs_have_children(&parent, is_dir) {
                         continue;
                     }
@@ -734,26 +763,46 @@ mod test {
                     spec::prune_removes_exactly_empty_dirs(&parent, root, is_dir);
                     spec::dirs_only_keeps_connected_dirs(&parent, root, is_dir);
 
-                    // Distinct powers of two make every subset sum distinct.
-                    let files: Vec<Option<u64>> =
+                    // Distinct powers of two make every subset sum distinct; values near
+                    // u64::MAX exercise saturation.
+                    let small: Vec<Option<u64>> =
                         (0..n).map(|i| (!is_dir[i]).then_some(1 << i)).collect();
+                    let huge: Vec<Option<u64>> = (0..n)
+                        .map(|i| (!is_dir[i]).then_some(u64::MAX - (1 << i)))
+                        .collect();
 
-                    for counted in 0..1 << n {
-                        spec::aggregate_sums_counted_files(
-                            &parent,
-                            root,
-                            &bits(counted, n),
-                            is_dir,
-                            &files,
-                        );
+                    // Whether the root is counted does not matter (it has no parent), so it
+                    // stays counted.
+                    for counted in (0..1 << n).filter(|m| m >> r & 1 == 1) {
+                        let counted = bits(counted, n);
+                        spec::aggregate_sums_counted_files(&parent, root, &counted, is_dir, &small);
+                        spec::aggregate_sums_counted_files(&parent, root, &counted, is_dir, &huge);
                     }
 
-                    let sizes: Vec<Option<u64>> = (0..n).map(|i| Some(1 << i)).collect();
-                    for threshold in 0..=1 << n {
-                        spec::hide_small_keeps_large_and_their_ancestors(
-                            &parent, root, &sizes, threshold,
-                        );
+                    // Sizes of 2^i, with and without the directories sized; thresholds at
+                    // every distinct boundary.
+                    let all_sized: Vec<Option<u64>> = (0..n).map(|i| Some(1 << i)).collect();
+                    let files_sized: Vec<Option<u64>> =
+                        (0..n).map(|i| (!is_dir[i]).then_some(1 << i)).collect();
+                    let thresholds = (0..=n).map(|i| 1_u64 << i).chain([0]);
+                    for threshold in thresholds {
+                        for sizes in [&all_sized, &files_sized] {
+                            spec::hide_small_keeps_large_and_their_ancestors(
+                                &parent, root, sizes, threshold,
+                            );
+                        }
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_sort_each() {
+        for n in 1..=spec::MAX_TEST {
+            for (parent, _) in trees(n) {
+                for threads in 1..=3 {
+                    spec::sort_each_sorts_every_list(&parent, threads);
                 }
             }
         }
@@ -832,7 +881,8 @@ mod proofs {
         let (parent, root) = any_tree::<N>();
         let alive: [bool; N] = kani::any();
         kani::assume(alive[ix(root)]);
-        spec::preorder_is_a_valid_preorder(&parent, root, &alive);
+        let children = super::Children::build(&parent);
+        spec::preorder_is_a_valid_preorder(&parent, &children, root, &alive);
     }
 
     fn last_child_is_unique<const N: usize>() {
@@ -856,11 +906,8 @@ mod proofs {
         let files: [Option<u64>; N] = kani::any();
         kani::assume(spec::only_dirs_have_children(&parent, &is_dir));
         for i in 0..N {
-            kani::assume(if is_dir[i] {
-                files[i].is_none()
-            } else {
-                files[i].is_none_or(|s| s < 1 << 60)
-            });
+            // Directories start without a size; files may have any size.
+            kani::assume(!is_dir[i] || files[i].is_none());
         }
         spec::aggregate_sums_counted_files(&parent, root, &counted, &is_dir, &files);
     }
