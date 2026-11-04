@@ -7,9 +7,11 @@
 //! depth limit, same-file-system check and symlink loop detection. Entries whose metadata cannot
 //! be read are dropped, and so are their contents.
 //!
-//! On Linux a directory is opened relative to its parent's file descriptor, read with
-//! `getdents64` into a [`Listing`] and each entry is stat'ed with `statx` relative to the open
-//! directory (see [`crate::fs::at`]). Elsewhere the walk uses `std::fs::read_dir`.
+//! On Linux and macOS a directory is opened relative to its parent's file descriptor and read
+//! into a [`Listing`]: on Linux with `getdents64`, each entry then stat'ed with `statx` relative
+//! to the open directory; on macOS with `getattrlistbulk`, which returns the metadata of the
+//! entries with their names (see [`crate::fs::at`], [`crate::fs::bulk`]). Elsewhere the walk
+//! uses `std::fs::read_dir`.
 
 use crate::fs::stat::{Fields, Kind, Stat};
 use std::{
@@ -24,9 +26,9 @@ use std::{
     time::Instant,
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::fs::at::{self, At};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::{
     fd::{AsRawFd, OwnedFd},
     unix::ffi::OsStrExt,
@@ -35,14 +37,14 @@ use std::os::{
 /// Detects workers that wait for the file system.
 mod adaptive;
 /// Bounds the descriptors that queued jobs hold.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod fds;
 /// The entries of one directory.
 mod listing;
 /// Ignore rules per directory, adapted from the `ignore` crate.
 pub mod rules;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use fds::{Budget, DirFd};
 use listing::Listing;
 use rules::{Found, Rules};
@@ -102,7 +104,7 @@ pub struct Record<'a> {
     /// Whether the entry is a symlink (followed or not).
     pub is_symlink: bool,
     /// Where to find the entry relative to its open directory; `None` for the root.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub at: Option<At<'a>>,
 }
 
@@ -120,7 +122,7 @@ impl Record<'_> {
 
     /// Whether the target of the entry, which must be a symlink, exists.
     pub fn target_exists(&self) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(at) = self.at {
             return at::target_exists(at);
         }
@@ -130,7 +132,7 @@ impl Record<'_> {
 
     /// Opens the entry for reading, following a symlink.
     pub fn open(&self) -> std::io::Result<fs::File> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(at) = self.at {
             return at::open_file(at);
         }
@@ -140,7 +142,7 @@ impl Record<'_> {
 
     /// The target of the entry, which must be a symlink.
     pub fn read_link(&self) -> std::io::Result<PathBuf> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(at) = self.at {
             return at::read_link(at);
         }
@@ -248,9 +250,9 @@ enum Me {
     /// Already stored, at this reference.
     Pushed(NodeRef),
     /// Not stored yet: whoever reads the directory stores it, below this parent. Reading the
-    /// directory first gives its metadata for free (`statx` of the open directory), instead of
-    /// a second lookup of its name.
-    #[cfg(target_os = "linux")]
+    /// directory first gives its metadata for free (`statx` or `fstat` of the open directory),
+    /// instead of a second lookup of its name.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Deferred(NodeRef),
 }
 
@@ -282,11 +284,15 @@ struct Job {
     foreign: bool,
     /// The parent directory, which the directory is opened relative to. `None` when the budget
     /// of held descriptors is spent: the directory is then opened by path.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     parent: Option<Arc<DirFd>>,
     /// Whether the directory is a followed symlink, so opening it follows the link.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     follow: bool,
+    /// Whether to list the directory with `getattrlistbulk`, which gives the metadata of its
+    /// entries, rather than `readdir`, which gives their names and types only.
+    #[cfg(target_os = "macos")]
+    bulk: bool,
 }
 
 /// Work shared between workers.
@@ -316,7 +322,7 @@ struct Run<'a, S, F> {
     /// Sinks of the workers other than worker 0, once they are done.
     finished: Mutex<Vec<(u32, S)>>,
     /// How many directory descriptors queued jobs may hold.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     budget: Arc<Budget>,
 }
 
@@ -345,8 +351,10 @@ where
         progress: run.progress,
         root_device: None,
         listing: Listing::default(),
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         dirent_buf: Vec::new(),
+        #[cfg(target_os = "macos")]
+        volumes: crate::fs::bulk::Volumes::default(),
         path_buf: Vec::new(),
         deferred: 0,
     };
@@ -411,7 +419,7 @@ impl Walker {
 
         // Parent directories stay open while their subdirectories wait, so allow many files, and
         // hold no more of them than the limit allows.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let budget = Budget::new(at::raise_open_file_limit(), self.max_workers());
 
         let root_sink = sinks.pop();
@@ -443,7 +451,7 @@ impl Walker {
             pool,
             next: AtomicUsize::new(1),
             finished: Mutex::new(Vec::new()),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             budget,
         };
 
@@ -486,7 +494,7 @@ impl Walker {
             path: &self.root,
             stat: &stat,
             is_symlink: stat.kind.is_symlink(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             at: None,
         })?;
 
@@ -503,10 +511,12 @@ impl Walker {
             depth: 0,
             rules: self.rules.add_parents(&self.root),
             foreign: false,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             parent: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             follow: true,
+            #[cfg(target_os = "macos")]
+            bulk: true,
         })
     }
 }
@@ -532,6 +542,9 @@ struct Dir {
     id: NodeRef,
     /// Depth of the directory itself.
     depth: usize,
+    /// Whether it was listed in bulk.
+    #[cfg(target_os = "macos")]
+    bulk: bool,
 }
 
 /// An entry the walk kept.
@@ -543,7 +556,7 @@ struct Kept {
     /// Whether it is a directory on another file system than the root (`-x`).
     foreign: bool,
     /// Whether it is a symlink that was followed.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     followed: bool,
 }
 
@@ -561,8 +574,11 @@ struct Worker<'scope, 'env, S, F> {
     root_device: Option<u64>,
     /// Buffers reused from directory to directory.
     listing: Listing,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     dirent_buf: Vec<u8>,
+    /// Which file systems are APFS, for bulk reads.
+    #[cfg(target_os = "macos")]
+    volumes: crate::fs::bulk::Volumes,
     path_buf: Vec<u8>,
     /// Directories the current task queued whose record their own job stores. Those jobs count
     /// them as kept (for the progress counter) when they do.
@@ -741,9 +757,9 @@ where
             return 0;
         };
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let fd = listing.dir.as_ref().map(|dir| dir.as_raw_fd());
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let fd = None;
 
         let rules =
@@ -755,6 +771,8 @@ where
             rules,
             id,
             depth: job.depth,
+            #[cfg(target_os = "macos")]
+            bulk: job.bulk,
         };
 
         let len = dir.listing.len();
@@ -855,23 +873,38 @@ where
     /// A directory the parent listed as one but that cannot be looked up (its parent is
     /// readable but not searchable, or it vanished) has no record. It counts as ignored, as an
     /// entry whose metadata cannot be read does.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
         let walker = self.walker;
         let fd = open_dir(job);
         let mut ident = None;
+        // Links to the directory, which on APFS counts its entries.
+        #[cfg(target_os = "macos")]
+        let mut links = None;
 
         let (id, foreign) = match job.me {
             Me::Pushed(id) => {
-                if walker.follow_links {
+                #[cfg(not(target_os = "macos"))]
+                let wanted = walker.follow_links;
+                #[cfg(target_os = "macos")]
+                let wanted = walker.follow_links || walker.max_workers() > 1;
+
+                if wanted {
                     let stat = fd
                         .as_ref()
                         .and_then(|fd| at::stat_fd(fd.as_raw_fd(), Fields::default()).ok());
-                    ident = stat.map(|stat| (stat.dev, stat.ino));
+                    if walker.follow_links {
+                        ident = stat.map(|stat| (stat.dev, stat.ino));
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        links = stat.map(|stat| stat.nlink);
+                    }
                 }
 
                 (id, job.foreign)
             },
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Me::Deferred(parent) => {
                 let from_fd = fd
                     .as_ref()
@@ -897,6 +930,10 @@ where
                 }
 
                 ident = Some((stat.dev, stat.ino));
+                #[cfg(target_os = "macos")]
+                {
+                    links = Some(stat.nlink);
+                }
                 let foreign = self.root_device.is_some_and(|root| stat.dev != root);
 
                 (
@@ -919,7 +956,26 @@ where
         let mut found = Found::default();
         listing.clear();
         let dir = DirFd::new(fd, Arc::clone(&self.run.budget));
+        #[cfg(target_os = "linux")]
         listing.fill(Arc::new(dir), &mut self.dirent_buf, &mut found);
+        // Contents of another file system are only counted, which needs no metadata. Neither is
+        // a bulk read worth it for a directory large enough that idle workers share its entries:
+        // it is serial, while their `fstatat` calls are not.
+        #[cfg(target_os = "macos")]
+        let bulk = job.bulk
+            && !foreign
+            && !(walker.max_workers() > 1
+                && links.is_some_and(|links| {
+                    links >= (walker.tuning.split_min as u64).saturating_mul(SHARED_DIR_FACTOR)
+                }));
+        #[cfg(target_os = "macos")]
+        listing.fill(
+            Arc::new(dir),
+            &mut self.dirent_buf,
+            bulk.then_some(&mut self.volumes),
+            walker.fields,
+            &mut found,
+        );
 
         if foreign {
             // Contents of another file system are not walked, only counted.
@@ -933,7 +989,7 @@ where
     }
 
     /// Opens and lists the directory of `job`.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
         let Me::Pushed(id) = job.me;
 
@@ -965,7 +1021,7 @@ where
     }
 
     /// Stores the record of the directory of `job`, whose records are stored by its own job.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn store_dir(&mut self, job: &Job, parent: NodeRef, stat: &Stat) -> Option<u32> {
         let name = job.path.file_name()?;
         let parent_fd = job.parent.as_deref().map(DirFd::as_raw_fd);
@@ -1001,6 +1057,10 @@ where
         let dir_len = buf.len();
 
         let mut kept = 0;
+        // Files listed and how many of them were recorded, which needs their metadata; and where
+        // the subdirectories queued here start.
+        #[cfg(target_os = "macos")]
+        let (mut files, mut recorded, queued) = (0_usize, 0_usize, self.local.len());
 
         for i in lo..hi {
             buf.truncate(dir_len);
@@ -1010,10 +1070,22 @@ where
             // name, so it is valid as an `OsStr`.
             let path = Path::new(unsafe { OsStr::from_encoded_bytes_unchecked(&buf) });
 
+            #[cfg(target_os = "macos")]
+            let file = dir.listing.kind(i).is_none_or(|kind| !kind.is_dir());
+            #[cfg(target_os = "macos")]
+            {
+                files += usize::from(file);
+            }
+
             let Some(entry) = self.visit(dir, i, path, may_descend) else {
                 continue;
             };
             kept += 1;
+
+            #[cfg(target_os = "macos")]
+            {
+                recorded += usize::from(file && entry.index.is_some());
+            }
 
             if !(entry.kind.is_dir() && may_descend) {
                 continue;
@@ -1024,16 +1096,16 @@ where
                     sink: self.sink_index,
                     index,
                 }),
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 None => {
                     self.deferred += 1;
                     Me::Deferred(dir.id)
                 },
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 None => continue,
             };
 
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             let parent = dir.listing.dir.as_ref().and_then(|parent| {
                 // A path this long cannot be opened by path, so the job needs the descriptor.
                 parent
@@ -1049,11 +1121,26 @@ where
                 depth,
                 rules: dir.rules.clone(),
                 foreign: entry.foreign,
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 parent,
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 follow: entry.followed,
+                #[cfg(target_os = "macos")]
+                bulk: dir.bulk,
             }));
+        }
+
+        // A bulk read costs more per entry than `readdir` but saves an `fstatat` per recorded
+        // file: it pays when about a third of the files are recorded. The files of the parent
+        // tell; too few of them leave the subdirectories to be listed as the parent was.
+        #[cfg(target_os = "macos")]
+        if files >= DENSITY_SAMPLE {
+            let bulk = recorded * 3 >= files;
+            for task in &mut self.local[queued..] {
+                if let Task::Dir(job) = task {
+                    job.bulk = bulk;
+                }
+            }
         }
 
         self.path_buf = buf;
@@ -1086,6 +1173,13 @@ where
                 return None;
             }
 
+            // The path-based walk opened a followed directory to compare it with the walked
+            // ones, and dropped it when that failed.
+            #[cfg(target_os = "macos")]
+            if file_type.is_dir() && listing.at(i).is_none_or(|at| at::open_file(at).is_err()) {
+                return None;
+            }
+
             Some(target)
         } else {
             None
@@ -1110,9 +1204,14 @@ where
             }
         }
 
-        // A directory that will be read is stored by the job that reads it.
+        // A directory that will be read is stored by the job that reads it. On macOS, one whose
+        // path does not fit in `PATH_MAX` cannot be read, as erdtree once opened it by path.
         #[cfg(target_os = "linux")]
-        if reported.is_dir() && may_descend && stat.is_none() && followed.is_none() {
+        let readable = true;
+        #[cfg(target_os = "macos")]
+        let readable = at::fits_path_max(path.as_os_str().len());
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if reported.is_dir() && may_descend && stat.is_none() && followed.is_none() && readable {
             return Some(Kept {
                 index: None,
                 kind: Kind::Dir,
@@ -1135,6 +1234,11 @@ where
             is_symlink,
             #[cfg(target_os = "linux")]
             at: listing.at(i),
+            // Beyond `PATH_MAX` the path-based calls fail, as they once did.
+            #[cfg(target_os = "macos")]
+            at: listing
+                .at(i)
+                .filter(|_| at::fits_path_max(path.as_os_str().len())),
         })?;
 
         let foreign = may_descend
@@ -1147,7 +1251,7 @@ where
             index: Some(index),
             kind: stat.kind,
             foreign,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             followed: is_symlink && walker.follow_links,
         })
     }
@@ -1155,7 +1259,7 @@ where
 
 /// Metadata of the directory of `job` looked up by name in its parent, or by path when the job
 /// holds no descriptor of the parent.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn lstat_in_parent(job: &Job, fields: Fields) -> Option<Stat> {
     let Some(parent) = &job.parent else {
         return at::lstat_path(&job.path, fields).ok();
@@ -1169,15 +1273,31 @@ fn lstat_in_parent(job: &Job, fields: Fields) -> Option<Stat> {
 
 /// How often opening a directory is retried when the process or system is out of descriptors,
 /// and the longest wait between tries.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const OPEN_RETRIES: u32 = 100;
+
+/// How many files a directory must have listed before they tell how to list its subdirectories;
+/// with fewer, they are listed as the directory was.
+#[cfg(target_os = "macos")]
+const DENSITY_SAMPLE: usize = 8;
+
+/// A directory with this many times the entries that split it is listed with `readdir` when
+/// several workers may share it.
+#[cfg(target_os = "macos")]
+const SHARED_DIR_FACTOR: u64 = 16;
 
 /// Opens the directory of `job`: relative to its parent when it has one, else by path. Running
 /// out of descriptors (`EMFILE`, `ENFILE`) is retried for a while, as other workers close theirs;
 /// only then the directory counts as unreadable. The budget (see [`fds`]) keeps the walk from
 /// causing this by itself, except for paths too long to open by path.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn open_dir(job: &Job) -> Option<OwnedFd> {
+    // The path-based walk could not read a directory whose path does not fit.
+    #[cfg(target_os = "macos")]
+    if !at::fits_path_max(job.path.as_os_str().len()) {
+        return None;
+    }
+
     for attempt in 1..=OPEN_RETRIES {
         match open_dir_once(job) {
             Err(e) if matches!(e.raw_os_error(), Some(libc::EMFILE | libc::ENFILE)) => {
@@ -1190,7 +1310,7 @@ fn open_dir(job: &Job) -> Option<OwnedFd> {
     None
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn open_dir_once(job: &Job) -> std::io::Result<OwnedFd> {
     if let Some(parent) = &job.parent {
         let name = job
@@ -1231,13 +1351,13 @@ fn open_dir_once(job: &Job) -> std::io::Result<OwnedFd> {
 /// Whether the directory `target` (a followed symlink's target) is one of the walked directories
 /// that lead to it. Compares device and inode numbers, so it also works for paths longer than
 /// `PATH_MAX`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn is_loop(rules: &Rules, _path: &Path, target: &Stat) -> bool {
     rules.is_walked((target.dev, target.ino))
 }
 
 /// Whether the directory at `path` is one of the walked directories that lead to it.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn is_loop(rules: &Rules, path: &Path, _target: &Stat) -> bool {
     let Ok(child) = same_file::Handle::from_path(path) else {
         // Upstream reports the error, which drops the entry.

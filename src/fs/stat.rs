@@ -74,7 +74,7 @@ impl Kind {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Kind {
     /// The kind encoded in the `S_IFMT` bits of a Unix mode.
     pub const fn from_mode(mode: u32) -> Self {
@@ -216,7 +216,7 @@ impl Stat {
 
 /// A timestamp as the kernel reports it: seconds since the epoch (negative before it) and
 /// nanoseconds.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn system_time(secs: i64, nanos: u32) -> Option<SystemTime> {
     use std::time::Duration;
 

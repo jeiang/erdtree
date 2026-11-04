@@ -7,12 +7,18 @@ use crate::{
     styles::{self, PLACEHOLDER},
     tree::node::Node,
 };
-use chrono::{DateTime, Local};
+use chrono::DateTime;
+#[cfg(not(target_os = "macos"))]
+use chrono::Local;
 use nu_ansi_term::Style;
 use std::time::SystemTime;
 
 /// Timestamps without chrono's per-row conversion.
 mod clock;
+
+/// The local time zone as chrono finds it, without linking CoreFoundation.
+#[cfg(target_os = "macos")]
+mod zone;
 
 /// Width of the timestamp column.
 const TIME_WIDTH: usize = 12;
@@ -201,7 +207,17 @@ impl Long {
 fn chrono_format(out: &mut Vec<u8>, time: SystemTime, format: time::Format) {
     use std::io::Write;
 
+    #[cfg(not(target_os = "macos"))]
     let dt = DateTime::<Local>::from(time);
+
+    #[cfg(target_os = "macos")]
+    let dt = {
+        let utc = DateTime::<chrono::Utc>::from(time);
+        let offset = chrono::FixedOffset::east_opt(zone::local_offset(utc.timestamp()))
+            .expect("offsets are checked by local_offset");
+        utc.with_timezone(&offset)
+    };
+
     let _ = match format {
         time::Format::Default => write!(out, "{}", dt.format("%d %h %H:%M %g")),
         time::Format::Iso => write!(out, "{}", dt.format("%Y-%m-%d %H:%M:%S")),

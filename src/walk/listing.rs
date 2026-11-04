@@ -6,13 +6,15 @@ use super::rules::Found;
 use crate::fs::stat::{Fields, Kind, Stat};
 use std::ffi::OsStr;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::fds::DirFd;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::fs::at::{self, At};
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
+use crate::fs::bulk;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::{ffi::CStr, os::unix::ffi::OsStrExt, path::Path, sync::Arc};
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use std::{fs, path::Path};
 
 /// Directories with at least this many entries are visited in inode order (when that helps).
@@ -46,9 +48,13 @@ pub struct Listing {
     /// Entries the directory listed that cannot be used (the read failed for them).
     pub unusable: usize,
     /// The open directory, which `statx` of the entries is relative to.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub dir: Option<Arc<DirFd>>,
-    #[cfg(not(target_os = "linux"))]
+    /// Metadata of each entry without following a symlink, as far as it came with the listing
+    /// (never for a directory).
+    #[cfg(target_os = "macos")]
+    known: Vec<Option<Stat>>,
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     std: Vec<fs::DirEntry>,
 }
 
@@ -63,11 +69,13 @@ impl Listing {
         self.names.clear();
         self.ents.clear();
         self.unusable = 0;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.dir = None;
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        self.known.clear();
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         self.std.clear();
     }
 
@@ -163,6 +171,129 @@ impl Listing {
         self.dir = Some(dir);
     }
 
+    /// Metadata of entry `i` without following a symlink.
+    pub fn lstat(&self, i: usize, _path: &Path, fields: Fields) -> Option<Stat> {
+        at::stat_at(self.at(i)?, false, fields).ok()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Listing {
+    /// Reads every entry of `dir` and notes ignore-relevant names in `found`. With `volumes`
+    /// (which caches which file systems are APFS), the entries are read with `getattrlistbulk`
+    /// through `buf`, with the metadata of each entry but a directory (the timestamps in
+    /// `fields`); without, with `readdir`, names and types only. Entries listed before an I/O
+    /// error are kept.
+    pub fn fill(
+        &mut self,
+        dir: Arc<DirFd>,
+        buf: &mut Vec<u8>,
+        volumes: Option<&mut bulk::Volumes>,
+        fields: Fields,
+        found: &mut Found,
+    ) {
+        let fd = dir.as_raw_fd();
+        self.dir = Some(dir);
+
+        let Some(volumes) = volumes else {
+            self.fill_readdir(fd, found);
+            return;
+        };
+
+        if buf.len() < bulk::BUF_LEN {
+            buf.resize(bulk::BUF_LEN, 0);
+        }
+
+        let req = bulk::Request::new(fields);
+        let mut full = false;
+        let mut seen = 0;
+
+        while !full {
+            let read = bulk::read(fd, &req, volumes, buf, |entry| {
+                if full {
+                    return;
+                }
+                // Listed, but `lstat` of it would fail: like an entry whose metadata cannot be
+                // read, it counts as skipped.
+                let Some(entry) = entry else {
+                    self.unusable += 1;
+                    return;
+                };
+
+                if entry.name[0] == b'.' {
+                    found.note(OsStr::from_bytes(entry.name));
+                }
+
+                full = !self.push(entry.name, entry.kind);
+                if !full {
+                    self.known.push(entry.stat);
+                }
+            });
+
+            match read {
+                Ok(n) if n > 0 => seen += n,
+                // A directory that can be read but not searched lists with `readdir` only.
+                Err(e) if seen == 0 && e.raw_os_error() == Some(libc::EACCES) => {
+                    self.fill_readdir(fd, found);
+                    break;
+                },
+                _ => break,
+            }
+        }
+    }
+
+    /// Lists the directory open as `fd` with `readdir`: names and types, without metadata.
+    fn fill_readdir(&mut self, fd: std::os::fd::RawFd, found: &mut Found) {
+        // SAFETY: `fd` is open; the duplicate is owned by the stream from here on.
+        let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if dup < 0 {
+            return;
+        }
+        // SAFETY: `dup` is an open directory descriptor.
+        let stream = unsafe { libc::fdopendir(dup) };
+        if stream.is_null() {
+            // SAFETY: `dup` is open and owned here.
+            unsafe { libc::close(dup) };
+            return;
+        }
+
+        loop {
+            // SAFETY: `stream` is an open directory stream.
+            let ent = unsafe { libc::readdir(stream) };
+            if ent.is_null() {
+                break;
+            }
+            // SAFETY: `readdir` returned a valid entry, whose name is NUL-terminated.
+            let (name, d_type) = unsafe { (CStr::from_ptr((*ent).d_name.as_ptr()), (*ent).d_type) };
+            let name = name.to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+
+            if name.first() == Some(&b'.') {
+                found.note(OsStr::from_bytes(name));
+            }
+            if !self.push(name, Kind::from_dtype(d_type)) {
+                break;
+            }
+        }
+
+        // SAFETY: `stream` is open and owned here.
+        unsafe { libc::closedir(stream) };
+    }
+
+    /// Metadata of entry `i` without following a symlink: what the listing gave, else `fstatat`.
+    pub fn lstat(&self, i: usize, _path: &Path, fields: Fields) -> Option<Stat> {
+        if let Some(&Some(stat)) = self.known.get(i) {
+            return Some(stat);
+        }
+
+        at::stat_at(self.at(i)?, false, fields).ok()
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl Listing {
     /// Entry `i` as the target of a relative system call.
     pub fn at(&self, i: usize) -> Option<At<'_>> {
         let e = &self.ents[i];
@@ -178,13 +309,15 @@ impl Listing {
         })
     }
 
-    /// Metadata of entry `i` without following a symlink.
-    pub fn lstat(&self, i: usize, _path: &Path, fields: Fields) -> Option<Stat> {
-        at::stat_at(self.at(i)?, false, fields).ok()
-    }
-
     /// Metadata of entry `i`, following a symlink.
-    pub fn stat(&self, i: usize, _path: &Path, fields: Fields) -> Option<Stat> {
+    pub fn stat(&self, i: usize, path: &Path, fields: Fields) -> Option<Stat> {
+        #[cfg(target_os = "macos")]
+        if !at::fits_path_max(path.as_os_str().len()) {
+            return None;
+        }
+        #[cfg(target_os = "linux")]
+        let _ = path;
+
         at::stat_at(self.at(i)?, true, fields).ok()
     }
 
@@ -194,7 +327,7 @@ impl Listing {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl Listing {
     /// Reads every entry of the directory at `path`. Returns `false` when it cannot be read.
     pub fn fill(&mut self, path: &Path, found: &mut Found) -> bool {

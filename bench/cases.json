@@ -1,0 +1,516 @@
+{
+ "corpus_root": "~/.cache/erd-bench/corpus",
+ "ref_bin": "~/.cache/erd-bench/ref/erd",
+ "common_args": [
+  "--no-config"
+ ],
+ "env": {
+  "LS_COLORS": "rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=00:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.gz=01;31:*.png=01;35:*.json=00;33:*.md=00;36:*.rs=00;91:*.txt=00;37"
+ },
+ "cases": [
+  {
+   "id": "walk-wide",
+   "tag": "walk",
+   "args": [
+    "wide"
+   ]
+  },
+  {
+   "id": "walk-tree",
+   "tag": "walk",
+   "args": [
+    "tree"
+   ]
+  },
+  {
+   "id": "walk-smalldirs",
+   "tag": "walk",
+   "args": [
+    "smalldirs"
+   ]
+  },
+  {
+   "id": "walk-real",
+   "tag": "walk",
+   "args": [
+    "real"
+   ]
+  },
+  {
+   "id": "walk-repo",
+   "tag": "walk",
+   "args": [
+    "repo"
+   ]
+  },
+  {
+   "id": "walk-deep",
+   "tag": "walk",
+   "args": [
+    "deep"
+   ]
+  },
+  {
+   "id": "walk-tiny",
+   "tag": "walk",
+   "args": [
+    "tiny"
+   ]
+  },
+  {
+   "id": "t1-wide",
+   "tag": "threads1",
+   "args": [
+    "-T",
+    "1",
+    "wide"
+   ]
+  },
+  {
+   "id": "t1-tree",
+   "tag": "threads1",
+   "args": [
+    "-T",
+    "1",
+    "tree"
+   ]
+  },
+  {
+   "id": "t1-smalldirs",
+   "tag": "threads1",
+   "args": [
+    "-T",
+    "1",
+    "smalldirs"
+   ]
+  },
+  {
+   "id": "t1-real",
+   "tag": "threads1",
+   "args": [
+    "-T",
+    "1",
+    "real"
+   ]
+  },
+  {
+   "id": "t1-repo",
+   "tag": "threads1",
+   "args": [
+    "-T",
+    "1",
+    "repo"
+   ]
+  },
+  {
+   "id": "t1-tiny",
+   "tag": "threads1",
+   "args": [
+    "-T",
+    "1",
+    "tiny"
+   ]
+  },
+  {
+   "id": "long-tree",
+   "tag": "long",
+   "args": [
+    "-l",
+    "tree"
+   ]
+  },
+  {
+   "id": "long-real-all",
+   "tag": "long",
+   "args": [
+    "-l",
+    "--group",
+    "--ino",
+    "--nlink",
+    "--octal",
+    "real"
+   ]
+  },
+  {
+   "id": "long-wide-iso",
+   "tag": "long",
+   "args": [
+    "-l",
+    "--time-format",
+    "iso",
+    "wide"
+   ]
+  },
+  {
+   "id": "long-smalldirs-access-H",
+   "tag": "long",
+   "args": [
+    "-l",
+    "--time",
+    "access",
+    "-H",
+    "smalldirs"
+   ]
+  },
+  {
+   "id": "long-repo-strict-create",
+   "tag": "long",
+   "args": [
+    "-l",
+    "--time-format",
+    "iso-strict",
+    "--time",
+    "create",
+    "repo"
+   ]
+  },
+  {
+   "id": "long-links",
+   "tag": "long",
+   "args": [
+    "-l",
+    "links"
+   ]
+  },
+  {
+   "id": "flat-wide",
+   "tag": "flat",
+   "args": [
+    "-y",
+    "flat",
+    "wide"
+   ]
+  },
+  {
+   "id": "iflat-real",
+   "tag": "flat",
+   "args": [
+    "-y",
+    "iflat",
+    "real"
+   ]
+  },
+  {
+   "id": "flat-tree-H",
+   "tag": "flat",
+   "args": [
+    "-y",
+    "flat",
+    "-H",
+    "tree"
+   ]
+  },
+  {
+   "id": "inverted-real",
+   "tag": "flat",
+   "args": [
+    "-y",
+    "inverted",
+    "real"
+   ]
+  },
+  {
+   "id": "flat-smalldirs-dirfirst",
+   "tag": "flat",
+   "args": [
+    "-y",
+    "flat",
+    "--dir-order",
+    "first",
+    "smalldirs"
+   ]
+  },
+  {
+   "id": "inverted-deep",
+   "tag": "flat",
+   "args": [
+    "-y",
+    "inverted",
+    "deep"
+   ]
+  },
+  {
+   "id": "regex-real",
+   "tag": "filter",
+   "args": [
+    "-p",
+    "\\.rs$",
+    "real"
+   ]
+  },
+  {
+   "id": "glob-real",
+   "tag": "filter",
+   "args": [
+    "--glob",
+    "-p",
+    "*.toml",
+    "real"
+   ]
+  },
+  {
+   "id": "iglob-tree-file",
+   "tag": "filter",
+   "args": [
+    "--iglob",
+    "-p",
+    "*a*",
+    "-t",
+    "file",
+    "tree"
+   ]
+  },
+  {
+   "id": "dirsonly-real",
+   "tag": "filter",
+   "args": [
+    "--dirs-only",
+    "real"
+   ]
+  },
+  {
+   "id": "prune-regex-real",
+   "tag": "filter",
+   "args": [
+    "-P",
+    "-p",
+    "lib",
+    "real"
+   ]
+  },
+  {
+   "id": "minsize-real",
+   "tag": "filter",
+   "args": [
+    "--min-size",
+    "100KB",
+    "real"
+   ]
+  },
+  {
+   "id": "level2-real",
+   "tag": "filter",
+   "args": [
+    "-L",
+    "2",
+    "real"
+   ]
+  },
+  {
+   "id": "exclude-smalldirs",
+   "tag": "filter",
+   "args": [
+    "--exclude",
+    "lib",
+    "smalldirs"
+   ]
+  },
+  {
+   "id": "travdepth3-real",
+   "tag": "filter",
+   "args": [
+    "--traversal-depth",
+    "3",
+    "real"
+   ]
+  },
+  {
+   "id": "summarize-real",
+   "tag": "filter",
+   "args": [
+    "--summarize",
+    "real"
+   ]
+  },
+  {
+   "id": "line-text",
+   "tag": "content",
+   "args": [
+    "-d",
+    "line",
+    "text"
+   ]
+  },
+  {
+   "id": "word-text",
+   "tag": "content",
+   "args": [
+    "-d",
+    "word",
+    "text"
+   ]
+  },
+  {
+   "id": "line-text-t1",
+   "tag": "content",
+   "args": [
+    "-d",
+    "line",
+    "-T",
+    "1",
+    "text"
+   ]
+  },
+  {
+   "id": "line-repo",
+   "tag": "content",
+   "args": [
+    "-d",
+    "line",
+    "repo"
+   ]
+  },
+  {
+   "id": "word-smalldirs",
+   "tag": "content",
+   "args": [
+    "-d",
+    "word",
+    "smalldirs"
+   ]
+  },
+  {
+   "id": "logical-name-real",
+   "tag": "sort_metric",
+   "args": [
+    "-d",
+    "logical",
+    "-s",
+    "name",
+    "real"
+   ]
+  },
+  {
+   "id": "block-rsize-tree",
+   "tag": "sort_metric",
+   "args": [
+    "-d",
+    "block",
+    "-s",
+    "rsize",
+    "tree"
+   ]
+  },
+  {
+   "id": "nameci-wide",
+   "tag": "sort_metric",
+   "args": [
+    "-s",
+    "nameci",
+    "wide"
+   ]
+  },
+  {
+   "id": "mod-real",
+   "tag": "sort_metric",
+   "args": [
+    "-s",
+    "mod",
+    "real"
+   ]
+  },
+  {
+   "id": "human-si-real",
+   "tag": "sort_metric",
+   "args": [
+    "-H",
+    "-u",
+    "si",
+    "real"
+   ]
+  },
+  {
+   "id": "rnameci-dirlast-smalldirs",
+   "tag": "sort_metric",
+   "args": [
+    "-s",
+    "rnameci",
+    "--dir-order",
+    "last",
+    "smalldirs"
+   ]
+  },
+  {
+   "id": "hidden-noignore-repo",
+   "tag": "sort_metric",
+   "args": [
+    "-.",
+    "-i",
+    "repo"
+   ]
+  },
+  {
+   "id": "hidden-nogit-reportignored-repo",
+   "tag": "sort_metric",
+   "args": [
+    "-.",
+    "--no-git",
+    "--report-ignored",
+    "repo"
+   ]
+  },
+  {
+   "id": "follow-links",
+   "tag": "links_color",
+   "args": [
+    "-f",
+    "links"
+   ]
+  },
+  {
+   "id": "hardlinks-links",
+   "tag": "links_color",
+   "args": [
+    "-d",
+    "logical",
+    "links"
+   ]
+  },
+  {
+   "id": "color-real",
+   "tag": "links_color",
+   "args": [
+    "-C",
+    "force",
+    "real"
+   ]
+  },
+  {
+   "id": "icons-color-real",
+   "tag": "links_color",
+   "args": [
+    "-I",
+    "-C",
+    "force",
+    "real"
+   ]
+  },
+  {
+   "id": "classify-tree",
+   "tag": "links_color",
+   "args": [
+    "-F",
+    "tree"
+   ]
+  },
+  {
+   "id": "color-long-icons-repo",
+   "tag": "links_color",
+   "args": [
+    "-C",
+    "force",
+    "-l",
+    "-I",
+    "repo"
+   ]
+  },
+  {
+   "id": "multipath-tree-smalldirs",
+   "tag": "links_color",
+   "args": [
+    "tree",
+    "smalldirs"
+   ]
+  }
+ ]
+}

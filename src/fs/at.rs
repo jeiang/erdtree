@@ -1,11 +1,17 @@
-//! Linux system calls the walk issues relative to a directory file descriptor: opening
-//! directories, reading them with `getdents64` and reading metadata with `statx`. Relative calls
-//! look up one path component instead of the whole path, and they work for paths longer than
-//! `PATH_MAX`.
+//! System calls the walk issues relative to a directory file descriptor: opening directories,
+//! reading them (`getdents64` on Linux, `getattrlistbulk` on macOS, see [`super::bulk`]) and
+//! reading metadata (`statx` on Linux, `fstatat` on macOS). Relative calls look up one path
+//! component instead of the whole path, and they work for paths longer than `PATH_MAX`.
 
 use super::stat::{Fields, Kind, Stat};
+#[cfg(target_os = "linux")]
 use std::{
-    ffi::{CStr, CString, OsString, c_char, c_int, c_long, c_void},
+    ffi::c_void,
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    time::SystemTime,
+};
+use std::{
+    ffi::{CStr, CString, OsString, c_char, c_int, c_long},
     fs::File,
     io,
     os::{
@@ -13,8 +19,6 @@ use std::{
         unix::ffi::{OsStrExt, OsStringExt},
     },
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
-    time::SystemTime,
 };
 
 /// An entry named `name` in the directory open as `dir`.
@@ -68,7 +72,10 @@ fn check(ret: c_long) -> io::Result<c_long> {
 
 /// `O_LARGEFILE` is zero on 64-bit targets. On 32-bit glibc, `openat` and `open` do not set it,
 /// and without it the kernel refuses (`EOVERFLOW`) to open a file of 2 GiB or more.
+#[cfg(target_os = "linux")]
 const DIR_FLAGS: c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_LARGEFILE;
+#[cfg(target_os = "macos")]
+const DIR_FLAGS: c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
 
 /// Opens the directory `name` of directory `dir`. A symlink is only followed with `follow`.
 pub fn open_dir_at(dir: RawFd, name: &CStr, follow: bool) -> io::Result<OwnedFd> {
@@ -111,6 +118,7 @@ fn owned(fd: c_int) -> io::Result<OwnedFd> {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// Reads directory entries of `fd` into `buf` with `getdents64`. Returns the number of bytes
 /// read; zero is the end of the directory.
 pub fn getdents(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
@@ -128,6 +136,7 @@ pub fn getdents(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
     })
 }
 
+#[cfg(target_os = "linux")]
 /// One entry of a `getdents64` buffer.
 pub struct Dirent<'a> {
     pub ino: u64,
@@ -137,6 +146,7 @@ pub struct Dirent<'a> {
     pub name: &'a [u8],
 }
 
+#[cfg(target_os = "linux")]
 /// Calls `f` with each entry of the first `len` bytes of `buf`, which `getdents` filled. A
 /// malformed record ends the walk over the buffer.
 pub fn for_each_dirent(buf: &[u8], len: usize, mut f: impl FnMut(Dirent<'_>)) {
@@ -167,6 +177,7 @@ pub fn for_each_dirent(buf: &[u8], len: usize, mut f: impl FnMut(Dirent<'_>)) {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// The layout of `struct statx_timestamp`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -176,6 +187,7 @@ struct Timestamp {
     _reserved: i32,
 }
 
+#[cfg(target_os = "linux")]
 /// The layout of `struct statx` (256 bytes on every architecture).
 #[repr(C)]
 struct Statx {
@@ -202,24 +214,38 @@ struct Statx {
     _rest: [u64; 14],
 }
 
+#[cfg(target_os = "linux")]
 const _: () = assert!(size_of::<Statx>() == 256);
 
+#[cfg(target_os = "linux")]
 const STATX_TYPE: u32 = 0x1;
+#[cfg(target_os = "linux")]
 const STATX_MODE: u32 = 0x2;
+#[cfg(target_os = "linux")]
 const STATX_NLINK: u32 = 0x4;
+#[cfg(target_os = "linux")]
 const STATX_UID: u32 = 0x8;
+#[cfg(target_os = "linux")]
 const STATX_GID: u32 = 0x10;
+#[cfg(target_os = "linux")]
 const STATX_ATIME: u32 = 0x20;
+#[cfg(target_os = "linux")]
 const STATX_MTIME: u32 = 0x40;
+#[cfg(target_os = "linux")]
 const STATX_INO: u32 = 0x100;
+#[cfg(target_os = "linux")]
 const STATX_SIZE: u32 = 0x200;
+#[cfg(target_os = "linux")]
 const STATX_BLOCKS: u32 = 0x400;
+#[cfg(target_os = "linux")]
 const STATX_BTIME: u32 = 0x800;
 
 /// Set once `statx` turned out to be unavailable (an old kernel, or a sandbox that blocks it);
 /// metadata then comes from `fstatat`.
+#[cfg(target_os = "linux")]
 static NO_STATX: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "linux")]
 /// Reads metadata of `name` in directory `dir` (`at.dir`), following a symlink only with
 /// `follow`.
 pub fn stat_at(at: At<'_>, follow: bool, fields: Fields) -> io::Result<Stat> {
@@ -227,11 +253,13 @@ pub fn stat_at(at: At<'_>, follow: bool, fields: Fields) -> io::Result<Stat> {
     stat_raw(at.dir, at.name, flags, fields)
 }
 
+#[cfg(target_os = "linux")]
 /// Reads metadata of the open file `fd` itself.
 pub fn stat_fd(fd: RawFd, fields: Fields) -> io::Result<Stat> {
     stat_raw(fd, c"", libc::AT_EMPTY_PATH, fields)
 }
 
+#[cfg(target_os = "linux")]
 fn stat_raw(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<Stat> {
     if !NO_STATX.load(Ordering::Relaxed) {
         match statx(dir, path, flags, fields) {
@@ -245,6 +273,7 @@ fn stat_raw(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result
     fstatat(dir, path, flags, fields)
 }
 
+#[cfg(target_os = "linux")]
 /// `statx` asking for the fields the walk uses.
 // The mask has few bits set, so it fits `c_long`, which is 32 bits wide on 32-bit targets and
 // 64 bits wide elsewhere: neither `as` is lossy, and `From` exists on only one of the two.
@@ -310,6 +339,7 @@ fn statx(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<St
     })
 }
 
+#[cfg(target_os = "linux")]
 /// The fallback of [`statx`]. The integer types of `stat64` differ between architectures.
 #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
 fn fstatat(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<Stat> {
@@ -356,6 +386,7 @@ fn fstatat(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<
     })
 }
 
+#[cfg(target_os = "linux")]
 /// Whether the file system of the directory open as `fd` returns directory entries in an order
 /// unrelated to inode numbers, or is remote: sorting entries by inode number would not help
 /// there. The magic numbers are those `gnulib` uses for `fts`.
@@ -415,7 +446,10 @@ pub fn read_link(at: At<'_>) -> io::Result<PathBuf> {
     }
 }
 
+#[cfg(target_os = "linux")]
 const FILE_FLAGS: c_int = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_LARGEFILE;
+#[cfg(target_os = "macos")]
+const FILE_FLAGS: c_int = libc::O_RDONLY | libc::O_CLOEXEC;
 
 /// Opens the file `at` for reading, following a symlink as `File::open` does.
 pub fn open_file(at: At<'_>) -> io::Result<File> {
@@ -427,13 +461,18 @@ pub fn open_file(at: At<'_>) -> io::Result<File> {
 }
 
 /// Whether `has_xattrs` can use `listxattrat`: not known yet, yes or no.
+#[cfg(target_os = "linux")]
 static LISTXATTRAT: AtomicU8 = AtomicU8::new(UNKNOWN);
+#[cfg(target_os = "linux")]
 const UNKNOWN: u8 = 0;
+#[cfg(target_os = "linux")]
 const SUPPORTED: u8 = 1;
+#[cfg(target_os = "linux")]
 const UNSUPPORTED: u8 = 2;
 
 /// The number of `listxattrat` (Linux 6.17), which is the same on the architectures that have
 /// the common system call numbers after 400.
+#[cfg(target_os = "linux")]
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "x86",
@@ -445,6 +484,7 @@ const UNSUPPORTED: u8 = 2;
     target_arch = "loongarch64"
 ))]
 const SYS_LISTXATTRAT: Option<c_long> = Some(465);
+#[cfg(target_os = "linux")]
 #[cfg(not(any(
     target_arch = "x86_64",
     target_arch = "x86",
@@ -457,6 +497,7 @@ const SYS_LISTXATTRAT: Option<c_long> = Some(465);
 )))]
 const SYS_LISTXATTRAT: Option<c_long> = None;
 
+#[cfg(target_os = "linux")]
 /// Whether the entry `at` has extended attributes, following a symlink like `listxattr`; `None`
 /// when the kernel has no `listxattrat` (or a sandbox blocks it), so the caller must use the
 /// path-based call. A failing call means no attributes, as with `listxattr`.
@@ -518,9 +559,26 @@ pub fn raise_open_file_limit() -> usize {
             let old = limit.rlim_cur;
             limit.rlim_cur = limit.rlim_max.min(WANTED);
 
-            // Failing leaves the limit as it was.
+            // Failing leaves the limit as it was. macOS refuses more than
+            // `kern.maxfilesperproc`, which may be below the wanted number but not below
+            // `OPEN_MAX`.
             if libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) != 0 {
                 limit.rlim_cur = old;
+
+                #[cfg(target_os = "macos")]
+                {
+                    const OPEN_MAX: libc::rlim_t = 10_240;
+
+                    let mac = libc::rlimit {
+                        rlim_cur: limit.rlim_max.min(OPEN_MAX),
+                        rlim_max: limit.rlim_max,
+                    };
+                    if mac.rlim_cur > old
+                        && libc::setrlimit(libc::RLIMIT_NOFILE, &raw const mac) == 0
+                    {
+                        limit.rlim_cur = mac.rlim_cur;
+                    }
+                }
             }
         }
     }
@@ -528,6 +586,7 @@ pub fn raise_open_file_limit() -> usize {
     usize::try_from(limit.rlim_cur).unwrap_or(usize::MAX)
 }
 
+#[cfg(target_os = "linux")]
 /// Metadata of the file at `path`, without following a symlink.
 pub fn lstat_path(path: &Path, fields: Fields) -> io::Result<Stat> {
     with_path(path, |path| {
@@ -535,12 +594,96 @@ pub fn lstat_path(path: &Path, fields: Fields) -> io::Result<Stat> {
     })
 }
 
+/// Whether a path of `len` bytes fits in `PATH_MAX` (1024 on macOS, counting the NUL), so a
+/// path-based system call can take it. erdtree once read directories, followed symlinks and
+/// opened files on macOS by path only; what did not fit then is not reached relative to a
+/// descriptor either, so the output stays the same.
+#[cfg(target_os = "macos")]
+pub const fn fits_path_max(len: usize) -> bool {
+    len < 1024
+}
+
+/// Reads metadata of `name` in directory `dir` (`at.dir`), following a symlink only with
+/// `follow`.
+#[cfg(target_os = "macos")]
+pub fn stat_at(at: At<'_>, follow: bool, fields: Fields) -> io::Result<Stat> {
+    let flags = if follow { 0 } else { libc::AT_SYMLINK_NOFOLLOW };
+    fstatat(at.dir, at.name, flags, fields)
+}
+
+/// Metadata of the file at `path`, without following a symlink.
+#[cfg(target_os = "macos")]
+pub fn lstat_path(path: &Path, fields: Fields) -> io::Result<Stat> {
+    with_path(path, |path| {
+        fstatat(libc::AT_FDCWD, path, libc::AT_SYMLINK_NOFOLLOW, fields)
+    })
+}
+
+/// Reads metadata of the open file `fd` itself.
+#[cfg(target_os = "macos")]
+pub fn stat_fd(fd: RawFd, fields: Fields) -> io::Result<Stat> {
+    let mut buf = std::mem::MaybeUninit::<libc::stat>::zeroed();
+
+    retry(|| {
+        // SAFETY: `buf` is large enough for a `stat`.
+        let ret = unsafe { libc::fstat(fd, buf.as_mut_ptr()) };
+        check(c_long::from(ret))
+    })?;
+
+    // SAFETY: zero-initialized, and every field is an integer.
+    Ok(from_stat(&unsafe { buf.assume_init() }, fields))
+}
+
+/// `fstatat` of `path` relative to `dir`.
+#[cfg(target_os = "macos")]
+fn fstatat(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<Stat> {
+    let mut buf = std::mem::MaybeUninit::<libc::stat>::zeroed();
+
+    retry(|| {
+        // SAFETY: `path` is NUL-terminated and `buf` is large enough for a `stat`.
+        let ret = unsafe { libc::fstatat(dir, path.as_ptr(), buf.as_mut_ptr(), flags) };
+        check(c_long::from(ret))
+    })?;
+
+    // SAFETY: zero-initialized, and every field is an integer.
+    Ok(from_stat(&unsafe { buf.assume_init() }, fields))
+}
+
+/// A [`Stat`] with the values `std::fs::Metadata` gives for `s`; only the timestamps in `fields`
+/// are converted.
+// `std` reads `st_dev` (an `i32`) with `as u64`, which sign-extends; this does the same.
+#[cfg(target_os = "macos")]
+#[allow(clippy::cast_sign_loss)]
+fn from_stat(s: &libc::stat, fields: Fields) -> Stat {
+    let time = |wanted: bool, secs: libc::time_t, nanos: c_long| {
+        wanted
+            .then(|| super::stat::system_time(secs, u32::try_from(nanos).ok()?))
+            .flatten()
+    };
+
+    Stat {
+        kind: Kind::from_mode(u32::from(s.st_mode)),
+        mode: u32::from(s.st_mode),
+        size: s.st_size as u64,
+        blocks: s.st_blocks as u64,
+        ino: s.st_ino,
+        dev: s.st_dev as u64,
+        nlink: u64::from(s.st_nlink),
+        uid: s.st_uid,
+        gid: s.st_gid,
+        modified: time(fields.modified, s.st_mtime, s.st_mtime_nsec),
+        accessed: time(fields.accessed, s.st_atime, s.st_atime_nsec),
+        created: time(fields.created, s.st_birthtime, s.st_birthtime_nsec),
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use std::{collections::BTreeSet, fs::File};
     use std::{
-        collections::BTreeSet,
-        fs::{self, File},
+        fs,
         os::{fd::AsRawFd, unix::fs::symlink},
     };
 
@@ -605,6 +748,7 @@ mod test {
         assert!(same(&own, &Stat::from_metadata(&md, ALL)));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn fstatat_fallback_matches_statx() {
         let dir = fixture();
@@ -626,6 +770,7 @@ mod test {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn getdents_lists_what_read_dir_lists() {
         let dir = tempfile::tempdir().unwrap();
@@ -666,6 +811,7 @@ mod test {
         assert_eq!(got, want);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn dirent_parser_stops_at_malformed_records() {
         // A record of 24 bytes holding the name "ab", then one with a length that overruns the
@@ -695,7 +841,13 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let fd = open_dir_path(dir.path(), true).unwrap();
 
-        for len in [1, 255, 256, 257, 1000, 3000] {
+        // macOS refuses symlink targets of `PATH_MAX` bytes or more.
+        let longest = if cfg!(target_os = "macos") {
+            1023
+        } else {
+            3000
+        };
+        for len in [1, 255, 256, 257, 1000, longest] {
             let target = "t".repeat(len);
             let name = format!("l{len}");
             symlink(&target, dir.path().join(&name)).unwrap();
@@ -738,6 +890,7 @@ mod test {
 #[cfg(test)]
 mod test_at_calls {
     use super::*;
+    #[cfg(target_os = "linux")]
     use crate::fs::xattr;
     use std::{
         fs,
@@ -745,6 +898,7 @@ mod test_at_calls {
         os::{fd::AsRawFd, unix::fs::symlink},
     };
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn xattrs_and_targets_match_the_path_based_calls() {
         let dir = tempfile::tempdir().unwrap();

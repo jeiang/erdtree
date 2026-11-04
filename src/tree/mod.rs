@@ -8,9 +8,7 @@ use columns::{Collector, Columns, Probe};
 use count::FileCount;
 use error::Error;
 use node::{Node, cmp::SortKeys};
-use std::{
-    cmp::Ordering, convert::TryFrom, fs, result::Result as StdResult, sync::atomic::AtomicU64,
-};
+use std::{cmp::Ordering, convert::TryFrom, result::Result as StdResult, sync::atomic::AtomicU64};
 use topo::{Children, NONE, ix};
 use widths::Scope;
 
@@ -579,8 +577,10 @@ fn human_widths(file_size: &FileSize) -> (usize, usize) {
 
 /// Configures the walk from `ctx`.
 fn walker(ctx: &Context) -> Result<Walker> {
-    let root = fs::canonicalize(ctx.dir())
-        .map_err(|e| Error::DirNotFound(format!("{}: {e}", ctx.dir().display())))?;
+    let root = ctx
+        .try_dir_canonical()
+        .map_err(|e| Error::DirNotFound(format!("{}: {e}", ctx.dir().display())))?
+        .to_path_buf();
 
     if !root.is_dir() {
         return Err(Error::DirNotFound(format!(
