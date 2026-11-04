@@ -648,13 +648,18 @@ where
     /// Reads one directory, records its kept entries and queues its subdirectories. Returns the
     /// number of kept entries.
     fn read_dir(&mut self, job: Job) -> u64 {
-        let Some((id, listing, found)) = self.open(&job) else {
+        let Some((id, listing, found, ident)) = self.open(&job) else {
             return 0;
         };
 
-        let rules = job
-            .rules
-            .add_child(&job.path, Some(&found), self.walker.follow_links);
+        #[cfg(target_os = "linux")]
+        let fd = listing.dir.as_ref().map(|dir| dir.as_raw_fd());
+        #[cfg(not(target_os = "linux"))]
+        let fd = None;
+
+        let rules =
+            job.rules
+                .add_child(&job.path, Some(&found), self.walker.follow_links, ident, fd);
         let dir = Dir {
             listing,
             path: job.path,
@@ -762,12 +767,22 @@ where
     /// readable but not searchable, or it vanished) has no record. It counts as ignored, as an
     /// entry whose metadata cannot be read does.
     #[cfg(target_os = "linux")]
-    fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found)> {
+    fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
         let walker = self.walker;
         let fd = open_dir(job);
+        let mut ident = None;
 
         let (id, foreign) = match job.me {
-            Me::Pushed(id) => (id, job.foreign),
+            Me::Pushed(id) => {
+                if walker.follow_links {
+                    let stat = fd
+                        .as_ref()
+                        .and_then(|fd| at::stat_fd(fd.as_raw_fd(), Fields::default()).ok());
+                    ident = stat.map(|stat| (stat.dev, stat.ino));
+                }
+
+                (id, job.foreign)
+            },
             Me::Deferred(parent) => {
                 let from_fd = fd
                     .as_ref()
@@ -792,6 +807,7 @@ where
                     progress.fetch_add(1, Ordering::Relaxed);
                 }
 
+                ident = Some((stat.dev, stat.ino));
                 let foreign = self.root_device.is_some_and(|root| stat.dev != root);
 
                 (
@@ -824,12 +840,12 @@ where
             return None;
         }
 
-        Some((id, listing, found))
+        Some((id, listing, found, ident))
     }
 
     /// Opens and lists the directory of `job`.
     #[cfg(not(target_os = "linux"))]
-    fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found)> {
+    fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
         let Me::Pushed(id) = job.me;
 
         if job.foreign && !self.walker.count_ignored {
@@ -856,7 +872,7 @@ where
             return None;
         }
 
-        Some((id, listing, found))
+        Some((id, listing, found, None))
     }
 
     /// Stores the record of the directory of `job`, whose records are stored by its own job.
@@ -920,7 +936,10 @@ where
                     index,
                 }),
                 #[cfg(target_os = "linux")]
-                None => Me::Deferred(dir.id),
+                None => {
+                    self.deferred += 1;
+                    Me::Deferred(dir.id)
+                },
                 #[cfg(not(target_os = "linux"))]
                 None => continue,
             };
@@ -932,11 +951,6 @@ where
                     .retain(buf.len() >= fds::LONG_PATH)
                     .then(|| Arc::clone(parent))
             });
-
-            #[cfg(target_os = "linux")]
-            if matches!(me, Me::Deferred(_)) {
-                self.deferred += 1;
-            }
 
             self.shared.pending.fetch_add(1, Ordering::AcqRel);
             self.local.push(Task::Dir(Job {
@@ -979,7 +993,7 @@ where
             let target = listing.stat(i, path, fields)?;
             file_type = target.kind;
 
-            if file_type.is_dir() && is_loop(&dir.rules, path) {
+            if file_type.is_dir() && is_loop(&dir.rules, path, &target) {
                 return None;
             }
 
@@ -1125,8 +1139,17 @@ fn open_dir_once(job: &Job) -> std::io::Result<OwnedFd> {
     at::open_dir_path(&job.path, job.follow)
 }
 
+/// Whether the directory `target` (a followed symlink's target) is one of the walked directories
+/// that lead to it. Compares device and inode numbers, so it also works for paths longer than
+/// `PATH_MAX`.
+#[cfg(target_os = "linux")]
+fn is_loop(rules: &Rules, _path: &Path, target: &Stat) -> bool {
+    rules.is_walked((target.dev, target.ino))
+}
+
 /// Whether the directory at `path` is one of the walked directories that lead to it.
-fn is_loop(rules: &Rules, path: &Path) -> bool {
+#[cfg(not(target_os = "linux"))]
+fn is_loop(rules: &Rules, path: &Path, _target: &Stat) -> bool {
     let Ok(child) = same_file::Handle::from_path(path) else {
         // Upstream reports the error, which drops the entry.
         return true;

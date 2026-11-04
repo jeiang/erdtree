@@ -8,6 +8,7 @@
 //! are dropped (`erd` never sets them), and errors while reading ignore files are dropped, as `erd`
 //! skipped them before. Matching only answers "ignored" or "not ignored".
 
+use crate::fs::stat::Kind;
 use ignore::{
     Match,
     gitignore::{Gitignore, GitignoreBuilder},
@@ -16,7 +17,7 @@ use ignore::{
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
-    fs::{File, FileType},
+    fs::File,
     io::{self, BufRead},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock, RwLock, Weak},
@@ -57,6 +58,13 @@ impl Options {
     }
 }
 
+/// Device and inode numbers of a directory.
+pub type Ident = (u64, u64);
+
+/// A directory descriptor to read ignore files relative to (on Linux), so that they are found
+/// below paths longer than `PATH_MAX` too. The value is ignored elsewhere.
+pub type DirFd = Option<i32>;
+
 /// Ignore rules for one directory and, through `parent`, all of its ancestors.
 #[derive(Clone, Debug)]
 pub struct Rules {
@@ -89,6 +97,9 @@ impl Common {
 struct Inner {
     common: Arc<Common>,
     dir: PathBuf,
+    /// Device and inode of `dir`, for symlink loop detection; `None` if unknown.
+    #[cfg(target_os = "linux")]
+    ident: Option<Ident>,
     parent: Option<Arc<Self>>,
     /// The canonical path given to [`Rules::add_parents`]; used to match against the ignore files
     /// of the root's ancestors.
@@ -159,6 +170,8 @@ impl Rules {
                     cwd,
                 }),
                 dir: PathBuf::new(),
+                #[cfg(target_os = "linux")]
+                ident: None,
                 parent: None,
                 absolute_base: None,
                 is_absolute_parent: true,
@@ -211,7 +224,7 @@ impl Rules {
                 continue;
             }
 
-            let mut inner = rules.child_inner(parent, None);
+            let mut inner = rules.child_inner(parent, None, None, None);
             inner.is_absolute_parent = true;
             inner.absolute_base = Some(Arc::clone(&absolute_base));
             // `child_inner` already looked for `.git` and `.jj`.
@@ -228,8 +241,16 @@ impl Rules {
     /// The rules of child directory `dir`, given which ignore files its listing contains. With
     /// `found` as `None` the ignore files are probed on disk. A directory without ignore files
     /// shares the rules of its parent, unless `own_rules` asks for rules of its own (symlink loop
-    /// detection lists the walked directories) or the parent is an ancestor of the root.
-    pub fn add_child(&self, dir: &Path, found: Option<&Found>, own_rules: bool) -> Self {
+    /// detection lists the walked directories) or the parent is an ancestor of the root. `ident`
+    /// identifies the directory for loop detection; `fd` is its open descriptor.
+    pub fn add_child(
+        &self,
+        dir: &Path,
+        found: Option<&Found>,
+        own_rules: bool,
+        ident: Option<Ident>,
+        fd: DirFd,
+    ) -> Self {
         let no_files = found
             .is_some_and(|f| !f.has_ignore && !f.has_git_ignore && !f.has_git_dir && !f.has_jj_dir);
 
@@ -238,39 +259,54 @@ impl Rules {
         }
 
         Self {
-            inner: Arc::new(self.child_inner(dir, found).derive()),
+            inner: Arc::new(self.child_inner(dir, found, ident, fd).derive()),
         }
     }
 
-    fn child_inner(&self, dir: &Path, found: Option<&Found>) -> Inner {
+    fn child_inner(
+        &self,
+        dir: &Path,
+        found: Option<&Found>,
+        ident: Option<Ident>,
+        fd: DirFd,
+    ) -> Inner {
+        // Loops are found by path elsewhere.
+        #[cfg(not(target_os = "linux"))]
+        let _ = ident;
+
         let opts = self.inner.opts;
         let check_vcs_dir = opts.require_git && (opts.git_ignore || opts.git_exclude);
 
         let git_type = if check_vcs_dir && found.is_none_or(|f| f.has_git_dir) {
-            dir.join(".git").metadata().ok().map(|md| md.file_type())
+            kind_in(dir, fd, ".git")
         } else {
             None
         };
-        let has_jj =
-            check_vcs_dir && found.is_none_or(|f| f.has_jj_dir) && dir.join(".jj").exists();
+        let has_jj = check_vcs_dir
+            && found.is_none_or(|f| f.has_jj_dir)
+            && kind_in(dir, fd, ".jj").is_some();
         let has_git = check_vcs_dir && (git_type.is_some() || has_jj);
 
         let ignore_matcher = if opts.ignore && found.is_none_or(|f| f.has_ignore) {
-            create_gitignore(dir, dir, ".ignore")
+            create_gitignore(dir, || open_in(dir, fd, ".ignore"))
         } else {
             Gitignore::empty()
         };
 
         let git_ignore_matcher = if opts.git_ignore && found.is_none_or(|f| f.has_git_ignore) {
-            create_gitignore(dir, dir, ".gitignore")
+            create_gitignore(dir, || open_in(dir, fd, ".gitignore"))
         } else {
             Gitignore::empty()
         };
 
         let git_exclude_matcher = if opts.git_exclude && found.is_none_or(|f| f.has_git_dir) {
-            resolve_git_commondir(dir, git_type).map_or_else(Gitignore::empty, |git_dir| {
-                create_gitignore(dir, &git_dir, "info/exclude")
-            })
+            if git_type.is_some_and(Kind::is_file) {
+                resolve_git_commondir(dir, fd).map_or_else(Gitignore::empty, |git_dir| {
+                    create_gitignore(dir, || File::open(git_dir.join("info/exclude")))
+                })
+            } else {
+                create_gitignore(dir, || open_in(dir, fd, ".git/info/exclude"))
+            }
         } else {
             Gitignore::empty()
         };
@@ -278,6 +314,8 @@ impl Rules {
         Inner {
             common: Arc::clone(&self.inner.common),
             dir: dir.to_path_buf(),
+            #[cfg(target_os = "linux")]
+            ident,
             parent: Some(Arc::clone(&self.inner)),
             absolute_base: self.inner.absolute_base.clone(),
             is_absolute_parent: false,
@@ -418,22 +456,82 @@ impl Rules {
 
     /// The directory these rules were built for, and those of its walked ancestors (not the
     /// ancestors of the root). Used for symlink loop detection.
+    #[cfg(not(target_os = "linux"))]
     pub fn walked_dirs(&self) -> impl Iterator<Item = &Path> {
         self.parents()
             .take_while(|ig| !ig.is_absolute_parent)
             .map(|ig| ig.dir.as_path())
     }
+
+    /// Whether `ident` is that of the directory these rules were built for, or of one of its
+    /// walked ancestors (not the ancestors of the root). Used for symlink loop detection; unlike
+    /// opening the directories by path, it works at any depth.
+    #[cfg(target_os = "linux")]
+    pub fn is_walked(&self, ident: Ident) -> bool {
+        self.parents()
+            .take_while(|ig| !ig.is_absolute_parent)
+            .any(|ig| ig.ident == Some(ident))
+    }
 }
 
-/// A gitignore matcher for files below `dir` from the file `name` in `dir_for_ignorefile`. I/O
-/// and syntax errors yield whatever rules were read.
-fn create_gitignore(dir: &Path, dir_for_ignorefile: &Path, name: &str) -> Gitignore {
-    let mut builder = GitignoreBuilder::new(dir);
-    let path = dir_for_ignorefile.join(name);
+/// Opens the file `name` (a relative path) of `dir`: relative to its descriptor `fd` if there is
+/// one, else by path.
+fn open_in(dir: &Path, fd: DirFd, name: &str) -> io::Result<File> {
+    #[cfg(target_os = "linux")]
+    if let Some(dir) = fd {
+        use crate::fs::at::{self, At};
 
-    // Upstream probes for existence first except on Windows.
-    if cfg!(windows) || path.exists() {
-        let _ = builder.add(path);
+        return at::with_cstr(name.as_bytes(), |name| at::open_file(At { dir, name }));
+    }
+
+    let _ = fd;
+    File::open(dir.join(name))
+}
+
+/// The type of `name` in `dir`, following a symlink; `None` if it does not exist.
+fn kind_in(dir: &Path, fd: DirFd, name: &str) -> Option<Kind> {
+    #[cfg(target_os = "linux")]
+    if let Some(dir) = fd {
+        use crate::fs::{
+            at::{self, At},
+            stat::Fields,
+        };
+
+        return at::with_cstr(name.as_bytes(), |name| {
+            at::stat_at(At { dir, name }, true, Fields::default())
+        })
+        .ok()
+        .map(|stat| stat.kind);
+    }
+
+    let _ = fd;
+    dir.join(name)
+        .metadata()
+        .ok()
+        .map(|md| Kind::from(md.file_type()))
+}
+
+/// A gitignore matcher for files below `dir` from the file `open` opens, if it exists. Like
+/// [`GitignoreBuilder::add`], whose lines it adds, it yields whatever rules were read before an
+/// I/O or syntax error.
+fn create_gitignore(dir: &Path, open: impl FnOnce() -> io::Result<File>) -> Gitignore {
+    let mut builder = GitignoreBuilder::new(dir);
+
+    if let Ok(file) = open() {
+        for (i, line) in io::BufReader::new(file).lines().enumerate() {
+            let Ok(line) = line else {
+                break;
+            };
+
+            // Match Git's handling of files that begin with the Unicode BOM.
+            let line = if i == 0 {
+                line.trim_start_matches('\u{feff}')
+            } else {
+                &line
+            };
+
+            let _ = builder.add_line(None, line);
+        }
     }
 
     builder.build().unwrap_or_else(|_| {
@@ -443,24 +541,16 @@ fn create_gitignore(dir: &Path, dir_for_ignorefile: &Path, name: &str) -> Gitign
     })
 }
 
-/// The `GIT_COMMON_DIR` of the worktree at `dir`, which may hold `info/exclude`.
-fn resolve_git_commondir(dir: &Path, git_type: Option<FileType>) -> Option<PathBuf> {
-    let git_dir = dir.join(".git");
-
-    if !git_type.is_some_and(|ft| ft.is_file()) {
-        return Some(git_dir);
-    }
-
-    let first_line = |path: &Path| -> Option<String> {
-        io::BufReader::new(File::open(path).ok()?)
-            .lines()
-            .next()?
-            .ok()
+/// The `GIT_COMMON_DIR` of the worktree at `dir`, whose `.git` is a file, which may hold
+/// `info/exclude`.
+fn resolve_git_commondir(dir: &Path, fd: DirFd) -> Option<PathBuf> {
+    let first_line = |file: io::Result<File>| -> Option<String> {
+        io::BufReader::new(file.ok()?).lines().next()?.ok()
     };
 
-    let dot_git_line = first_line(&git_dir)?;
+    let dot_git_line = first_line(open_in(dir, fd, ".git"))?;
     let real_git_dir = PathBuf::from(dot_git_line.strip_prefix("gitdir: ")?);
-    let commondir_line = first_line(&real_git_dir.join("commondir"))?;
+    let commondir_line = first_line(File::open(real_git_dir.join("commondir")))?;
 
     Some(if commondir_line.starts_with('.') {
         real_git_dir.join(commondir_line)
