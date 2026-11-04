@@ -1,19 +1,13 @@
+use super::{SizeFormat, Tree, topo::ix};
 use crate::{
-    context::Context,
     disk_usage::file_size::{DiskUsage, FileSize, byte, line_count, word_count},
-    fs::inode::Inode,
     icons,
-    styles::get_ls_colors,
-    tree::error::Error,
 };
-use ignore::DirEntry;
-use lscolors::Style as LS_Style;
 use nu_ansi_term::Style;
 use std::{
     borrow::Cow,
-    convert::TryFrom,
     ffi::OsStr,
-    fs::{FileType, Metadata},
+    fs::FileType,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -22,141 +16,103 @@ use std::{
 use crate::{
     disk_usage::file_size::block,
     fs::permissions::{FileMode, SymbolicNotation},
+    tree::error::Error,
 };
 
 /// Ordering and sorting rules for [Node].
 pub mod cmp;
 
-/// File attributes specific to Unix systems.
-#[cfg(unix)]
-pub mod unix;
-
-/// A node of [`Tree`] that can be created from a [`DirEntry`]. Any filesystem I/O and
-/// relevant system calls are expected to complete after initialization. A `Node` when `Display`ed
-/// uses ANSI colors determined by the file-type and `LS_COLORS`.
-///
-/// [`Tree`]: super::Tree
-pub struct Node {
-    dir_entry: DirEntry,
-    metadata: Metadata,
-    file_size: Option<FileSize>,
-    style: Option<Style>,
-    symlink_target: Option<PathBuf>,
-    inode: Option<Inode>,
-
-    #[cfg(unix)]
-    unix_attrs: unix::Attrs,
+/// A borrowed view of one entry of a [`Tree`]. All file-system data was read during the walk;
+/// every method here is CPU-only.
+#[derive(Clone, Copy)]
+pub struct Node<'a> {
+    tree: &'a Tree,
+    i: u32,
 }
 
-impl Node {
-    /// Initializes a new [Node].
-    pub const fn new(
-        dir_entry: DirEntry,
-        metadata: Metadata,
-        file_size: Option<FileSize>,
-        style: Option<Style>,
-        symlink_target: Option<PathBuf>,
-        inode: Option<Inode>,
-        #[cfg(unix)] unix_attrs: unix::Attrs,
-    ) -> Self {
-        Self {
-            dir_entry,
-            metadata,
-            file_size,
-            style,
-            symlink_target,
-            inode,
-            #[cfg(unix)]
-            unix_attrs,
-        }
+impl<'a> Node<'a> {
+    /// View of node `i` of `tree`.
+    pub const fn new(tree: &'a Tree, i: u32) -> Self {
+        Self { tree, i }
     }
 
-    /// Returns a reference to `file_name`. If file is a symlink then `file_name` is the name of
-    /// the symlink not the target.
-    pub fn file_name(&self) -> &OsStr {
-        self.dir_entry.file_name()
+    /// File name; for a symlink, the name of the link, not of the target.
+    pub fn file_name(self) -> &'a OsStr {
+        self.tree.cols.name(ix(self.i))
     }
 
-    pub const fn dir_entry(&self) -> &DirEntry {
-        &self.dir_entry
+    /// Depth below the root, which is depth 0.
+    pub fn depth(self) -> usize {
+        ix(self.tree.cols.depth[ix(self.i)])
     }
 
-    /// Get depth level of [Node].
-    pub fn depth(&self) -> usize {
-        self.dir_entry.depth()
-    }
-
-    /// Gets the number of blocks used by the underlying [`DirEntry`]. Returns `None` in the case of
-    /// no blocks allocated like in the case of directories.
+    /// Number of blocks allocated to the entry, if any.
     #[cfg(unix)]
-    pub fn blocks(&self) -> Option<u64> {
-        use std::os::unix::fs::MetadataExt;
-
-        let blocks = self.metadata.blocks();
-
+    pub fn blocks(self) -> Option<u64> {
+        let blocks = self.tree.cols.blocks[ix(self.i)];
         (blocks != 0).then_some(blocks)
     }
 
-    /// Timestamp of when file was last modified.
-    pub fn modified(&self) -> Option<SystemTime> {
-        self.metadata.modified().ok()
+    /// Timestamp of the last modification, if collected (sort or long view).
+    pub fn modified(self) -> Option<SystemTime> {
+        self.tree.cols.modified.get(ix(self.i)).copied().flatten()
     }
 
-    /// Timestamp of when file was created.
-    pub fn created(&self) -> Option<SystemTime> {
-        self.metadata.created().ok()
+    /// Timestamp of creation, if collected (sort or long view).
+    pub fn created(self) -> Option<SystemTime> {
+        self.tree.cols.created.get(ix(self.i)).copied().flatten()
     }
 
-    /// Timestamp of when file was last accessed.
-    pub fn accessed(&self) -> Option<SystemTime> {
-        self.metadata.accessed().ok()
+    /// Timestamp of the last access, if collected (sort or long view).
+    pub fn accessed(self) -> Option<SystemTime> {
+        self.tree.cols.accessed.get(ix(self.i)).copied().flatten()
     }
 
-    /// Gets the underlying [Inode] of the entry.
-    pub const fn inode(&self) -> Option<Inode> {
-        self.inode
-    }
-
-    /// Returns the underlying `ino` of the [`DirEntry`].
+    /// Inode number (long view).
     #[cfg(unix)]
-    pub fn ino(&self) -> Option<u64> {
-        self.inode.map(|inode| inode.ino)
+    pub fn ino(self) -> Option<u64> {
+        self.inode().map(|inode| inode.ino)
     }
 
-    /// Returns the underlying `nlink` of the [`DirEntry`].
+    /// Number of hard links to the inode (long view).
     #[cfg(unix)]
-    pub fn nlink(&self) -> Option<u64> {
-        self.inode.map(|inode| inode.nlink)
+    pub fn nlink(self) -> Option<u64> {
+        self.inode().map(|inode| inode.nlink)
     }
 
-    /// Returns `true` if node is a directory.
-    pub fn is_dir(&self) -> bool {
-        self.file_type().is_some_and(|ft| ft.is_dir())
+    #[cfg(unix)]
+    fn inode(self) -> Option<crate::fs::inode::Inode> {
+        self.tree.cols.inode.get(ix(self.i)).copied().flatten()
     }
 
-    /// Is the Node a symlink.
-    pub const fn is_symlink(&self) -> bool {
-        self.symlink_target.is_some()
+    /// Whether the entry, or the target of a followed symlink, is a directory.
+    pub fn is_dir(self) -> bool {
+        self.file_type().is_dir()
     }
 
-    /// Path to symlink target.
-    pub fn symlink_target_path(&self) -> Option<&Path> {
-        self.symlink_target.as_deref()
+    /// Whether the entry is a symlink.
+    pub fn is_symlink(self) -> bool {
+        self.symlink_target_path().is_some()
     }
 
-    /// Returns the file name of the symlink target if [Node] represents a symlink.
-    pub fn symlink_target_file_name(&self) -> Option<&OsStr> {
+    /// Target of the symlink.
+    pub fn symlink_target_path(self) -> Option<&'a Path> {
+        self.tree.cols.link_target(self.i)
+    }
+
+    /// Target of the symlink, as shown after the arrow.
+    pub fn symlink_target_file_name(self) -> Option<&'a OsStr> {
         self.symlink_target_path().map(Path::as_os_str)
     }
 
     /// The `ls -F` style indicator for the kind of entry: `@` symlink, `/` directory and, on
     /// Unix, `|` FIFO, `=` socket, `*` executable regular file.
-    pub fn indicator(&self) -> Option<&'static str> {
+    pub fn indicator(self) -> Option<&'static str> {
         if self.is_symlink() {
             return Some("@");
         }
 
-        let ft = self.file_type()?;
+        let ft = self.file_type();
 
         if ft.is_dir() {
             return Some("/");
@@ -164,7 +120,7 @@ impl Node {
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+            use std::os::unix::fs::FileTypeExt;
 
             if ft.is_fifo() {
                 return Some("|");
@@ -174,7 +130,7 @@ impl Node {
                 return Some("=");
             }
 
-            if ft.is_file() && self.metadata.permissions().mode() & 0o111 != 0 {
+            if ft.is_file() && self.tree.cols.mode[ix(self.i)] & 0o111 != 0 {
                 return Some("*");
             }
         }
@@ -182,151 +138,110 @@ impl Node {
         None
     }
 
-    /// Returns reference to underlying [`FileType`].
-    pub fn file_type(&self) -> Option<FileType> {
-        self.dir_entry.file_type()
+    /// Type of the entry, or of its target when it is a followed symlink.
+    pub fn file_type(self) -> FileType {
+        self.tree.cols.file_type[ix(self.i)]
     }
 
-    /// Returns the path to the [Node]'s parent, if any.
-    pub fn parent_path(&self) -> Option<&Path> {
-        self.path().parent()
+    /// Path relative to the root; the root's own name for the root.
+    pub fn relative_path(self) -> PathBuf {
+        self.tree.relative_path_of(self.i)
     }
 
-    /// Returns a reference to `path`. If the underlying [`DirEntry`] is a symlink then the path of
-    /// the symlink shall be returned.
-    pub fn path(&self) -> &Path {
-        self.dir_entry.path()
+    /// Raw size in the configured metric.
+    pub fn size_value(self) -> Option<u64> {
+        self.tree.cols.size[ix(self.i)]
     }
 
-    /// Gets '`file_size`'.
-    pub const fn file_size(&self) -> Option<&FileSize> {
-        self.file_size.as_ref()
+    /// Size in the configured metric and display format.
+    pub fn file_size(self) -> Option<FileSize> {
+        let value = self.size_value()?;
+        let SizeFormat {
+            disk_usage,
+            human,
+            unit,
+        } = self.tree.size_format;
+
+        Some(match disk_usage {
+            DiskUsage::Logical => FileSize::Byte(byte::Metric::new(
+                value,
+                byte::MetricKind::Logical,
+                unit,
+                human,
+            )),
+            DiskUsage::Physical => FileSize::Byte(byte::Metric::new(
+                value,
+                byte::MetricKind::Physical,
+                unit,
+                human,
+            )),
+            DiskUsage::Line => FileSize::Line(line_count::Metric::from(value)),
+            DiskUsage::Word => FileSize::Word(word_count::Metric::from(value)),
+            #[cfg(unix)]
+            DiskUsage::Block => FileSize::Block(block::Metric { value }),
+        })
     }
 
-    /// Sets `file_size`.
-    pub fn set_file_size(&mut self, size: FileSize) {
-        self.file_size = Some(size);
-    }
-
-    /// Attempts to return an instance of [`FileMode`] for the display of symbolic permissions.
+    /// Permissions for the long view.
     #[cfg(unix)]
-    pub fn mode(&self) -> Result<FileMode, Error> {
-        let permissions = self.metadata.permissions();
-        let file_mode = permissions.try_mode_symbolic_notation()?;
-        Ok(file_mode)
+    pub fn mode(self) -> Result<FileMode, Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = std::fs::Permissions::from_mode(self.tree.cols.mode[ix(self.i)]);
+        Ok(permissions.try_mode_symbolic_notation()?)
     }
 
-    /// Whether or not [Node] has extended attributes.
+    /// Whether the entry has extended attributes (long view).
     #[cfg(unix)]
-    pub const fn has_xattrs(&self) -> bool {
-        self.unix_attrs.has_xattrs
+    pub fn has_xattrs(self) -> bool {
+        self.tree
+            .cols
+            .long
+            .get(ix(self.i))
+            .is_some_and(|a| a.has_xattrs)
     }
 
-    /// Returns the owner of the [`Node`].
+    /// Owner and group names, if both could be resolved (long view, up to the display level).
     #[cfg(unix)]
-    pub fn owner(&self) -> Option<&str> {
-        self.unix_attrs.owner()
+    fn owner_and_group(self) -> Option<(&'a str, &'a str)> {
+        let attrs = self.tree.cols.long.get(ix(self.i)).filter(|a| a.read)?;
+        let owner = self.tree.users.get(&attrs.uid)?.as_deref()?;
+        let group = self.tree.groups.get(&attrs.gid)?.as_deref()?;
+        Some((owner, group))
     }
 
-    /// Returns the group of the [`Node`].
+    /// Owner name (long view).
     #[cfg(unix)]
-    pub fn group(&self) -> Option<&str> {
-        self.unix_attrs.group()
+    pub fn owner(self) -> Option<&'a str> {
+        self.owner_and_group().map(|(owner, _)| owner)
     }
 
-    /// Getter for [Node]'s style field.
-    pub const fn style(&self) -> Option<Style> {
-        self.style
+    /// Group name (long view).
+    #[cfg(unix)]
+    pub fn group(self) -> Option<&'a str> {
+        self.owner_and_group().map(|(_, group)| group)
+    }
+
+    /// `LS_COLORS` style, if colors are enabled.
+    pub fn style(self) -> Option<Style> {
+        self.tree.cols.style.get(ix(self.i)).copied()
     }
 
     /// See [`crate::icons::fs::compute`].
-    pub fn compute_icon(&self, no_color: bool) -> Cow<'static, str> {
+    pub fn compute_icon(self, no_color: bool) -> Cow<'static, str> {
+        let ext_source = self
+            .symlink_target_path()
+            .unwrap_or_else(|| Path::new(self.file_name()));
+
         if no_color {
-            icons::fs::compute(self.dir_entry(), self.symlink_target_path())
+            icons::fs::compute(self.file_type(), ext_source, self.file_name())
         } else {
-            icons::fs::compute_with_color(self.dir_entry(), self.symlink_target_path(), self.style)
+            icons::fs::compute_with_color(
+                self.file_type(),
+                ext_source,
+                self.file_name(),
+                self.style(),
+            )
         }
-    }
-}
-
-impl TryFrom<(DirEntry, &Context)> for Node {
-    type Error = Error;
-
-    fn try_from(data: (DirEntry, &Context)) -> Result<Self, Error> {
-        let (dir_entry, ctx) = data;
-
-        let path = dir_entry.path();
-
-        let link_target = crate::fs::symlink_target(&dir_entry);
-
-        let metadata = dir_entry.metadata()?;
-
-        let style = get_ls_colors().ok().map(|ls_colors| {
-            ls_colors
-                .style_for_path_with_metadata(path, Some(&metadata))
-                .map_or_else(Style::default, LS_Style::to_nu_ansi_term_style)
-        });
-
-        let file_type = dir_entry.file_type();
-
-        let file_size = match file_type {
-            Some(ref ft)
-                if !ctx.suppress_size && (ft.is_file() || ft.is_symlink() && !ctx.follow) =>
-            {
-                match ctx.disk_usage {
-                    DiskUsage::Logical => {
-                        let metric = byte::Metric::init_logical(&metadata, ctx.unit, ctx.human);
-                        Some(FileSize::Byte(metric))
-                    },
-                    DiskUsage::Physical => {
-                        let metric =
-                            byte::Metric::init_physical(path, &metadata, ctx.unit, ctx.human);
-                        Some(FileSize::Byte(metric))
-                    },
-                    DiskUsage::Line => {
-                        let metric = line_count::Metric::init(path);
-                        metric.map(FileSize::Line)
-                    },
-                    DiskUsage::Word => {
-                        let metric = word_count::Metric::init(path);
-                        metric.map(FileSize::Word)
-                    },
-
-                    #[cfg(unix)]
-                    DiskUsage::Block => {
-                        let metric = block::Metric::init(&metadata);
-                        Some(FileSize::Block(metric))
-                    },
-                }
-            },
-            _ => None,
-        };
-
-        let inode = Inode::try_new(path, &metadata, dir_entry.path_is_symlink()).ok();
-
-        #[cfg(unix)]
-        let unix_attrs = if ctx.long
-            && path.components().count()
-                <= ctx
-                    .dir_canonical()
-                    .components()
-                    .count()
-                    .saturating_add(ctx.level())
-        {
-            unix::Attrs::from((&metadata, &dir_entry))
-        } else {
-            unix::Attrs::default()
-        };
-
-        Ok(Self::new(
-            dir_entry,
-            metadata,
-            file_size,
-            style,
-            link_target,
-            inode,
-            #[cfg(unix)]
-            unix_attrs,
-        ))
     }
 }

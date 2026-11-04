@@ -23,7 +23,7 @@ use progress::{Indicator, IndicatorHandle, Message};
 use render::{Engine, Flat, FlatInverted, Inverted, Regular};
 use std::{
     error::Error,
-    io::{self, ErrorKind, Write, stdout},
+    io::{self, BufWriter, ErrorKind, Write, stdout},
     process::ExitCode,
 };
 use tree::{Tree, count::FileCount};
@@ -61,6 +61,9 @@ mod tty;
 
 /// Common utilities across all modules.
 mod utils;
+
+/// Parallel filesystem walk.
+mod walk;
 
 fn main() -> ExitCode {
     if let Err(e) = run() {
@@ -104,7 +107,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut trees = vec![];
 
     for ctx in ctx.split_roots() {
-        match Tree::try_init(ctx, indicator.as_ref()) {
+        match Tree::try_init(ctx, indicator.as_ref().map(IndicatorHandle::indexed)) {
             Ok(res) => trees.push(res),
             Err(err) => {
                 let _ = IndicatorHandle::try_terminate(indicator);
@@ -118,32 +121,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err(Box::new(tree::error::Error::NoMatches));
     }
 
-    if let Some(progress) = &indicator {
-        progress
-            .mailbox()
-            .send(Message::DoneIndexing)
-            .map_err(|_e| tree::error::Error::Terminated)?;
-    }
-
     let file_count = trees.iter().fold(FileCount::default(), |acc, (tree, _)| {
         acc + tree.file_count()
     });
 
-    // Every rendered tree ends in a newline, so the "\n" separator leaves a blank line between
-    // trees.
-    let mut output = trees
-        .into_iter()
-        .map(|(tree, ctx)| render(tree, ctx))
-        .collect::<Vec<_>>()
-        .join(separator);
-
-    let file_count = file_count.to_string();
-
-    // The count is empty when no tree has any entries (only possible at level 0).
-    if !no_report && !file_count.is_empty() {
-        output = format!("{output}\n{file_count}\n");
-    }
-
+    // Rows are streamed to stdout, so the indicator must be gone first.
     if let Some(mut progress) = indicator {
         progress
             .mailbox()
@@ -159,21 +141,39 @@ fn run() -> Result<(), Box<dyn Error>> {
     #[cfg(not(debug_assertions))]
     let should_write = true;
 
-    if should_write {
-        let mut out = stdout().lock();
-        write!(out, "{output}")?;
-        out.flush()?;
+    let mut out: Box<dyn Write> = if should_write {
+        Box::new(BufWriter::with_capacity(1 << 16, stdout().lock()))
+    } else {
+        Box::new(io::sink())
+    };
+
+    // Every rendered tree ends in a newline, so the "\n" separator leaves a blank line between
+    // trees.
+    for (k, (tree, ctx)) in trees.into_iter().enumerate() {
+        if k > 0 {
+            out.write_all(separator.as_bytes())?;
+        }
+        render(tree, ctx, &mut out)?;
     }
+
+    let file_count = file_count.to_string();
+
+    // The count is empty when no tree has any entries (only possible at level 0).
+    if !no_report && !file_count.is_empty() {
+        write!(out, "\n{file_count}\n")?;
+    }
+
+    out.flush()?;
 
     Ok(())
 }
 
-/// Renders the rows of `tree` in the layout selected by `ctx`.
-fn render(tree: Tree, ctx: Context) -> String {
+/// Writes the rows of `tree` in the layout selected by `ctx`.
+fn render(tree: Tree, ctx: Context, out: &mut impl Write) -> io::Result<()> {
     match ctx.layout {
-        layout::Type::Flat => Engine::<Flat>::new(tree, ctx).to_string(),
-        layout::Type::Iflat => Engine::<FlatInverted>::new(tree, ctx).to_string(),
-        layout::Type::Inverted => Engine::<Inverted>::new(tree, ctx).to_string(),
-        layout::Type::Regular => Engine::<Regular>::new(tree, ctx).to_string(),
+        layout::Type::Flat => Engine::<Flat>::new(tree, ctx).write(out),
+        layout::Type::Iflat => Engine::<FlatInverted>::new(tree, ctx).write(out),
+        layout::Type::Inverted => Engine::<Inverted>::new(tree, ctx).write(out),
+        layout::Type::Regular => Engine::<Regular>::new(tree, ctx).write(out),
     }
 }

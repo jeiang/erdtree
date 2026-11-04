@@ -1,83 +1,58 @@
 use crate::{
-    render::{
-        Engine, Inverted,
-        grid::{self, Row},
-        theme,
-    },
+    context::Context,
+    render::{Inverted, Layout, Plan, grid, theme},
     styles,
+    tree::Tree,
 };
-use std::fmt::{self, Display};
 
-impl Display for Engine<Inverted> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ctx = self.context();
-        let tree = self.tree();
+impl Layout for Inverted {
+    type Grid = grid::Tree;
 
-        let root_id = tree.root_id();
-        let arena = tree.arena();
+    /// The tree with the root at the top, nodes in pre-order.
+    fn plan(tree: &Tree, ctx: &Context) -> Plan {
         let level = ctx.level();
+        let order = tree.order();
+        let mut plan = Plan::with_capacity(order.len(), true);
 
-        let mut descendants = root_id.descendants(arena).skip(1).peekable();
+        plan.push_with_prefix(tree.root(), [""]);
 
-        let root = Row::<grid::Tree>::new(arena[root_id].get(), ctx, Some(""));
-        writeln!(f, "{root}")?;
-
+        let glyphs = theme::GlyphCache::new();
         let mut get_theme = if ctx.follow {
             theme::link_theme_getter()
         } else {
             theme::regular_theme_getter()
         };
 
-        let mut base_prefix_components = vec![""];
+        // Box-drawing segments of the ancestors below the root, outermost first.
+        let mut base: Vec<&str> = vec![];
 
-        while let Some(current_node_id) = descendants.next() {
-            let current_node = arena[current_node_id].get();
+        for (k, &id) in order.iter().enumerate().skip(1) {
+            let node = tree.node(id);
+            let depth = node.depth();
+            let last_sibling = tree.is_last(id);
+            let theme = glyphs.get(get_theme(node));
 
-            let current_depth = current_node.depth();
+            if depth <= level {
+                let part = if last_sibling { theme.uprt } else { theme.vtrt };
 
-            let mut siblings = current_node_id.following_siblings(arena).skip(1).peekable();
-
-            let last_sibling = siblings.peek().is_none();
-
-            let theme = get_theme(current_node);
-
-            if current_depth <= level {
-                let prefix_part = if last_sibling {
-                    theme.get("uprt").unwrap()
-                } else {
-                    theme.get("vtrt").unwrap()
-                };
-
-                let mut current_prefix_components = base_prefix_components.clone();
-
-                current_prefix_components.push(prefix_part);
-
-                let prefix = current_prefix_components.join("");
-
-                let row = Row::<grid::Tree>::new(current_node, ctx, Some(&prefix));
-                writeln!(f, "{row}")?;
+                plan.push_with_prefix(id, base.iter().copied().chain([part]));
             }
 
-            if let Some(next_id) = descendants.peek() {
-                let next_node = arena[*next_id].get();
+            if let Some(&next) = order.get(k + 1) {
+                let next_depth = tree.node(next).depth();
 
-                let next_depth = next_node.depth();
-
-                if next_depth == current_depth + 1 {
+                if next_depth == depth + 1 {
                     if last_sibling {
-                        base_prefix_components.push(styles::SEP);
+                        base.push(styles::SEP);
                     } else {
-                        let prefix = theme.get("vt").unwrap();
-                        base_prefix_components.push(prefix);
+                        base.push(theme.vt);
                     }
-                } else if next_depth < current_depth {
-                    let depth_delta = current_depth - next_depth;
-
-                    base_prefix_components.truncate(base_prefix_components.len() - depth_delta);
+                } else if next_depth < depth {
+                    base.truncate(base.len() - (depth - next_depth));
                 }
             }
         }
 
-        Ok(())
+        plan
     }
 }

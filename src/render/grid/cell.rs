@@ -8,11 +8,7 @@ use crate::{
     styles,
     tree::node::Node,
 };
-use std::{
-    ffi::OsStr,
-    fmt::{self, Display},
-    path::Path,
-};
+use std::fmt::{self, Display};
 
 #[cfg(unix)]
 use chrono::{DateTime, Local};
@@ -29,7 +25,7 @@ use crate::{
 /// rules for rendering. Cell's do not have to be of a consistent width.
 pub struct Cell<'a> {
     ctx: &'a Context,
-    node: &'a Node,
+    node: Node<'a>,
     kind: Kind<'a>,
 }
 
@@ -58,7 +54,7 @@ pub enum Kind<'a> {
 
 impl<'a> Cell<'a> {
     /// Initializes a new [Cell].
-    pub const fn new(node: &'a Node, ctx: &'a Context, kind: Kind<'a>) -> Self {
+    pub const fn new(node: Node<'a>, ctx: &'a Context, kind: Kind<'a>) -> Self {
         Self { ctx, node, kind }
     }
 
@@ -72,15 +68,14 @@ impl<'a> Cell<'a> {
         match self.kind {
             Kind::FileName { prefix } => {
                 let pre = prefix.unwrap_or_default();
-                let name = theme::stylize_file_name(node, ctx.classify);
+                f.write_str(pre)?;
 
-                if !ctx.icons {
-                    return write!(f, "{pre}{name}");
+                if ctx.icons {
+                    let icon = node.compute_icon(ctx.no_color());
+                    write!(f, "{icon} ")?;
                 }
 
-                let icon = node.compute_icon(ctx.no_color());
-
-                write!(f, "{pre}{icon} {name}")
+                theme::write_file_name(f, node, ctx.classify)
             },
 
             _ => unreachable!(),
@@ -93,15 +88,8 @@ impl<'a> Cell<'a> {
         let node = self.node;
         let ctx = self.ctx;
 
-        let path = if node.depth() == 0 {
-            let file_name = node.file_name();
-            <OsStr as AsRef<Path>>::as_ref(file_name).display()
-        } else {
-            node.path()
-                .strip_prefix(ctx.dir_canonical())
-                .unwrap_or_else(|_| node.path())
-                .display()
-        };
+        let path = node.relative_path();
+        let path = path.display();
 
         let formatted_path = node.style().map_or_else(
             || path.to_string(),
@@ -132,7 +120,7 @@ impl<'a> Cell<'a> {
             return Self::fmt_size_placeholder(f, ctx);
         };
 
-        match file_size {
+        match &file_size {
             FileSize::Byte(metric) => Self::fmt_bytes(f, metric, ctx),
             FileSize::Line(metric) => Self::fmt_unitless_disk_usage(f, metric, ctx),
             FileSize::Word(metric) => Self::fmt_unitless_disk_usage(f, metric, ctx),
@@ -311,9 +299,8 @@ impl<'a> Cell<'a> {
     fn fmt_bytes(f: &mut fmt::Formatter<'_>, metric: &byte::Metric, ctx: &Context) -> fmt::Result {
         let max_size_width = ctx.max_size_width;
         let max_unit_width = ctx.max_size_unit_width;
-        let out = format!("{metric}");
-
-        let [size, unit]: [&str; 2] = out.split(' ').collect::<Vec<&str>>().try_into().unwrap();
+        let mut buf = [0; 32];
+        let (size, unit) = metric.parts(&mut buf);
 
         if ctx.no_color() {
             return write!(f, "{size:>max_size_width$} {unit:>max_unit_width$}");
@@ -334,9 +321,13 @@ impl<'a> Cell<'a> {
             }
         };
 
-        let out = color.paint(format!("{size:>max_size_width$} {unit:>max_unit_width$}"));
-
-        write!(f, "{out}")
+        // Same bytes as `color.paint(..)`, without building the painted string.
+        write!(
+            f,
+            "{}{size:>max_size_width$} {unit:>max_unit_width$}{}",
+            color.prefix(),
+            color.suffix()
+        )
     }
 
     #[inline]

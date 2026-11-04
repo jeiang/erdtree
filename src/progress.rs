@@ -5,9 +5,17 @@ use crossterm::{
 };
 use std::{
     io::{self, Write},
-    sync::mpsc::{self, SendError, SyncSender},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, RecvTimeoutError, SendError, SyncSender},
+    },
     thread::{self, JoinHandle},
+    time::Duration,
 };
+
+/// How often the indicator redraws the entry count.
+const REFRESH: Duration = Duration::from_millis(50);
 
 /// Responsible for displying the progress indicator. This struct will be owned by a separate
 /// thread that is responsible for displaying the progress text whereas the [`IndicatorHandle`]
@@ -15,7 +23,6 @@ use std::{
 pub struct Indicator<'a> {
     count: u64,
     stdout: io::StdoutLock<'a>,
-    state: IndicatorState,
 }
 
 /// This struct is how the outside world will inform the [`Indicator`] about the progress of the
@@ -24,37 +31,19 @@ pub struct Indicator<'a> {
 pub struct IndicatorHandle {
     pub join_handle: Option<JoinHandle<Result<(), Error>>>,
     mailbox: SyncSender<Message>,
+    /// Entries indexed so far; the walk increments it and the [`Indicator`] polls it.
+    indexed: Arc<AtomicU64>,
 }
 
 /// The different messages that could be sent to the thread that owns the [`Indicator`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum Message {
-    /// Message that indicates that we are currently reading from disk and that a file was indexed.
-    Index,
-
-    /// Message that indicates that we are done reading from disk and are preparing the output.
-    DoneIndexing,
-
     /// Message that indicates that the output is ready to be flushed and that we should cleanup
     /// the [`Indicator`] as well as the screen.
     RenderReady,
 
     /// Tear down the progress indicator for whatever reason.
     Finish,
-}
-
-/// All of the different states the [`Indicator`] can be in during its life cycle.
-#[derive(Debug, Default, PartialEq)]
-enum IndicatorState {
-    /// We are currently reading from disk.
-    #[default]
-    Indexing,
-
-    /// No longer reading from disk; preparing output.
-    Rendering,
-
-    /// Output is prepared and the [`Indicator`] is ready to be torn down.
-    Done,
 }
 
 /// Errors associated with [`crossterm`];
@@ -80,7 +69,6 @@ impl Default for Indicator<'_> {
         Self {
             count: u64::default(),
             stdout: io::stdout().lock(),
-            state: IndicatorState::default(),
         }
     }
 }
@@ -90,11 +78,18 @@ impl IndicatorHandle {
     pub const fn new(
         join_handle: Option<JoinHandle<Result<(), Error>>>,
         mailbox: SyncSender<Message>,
+        indexed: Arc<AtomicU64>,
     ) -> Self {
         Self {
             join_handle,
             mailbox,
+            indexed,
         }
+    }
+
+    /// Counter of indexed entries, for the walk to increment.
+    pub fn indexed(&self) -> &AtomicU64 {
+        &self.indexed
     }
 
     /// Getter for a cloned `mailbox` wherewith to send [`Message`]s to the [`Indicator`].
@@ -173,6 +168,8 @@ impl Indicator<'_> {
     /// outside world to send messages to the worker thread and ultimately to the [`Indicator`].
     pub fn measure() -> IndicatorHandle {
         let (tx, rx) = mpsc::sync_channel(1024);
+        let indexed = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&indexed);
 
         let join_handle = thread::spawn(move || {
             let mut indicator = Self::default();
@@ -180,67 +177,41 @@ impl Indicator<'_> {
             indicator.stdout.execute(cursor::SavePosition)?;
             indicator.stdout.execute(cursor::Hide)?;
 
-            while let Ok(msg) = rx.recv() {
-                match msg {
-                    Message::Index => indicator.index()?,
-                    Message::DoneIndexing => {
-                        indicator.update_state(IndicatorState::Rendering)?;
-                    },
-                    Message::RenderReady | Message::Finish => {
-                        indicator.update_state(IndicatorState::Done)?;
+            loop {
+                match rx.recv_timeout(REFRESH) {
+                    Ok(Message::RenderReady | Message::Finish) => {
+                        indicator.finish()?;
                         return Ok(());
                     },
+                    Err(RecvTimeoutError::Timeout) => {
+                        let count = counter.load(Ordering::Relaxed);
+                        if count != indicator.count {
+                            indicator.index(count)?;
+                            indicator.stdout.execute(cursor::RestorePosition)?;
+                        }
+                    },
+                    Err(RecvTimeoutError::Disconnected) => return Ok(()),
                 }
-
-                indicator.stdout.execute(cursor::RestorePosition)?;
             }
-
-            Ok(())
         });
 
-        IndicatorHandle::new(Some(join_handle), tx)
+        IndicatorHandle::new(Some(join_handle), tx, indexed)
     }
 
-    /// Updates the `state` of the [`Indicator`] to `new_state`, immediately running an associated
-    /// side effect if applicable.
-    #[inline]
-    fn update_state(&mut self, new_state: IndicatorState) -> Result<(), Error> {
-        use IndicatorState::{Done, Indexing, Rendering};
-
-        match (&self.state, &new_state) {
-            (Indexing, Rendering) => {
-                let stdout = &mut self.stdout;
-                stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-                stdout.execute(cursor::RestorePosition)?;
-                self.rendering()?;
-            },
-
-            (Rendering | Indexing, Done) => {
-                let stdout = &mut self.stdout;
-                stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-                stdout.execute(cursor::RestorePosition)?;
-                stdout.execute(cursor::Show)?;
-            },
-            _ => (),
-        }
-
-        self.state = new_state;
-
+    /// Clears the indicator and shows the cursor again.
+    fn finish(&mut self) -> Result<(), Error> {
+        let stdout = &mut self.stdout;
+        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+        stdout.execute(cursor::RestorePosition)?;
+        stdout.execute(cursor::Show)?;
         Ok(())
     }
 
-    /// The user-facing output when the `state` of the [`Indicator`] is `Indexing`.
+    /// The user-facing output while indexing.
     #[inline]
-    fn index(&mut self) -> Result<(), Error> {
-        self.count += 1;
+    fn index(&mut self, count: u64) -> Result<(), Error> {
+        self.count = count;
         write!(self.stdout, "Indexing {} files...", self.count)?;
-        Ok(())
-    }
-
-    /// The user-facing output when the `state` of the [`Indicator`] is `Rendering`.
-    #[inline]
-    fn rendering(&mut self) -> Result<(), Error> {
-        write!(self.stdout, "Preparing output...")?;
         Ok(())
     }
 }

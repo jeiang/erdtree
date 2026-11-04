@@ -4,19 +4,17 @@ use super::disk_usage::{
     units::PrefixKind,
 };
 
+use crate::walk::Entry;
 use args::Reconciler;
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum, error::ErrorKind};
 use color::Coloring;
 use error::Error;
-use ignore::{
-    DirEntry,
-    overrides::{Override, OverrideBuilder},
-};
+use ignore::overrides::{Override, OverrideBuilder};
 use regex::Regex;
 use std::{
     borrow::Borrow,
     convert::From,
-    io::{IsTerminal, stdin, stdout},
+    io::{IsTerminal, stdout},
     num::NonZeroUsize,
     path::{Path, PathBuf},
     thread::available_parallelism,
@@ -253,10 +251,6 @@ pub struct Context {
     /* INTERNAL USAGE BELOW */
     //////////////////////////
     /// Is stdin in a tty?
-    #[clap(skip = stdin().is_terminal())]
-    pub stdin_is_tty: bool,
-
-    /// Is stdin in a tty?
     #[clap(skip = stdout().is_terminal())]
     pub stdout_is_tty: bool,
 
@@ -298,7 +292,7 @@ pub struct Context {
     pub window_width: Option<usize>,
 }
 
-type Predicate = Result<Box<dyn Fn(&DirEntry) -> bool + Send + Sync + 'static>, Error>;
+type Predicate = Result<Box<dyn Fn(&Entry<'_>) -> bool + Send + Sync + 'static>, Error>;
 
 impl Context {
     /// Initializes [Context], optionally reading in the configuration file to override defaults.
@@ -416,7 +410,7 @@ impl Context {
 
         Ok(match file_type {
             file::Type::Dir => Box::new(move |dir_entry| {
-                let is_dir = dir_entry.file_type().is_some_and(|ft| ft.is_dir());
+                let is_dir = dir_entry.file_type().is_dir();
                 if is_dir {
                     return Self::ancestor_regex_match(dir_entry.path(), &re, 0);
                 }
@@ -426,17 +420,17 @@ impl Context {
 
             _ => Box::new(move |dir_entry| {
                 let entry_type = dir_entry.file_type();
-                let is_dir = entry_type.is_some_and(|ft| ft.is_dir());
+                let is_dir = entry_type.is_dir();
 
                 if is_dir {
                     return true;
                 }
 
                 match file_type {
-                    file::Type::File if entry_type.is_none_or(|ft| !ft.is_file()) => {
+                    file::Type::File if !entry_type.is_file() => {
                         return false;
                     },
-                    file::Type::Link if entry_type.is_none_or(|ft| !ft.is_symlink()) => {
+                    file::Type::Link if !entry_type.is_symlink() => {
                         return false;
                     },
                     _ => {},
@@ -476,7 +470,7 @@ impl Context {
 
         match file_type {
             file::Type::Dir => Ok(Box::new(move |dir_entry| {
-                let is_dir = dir_entry.file_type().is_some_and(|ft| ft.is_dir());
+                let is_dir = dir_entry.file_type().is_dir();
 
                 if is_dir {
                     if negated_glob {
@@ -491,17 +485,17 @@ impl Context {
 
             _ => Ok(Box::new(move |dir_entry| {
                 let entry_type = dir_entry.file_type();
-                let is_dir = entry_type.is_some_and(|ft| ft.is_dir());
+                let is_dir = entry_type.is_dir();
 
                 if is_dir {
                     return true;
                 }
 
                 match file_type {
-                    file::Type::File if entry_type.is_none_or(|ft| !ft.is_file()) => {
+                    file::Type::File if !entry_type.is_file() => {
                         return false;
                     },
-                    file::Type::Link if entry_type.is_none_or(|ft| !ft.is_symlink()) => {
+                    file::Type::Link if !entry_type.is_symlink() => {
                         return false;
                     },
                     _ => {},
@@ -545,11 +539,11 @@ impl Context {
 
         let include = builder.build()?;
 
-        Ok(Box::new(move |dir_entry: &DirEntry| {
-            let is_dir = dir_entry.file_type().is_some_and(|ft| ft.is_dir());
+        Ok(Box::new(move |dir_entry: &Entry<'_>| {
+            let is_dir = dir_entry.file_type().is_dir();
 
             dir_entry.depth() == 0
-                || !is_hidden(dir_entry)
+                || !dir_entry.is_hidden()
                 || include.matched(dir_entry.path(), is_dir).is_whitelist()
         }))
     }
@@ -603,24 +597,4 @@ impl Context {
     fn num_threads() -> usize {
         available_parallelism().map_or(3, NonZeroUsize::get)
     }
-}
-
-/// Whether the walker's hidden-entry filter would skip `dir_entry`: its name starts with `.` or,
-/// on Windows, it has the hidden attribute.
-fn is_hidden(dir_entry: &DirEntry) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-
-        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-
-        if dir_entry
-            .metadata()
-            .is_ok_and(|md| md.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0)
-        {
-            return true;
-        }
-    }
-
-    dir_entry.file_name().as_encoded_bytes().first() == Some(&b'.')
 }

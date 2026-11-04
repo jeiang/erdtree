@@ -34,10 +34,11 @@ dirs = "7.0.0"
 errno = "0.3.14"
 filesize = "0.2.0"
 ignore = "0.4.33"
-indextree = "4.9.2"
+
 lscolors = { version = "0.21.0", default-features = false, features = ["nu-ansi-term"] }
 nu-ansi-term = "0.50.3"
 regex = "1.13.1"
+same-file = "1.0.6"
 terminal_size = "0.4.4"
 thiserror = "2.0.21"
 
@@ -56,3 +57,7 @@ tempfile = "3.27.0"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[lints.rust]
+# Kani proof harnesses (`cargo kani`) are compiled only under `cfg(kani)`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

@@ -4,7 +4,7 @@ use std::{convert::From, fmt};
 
 /// Concerned with displaying that actual attributes associated with the long view.
 pub struct Display<'a> {
-    node: &'a Node,
+    node: Node<'a>,
     ctx: &'a Context,
     optional: Optionals,
 }
@@ -27,7 +27,7 @@ pub struct Optionals {
 
 impl<'a> Display<'a> {
     /// Constructor for [`Display`].
-    pub const fn new(optional: Optionals, node: &'a Node, ctx: &'a Context) -> Self {
+    pub const fn new(optional: Optionals, node: Node<'a>, ctx: &'a Context) -> Self {
         Self {
             node,
             ctx,

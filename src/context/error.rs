@@ -11,9 +11,6 @@ pub enum Error {
     #[error("A configuration file was found but failed to parse: {0}")]
     Config(ClapError),
 
-    #[error("No glob was provided")]
-    EmptyGlob,
-
     #[error("{0}")]
     IgnoreError(#[from] IgnoreError),
 
