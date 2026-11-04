@@ -21,8 +21,9 @@ fn sort_mod_far_future() -> Result<(), Box<dyn std::error::Error>> {
             let out = utils::run_cmd(&["--sort", sort, "--layout", layout, "--no-report", &root]);
             let names: String = out
                 .lines()
-                .filter_map(|l| l.chars().last())
-                .filter(|c| "abc".contains(*c))
+                .filter_map(|l| l.split_whitespace().last())
+                // The root row ends in the random temp dir name, so match whole names only.
+                .filter(|n| matches!(*n, "a" | "b" | "c"))
                 .collect();
             // The regular layout lists the sorted order bottom up.
             let names = if layout == "regular" {

@@ -86,7 +86,7 @@ fn iso_strict_offsets() -> Result<(), Box<dyn std::error::Error>> {
             }
             let row = out
                 .lines()
-                .find(|l| l.ends_with(&format!("f{i}")))
+                .find(|l| l.split_whitespace().last() == Some(format!("f{i}").as_str()))
                 .unwrap_or_else(|| panic!("no row f{i}\n{out}"));
             assert!(row.contains(expected), "{zone}: {row:?} lacks {expected}");
         }
