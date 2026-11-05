@@ -103,6 +103,16 @@ jobs:
     if: always()
     needs: [fmt, clippy, cross, test, msrv, deny]
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
     steps:
-      - run: exit 1
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+      # needs.*.result is not enough: in run 41870832578 both macOS matrix legs were cancelled
+      # without a runner and ci-pass still passed. Check the latest attempt of every job instead.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          JOBS: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs
+          FILTER: '.jobs[] | select(.name != "ci-pass" and .conclusion != "success") | "\(.name): \(.conclusion)"'
+        run: |
+          bad=$(gh api --paginate "$JOBS" --jq "$FILTER")
+          if [ -n "$bad" ]; then echo "$bad"; exit 1; fi
+          echo "every job succeeded"
