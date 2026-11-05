@@ -85,7 +85,14 @@
               }
             );
             fmt = craneLib.cargoFmt { inherit src; };
-            test = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
+            test = craneLib.cargoTest (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                # The Nix sandbox forbids setting setuid/setgid bits (EPERM), which this test needs.
+                cargoTestExtraArgs = "-- --skip styles::entry::test::matches_lscolors_for_every_kind_of_entry";
+              }
+            );
           };
 
           # Same toolchain as CI, plus components for local editing only.
