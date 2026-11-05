@@ -1,0 +1,70 @@
+name: nix
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+# PRs: a new push cancels the superseded run. Pushes to master: one group per commit, so every
+# merged commit gets a complete run (a shared group would cancel pending runs).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GARRET_SUBSTITUTER: https://cache.jeiang.dev
+  GARRET_PUBLIC_KEY: "cache.jeiang.dev-1:owXJK5/UX9NSf1lhmDDT3QTxMtbVk9YfHhjvOXyPhpA="
+  # garret client that .ci/garret.sh runs to push to the cache.
+  GARRET_CLIENT_REV: cd668bd59815b7496fbb86380d033563d3bcee82
+
+  MAX_SUBSTITUTION_JOBS: "32"
+  HTTP_CONNECTIONS: "64"
+
+jobs:
+  checks:
+    name: flake checks
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Write garret's post-build hook
+        run: ./.ci/garret.sh hook
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+        with:
+          extra_nix_config: |
+            extra-substituters = ${{ env.GARRET_SUBSTITUTER }}
+            extra-trusted-public-keys = ${{ env.GARRET_PUBLIC_KEY }}
+            max-substitution-jobs = ${{ env.MAX_SUBSTITUTION_JOBS }}
+            http-connections = ${{ env.HTTP_CONNECTIONS }}
+            post-build-hook = ${{ runner.temp }}/garret-hook
+
+      - name: Start pushing to garret as paths are built
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        continue-on-error: true
+        run: ./.ci/garret.sh watch
+
+      - name: Build checks
+        run: |
+          nix build -L --keep-going --no-link --print-out-paths \
+            .#checks.x86_64-linux.erdtree \
+            .#checks.x86_64-linux.clippy \
+            .#checks.x86_64-linux.fmt \
+            .#checks.x86_64-linux.test \
+            >"$RUNNER_TEMP/garret-outputs"
+
+      - name: Push to garret what the watcher has not
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        continue-on-error: true
+        timeout-minutes: 30
+        run: ./.ci/garret.sh drain
