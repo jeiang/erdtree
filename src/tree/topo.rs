@@ -349,7 +349,8 @@ pub fn dedupe<K: Ord + Copy + Send + Sync>(
     threads: usize,
     mut rank: impl FnMut(u32, u32) -> Ordering,
 ) -> Vec<u32> {
-    let mut uncounted = vec![];
+    // A capacity known from the input keeps the allocation size concrete for Kani.
+    let mut uncounted = Vec::with_capacity(linked.len());
 
     // By key, then node: a total order, so the unstable sort has one result.
     psort::sort_by(linked, threads, |(a, ka), (b, kb)| {
@@ -612,8 +613,8 @@ pub fn hide_small(
 /// Specifications of the functions above, checked two ways: exhaustively for every tree of up
 /// to [`spec::MAX_TEST`] nodes by `cargo test`, and symbolically by Kani (`cargo kani`, see
 /// `proofs`) for every tree of up to 3 nodes and every size, threshold, order and inode
-/// grouping, except the pre-order and last-child properties, which Kani checks only for 1 node.
-/// Both cover every root position.
+/// grouping, except the child-list, pre-order and last-child properties, which Kani checks only
+/// for 1 node. Both cover every root position.
 #[cfg(any(test, kani))]
 // The specifications index several per-node arrays by node number.
 #[allow(clippy::needless_range_loop)]
@@ -622,6 +623,22 @@ mod spec {
 
     /// Largest tree checked by the exhaustive tests.
     pub const MAX_TEST: usize = 6;
+
+    /// Every tree of 1, 2 and 3 nodes with any root, as parent arrays, for the Kani harnesses
+    /// that need a concrete tree shape. The tests check that the lists are complete.
+    pub const TREES_1: [[u32; 1]; 1] = [[NONE]];
+    pub const TREES_2: [[u32; 2]; 2] = [[NONE, 0], [1, NONE]];
+    pub const TREES_3: [[u32; 3]; 9] = [
+        [NONE, 0, 0],
+        [NONE, 0, 1],
+        [NONE, 2, 0],
+        [1, NONE, 1],
+        [1, NONE, 0],
+        [2, NONE, 1],
+        [2, 2, NONE],
+        [1, 2, NONE],
+        [2, 0, NONE],
+    ];
 
     /// Whether `parent` is a tree rooted at `root`: only the root has no parent, every other
     /// parent is another valid node, and every node reaches the root.
@@ -1211,6 +1228,20 @@ mod test {
     }
 
     #[test]
+    fn kani_tree_lists_are_complete() {
+        fn sorted(trees: impl IntoIterator<Item = Vec<u32>>) -> Vec<Vec<u32>> {
+            let mut trees: Vec<_> = trees.into_iter().collect();
+            trees.sort_unstable();
+            trees
+        }
+        let all = |n| sorted(trees(n).into_iter().map(|(parent, _)| parent));
+
+        assert_eq!(sorted(spec::TREES_1.map(Vec::from)), all(1));
+        assert_eq!(sorted(spec::TREES_2.map(Vec::from)), all(2));
+        assert_eq!(sorted(spec::TREES_3.map(Vec::from)), all(3));
+    }
+
+    #[test]
     fn exhaustive_small_trees() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1463,8 +1494,7 @@ mod proofs {
     }
 
     /// `M` of the `N` nodes are linked: their ids are symbolic and strictly increasing, their
-    /// keys symbolic. The harnesses for `M` from 0 to `N` together cover every key assignment,
-    /// and the concrete length keeps std's sort from being unrolled over every possible length.
+    /// keys symbolic. The harnesses for `M` from 0 to `N` together cover every key assignment.
     fn dedupe_counts_each_inode_once<const N: usize, const M: usize>() {
         let mut linked = [(0_u32, 0_u8); M];
         for j in 0..M {
@@ -1478,6 +1508,24 @@ mod proofs {
         spec::dedupe_counts_each_inode_once(N, &linked, kani::any());
     }
 
+    /// Stands in for std's unstable sort in the `dedupe` harnesses: with std's sort, CBMC did
+    /// not finish 2 linked nodes in 25 minutes and 20 GB. The proofs therefore assume that
+    /// std's sort sorts.
+    fn insertion_sort_by<T, F: FnMut(&T, &T) -> std::cmp::Ordering>(v: &mut [T], mut compare: F) {
+        for i in 1..v.len() {
+            let mut j = i;
+            while j > 0 && compare(&v[j - 1], &v[j]).is_gt() {
+                v.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+    }
+
+    /// [`insertion_sort_by`] in the natural order.
+    fn insertion_sort<T: Ord>(v: &mut [T]) {
+        insertion_sort_by(v, T::cmp);
+    }
+
     /// Any order of all nodes with each parent first (what `prune` requires), so
     /// these harnesses need not model `Children::build` and `preorder` and hold for every such
     /// order. That `preorder` produces one is asserted by the pre-order spec, which the
@@ -1489,8 +1537,9 @@ mod proofs {
         order
     }
 
-    fn aggregate_sums_counted_files<const N: usize>() {
-        let (parent, _) = any_tree::<N>();
+    /// `aggregate` on one concrete tree: with a symbolic tree shape the lists that `aggregate`
+    /// builds have symbolic lengths, and CBMC did not finish 1 node in 40 minutes and 64 GB.
+    fn aggregate_sums_counted_files<const N: usize>(parent: [u32; N]) {
         let counted: [bool; N] = kani::any();
         let is_dir: [bool; N] = kani::any();
         let files: [Option<u64>; N] = kani::any();
@@ -1562,18 +1611,43 @@ mod proofs {
         };
     }
 
-    // `preorder` and `last_child` take only a tree shape and a set of alive nodes, which the
-    // exhaustive tests enumerate completely up to `spec::MAX_TEST` nodes. Under Kani their
-    // pre-order has a symbolic length, which costs about 8 GB at 2 nodes, so they keep a
-    // 1-node harness as a smoke check of the real code paths only.
+    // `children`, `preorder` and `last_child` take only a tree shape and a set of alive nodes,
+    // which the exhaustive tests enumerate completely up to `spec::MAX_TEST` nodes. Under Kani
+    // their outputs have symbolic lengths: the pre-order costs about 8 GB at 2 nodes and the
+    // child lists 9 minutes and more than 12 GB at 3 nodes, so they keep a 1-node harness as a
+    // smoke check of the real code paths only.
     harnesses! {
-        children: children_partition_nodes, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
+        children: children_partition_nodes, [n1 = 1, unwind 3];
         preorder: preorder_is_a_valid_preorder, [n1 = 1, unwind 3];
         last_child: last_child_is_unique, [n1 = 1, unwind 3];
         by_depth: by_depth_is_parent_first, [n1 = 1, unwind 4; n2 = 2, unwind 5; n3 = 3, unwind 6];
-        aggregate: aggregate_sums_counted_files, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
         prune: prune_removes_exactly_empty_dirs, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
         dirs_only: dirs_only_keeps_connected_dirs, [n1 = 1, unwind 3; n2 = 2, unwind 4; n3 = 3, unwind 5];
+    }
+
+    /// `aggregate` on each tree of 1 to 3 nodes, with symbolic sizes, kinds and counted flags.
+    mod aggregate {
+        use super::*;
+
+        macro_rules! cases {
+            ($($name:ident = $trees:ident[$i:literal], unwind $u:literal;)*) => {
+                $(
+                    #[kani::proof]
+                    #[kani::unwind($u)]
+                    fn $name() {
+                        aggregate_sums_counted_files(spec::$trees[$i]);
+                    }
+                )*
+            };
+        }
+
+        cases! {
+            n1 = TREES_1[0], unwind 3;
+            n2_t0 = TREES_2[0], unwind 4; n2_t1 = TREES_2[1], unwind 4;
+            n3_t0 = TREES_3[0], unwind 5; n3_t1 = TREES_3[1], unwind 5; n3_t2 = TREES_3[2], unwind 5;
+            n3_t3 = TREES_3[3], unwind 5; n3_t4 = TREES_3[4], unwind 5; n3_t5 = TREES_3[5], unwind 5;
+            n3_t6 = TREES_3[6], unwind 5; n3_t7 = TREES_3[7], unwind 5; n3_t8 = TREES_3[8], unwind 5;
+        }
     }
 
     /// `dedupe` for `N` nodes of which `M` are linked.
@@ -1585,6 +1659,8 @@ mod proofs {
                 $(
                     #[kani::proof]
                     #[kani::unwind(5)]
+                    #[kani::stub(<[(u32, u8)]>::sort_unstable_by, insertion_sort_by)]
+                    #[kani::stub(<[u32]>::sort_unstable, insertion_sort)]
                     fn $name() {
                         dedupe_counts_each_inode_once::<$n, $m>();
                     }

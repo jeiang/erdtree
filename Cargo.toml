@@ -70,6 +70,10 @@ chrono = { version = "0.4.45", features = ["clock"] }
 inherits = "release"
 lto = "thin"
 
+# `cargo kani`: the `dedupe` harnesses replace std's sort with `#[kani::stub]`.
+[package.metadata.kani.unstable]
+stubbing = true
+
 [lints.rust]
 # Kani proof harnesses (`cargo kani`) are compiled only under `cfg(kani)`.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
