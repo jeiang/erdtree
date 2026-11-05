@@ -42,7 +42,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - When every size in the tree was 0 (e.g. only empty files), the size column vanished from the rows without a size (directories, FIFOs, the root) instead of showing `-`, misaligning the tree. They now show `-` in the column.
 
 ### Verification
-- The tree algorithms (child lists, pre-order, size totals, hard-link deduplication, `--prune`, `--dirs-only`, `--min-size`) have written specifications that `cargo test` checks for every tree of up to 6 entries at every root position, and that Kani proofs check symbolically, for all sizes, thresholds and traversal orders, for every tree of up to 3 entries (the pre-order and last-child checks only up to 1 entry under Kani); CI runs the tests, and the Kani proofs are run locally (`cargo kani -j 4`). The walk is tested against the `ignore` crate's walker on handcrafted and randomly generated trees with ignore files.
+- The tree algorithms (child lists, pre-order, size totals, hard-link deduplication, `--prune`, `--dirs-only`, `--min-size`) have written specifications that `cargo test` checks for every tree of up to 6 entries at every root position, and that Kani proofs check symbolically, for all sizes, thresholds and traversal orders, for every tree of up to 3 entries (the child-list, pre-order and last-child checks only up to 1 entry under Kani); CI runs the tests, and the Kani proofs are run locally with Kani 0.67.0 (`cargo kani -j 4 --output-format=terse`). The walk is tested against the `ignore` crate's walker on handcrafted and randomly generated trees with ignore files.
 
 ## [4.0.0] - 2026-10-14
 
