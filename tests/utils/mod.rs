@@ -24,10 +24,8 @@ pub fn run_cmd_untrimmed(args: &[&str]) -> String {
 /// from the host environment unless given in `envs`.
 #[allow(dead_code, reason = "not every test target uses this helper")]
 pub fn run_cmd_raw(args: &[&str], envs: &[(&str, &str)]) -> Vec<u8> {
-    let mut cmd = Command::new("cargo");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_erd"));
     cmd.args([
-        "run",
-        "--",
         "--threads",
         "1",
         "--disk-usage",

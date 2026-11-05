@@ -1388,124 +1388,136 @@ mod test {
 
     #[test]
     fn exhaustive_small_trees() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // One thread per core takes the next tree: a single thread needs about a minute in
+        // debug builds.
+        let all: Vec<_> = (1..=spec::MAX_TEST).flat_map(trees).collect();
+        let next = AtomicUsize::new(0);
+        let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        std::thread::scope(|s| {
+            for _ in 0..threads {
+                s.spawn(|| {
+                    while let Some((parent, root)) = all.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        check_small_tree(parent, *root);
+                    }
+                });
+            }
+        });
+    }
+
+    /// Checks every property of `topo` on one tree, with every alive set, directory set and
+    /// counted set.
+    fn check_small_tree(parent: &[u32], root: u32) {
         use super::Children;
 
-        for n in 1..=spec::MAX_TEST {
-            for (parent, root) in trees(n) {
-                let r = super::ix(root);
-                spec::children_partition_nodes(&parent);
+        let n = parent.len();
+        let r = super::ix(root);
+        spec::children_partition_nodes(parent);
 
-                // Child lists as built, and sorted (descending) as production sorts them
-                // before the pre-order.
-                let built = Children::build(&parent);
-                let mut sorted = Children::build(&parent);
-                sorted.sort_each(2, |_| true, |i| (u64::from(!i), 0), |a, b| b.cmp(&a));
-                let depth = spec::depths(&parent);
+        // Child lists as built, and sorted (descending) as production sorts them
+        // before the pre-order.
+        let built = Children::build(parent);
+        let mut sorted = Children::build(parent);
+        sorted.sort_each(2, |_| true, |i| (u64::from(!i), 0), |a, b| b.cmp(&a));
+        let depth = spec::depths(parent);
 
-                spec::by_depth_is_parent_first(&parent, root);
+        spec::by_depth_is_parent_first(parent, root);
 
-                // Masks with the root set: alive flags for the pre-order, with and without a
-                // depth limit.
-                for mask in (0..1 << n).filter(|m| m >> r & 1 == 1) {
-                    let alive = bits(mask, n);
-                    for max_depth in (0..=u32::try_from(n).unwrap()).chain([u32::MAX]) {
-                        spec::preorder_is_a_valid_preorder(
-                            &parent, &built, root, &alive, max_depth,
-                        );
-                        spec::preorder_is_a_valid_preorder(
-                            &parent, &sorted, root, &alive, max_depth,
-                        );
-                    }
-                    // Starting threads is slow: use them only for small trees.
-                    for threads in [1, 3] {
-                        if threads > 1 && n > 4 {
+        // Masks with the root set: alive flags for the pre-order, with and without a
+        // depth limit.
+        for mask in (0..1 << n).filter(|m| m >> r & 1 == 1) {
+            let alive = bits(mask, n);
+            for max_depth in (0..=u32::try_from(n).unwrap()).chain([u32::MAX]) {
+                spec::preorder_is_a_valid_preorder(parent, &built, root, &alive, max_depth);
+                spec::preorder_is_a_valid_preorder(parent, &sorted, root, &alive, max_depth);
+            }
+            // Starting threads is slow: use them only for small trees.
+            for threads in [1, 3] {
+                if threads > 1 && n > 4 {
+                    continue;
+                }
+                spec::last_child_is_unique(parent, root, &alive, threads);
+            }
+        }
+
+        // Two different parent-first orders: the pre-order production uses, and
+        // breadth-first.
+        let everyone = vec![true; n];
+        let orders = [
+            super::preorder(&sorted, root, &everyone, &depth, u32::MAX),
+            breadth_first(&built, root),
+            super::by_depth(&depth).unwrap(),
+        ];
+        for order in &orders {
+            assert!(spec::is_parent_first_order(parent, root, order));
+        }
+
+        for mask in 0..1 << n {
+            let is_dir = &bits(mask, n);
+            if !spec::only_dirs_have_children(parent, is_dir) {
+                continue;
+            }
+
+            for order in &orders {
+                spec::prune_removes_exactly_empty_dirs(parent, root, order, is_dir);
+            }
+            spec::dirs_only_keeps_connected_dirs(parent, root, is_dir);
+
+            // Distinct powers of two make every subset sum distinct; values near
+            // u64::MAX exercise saturation.
+            let small: Vec<Option<u64>> = (0..n).map(|i| (!is_dir[i]).then_some(1 << i)).collect();
+            let huge: Vec<Option<u64>> = (0..n)
+                .map(|i| (!is_dir[i]).then_some(u64::MAX - (1 << i)))
+                .collect();
+
+            // Whether the root is counted does not matter (it has no parent), so it
+            // stays counted.
+            for counted in (0..1 << n).filter(|m| m >> r & 1 == 1) {
+                let counted = bits(counted, n);
+                // Starting threads is slow: share the sums out only for small trees.
+                let few_uncounted = n <= 4;
+                for files in [&small, &huge] {
+                    for (threads, par_min) in [(1, usize::MAX), (3, 0)] {
+                        if threads > 1 && !few_uncounted {
                             continue;
                         }
-                        spec::last_child_is_unique(&parent, root, &alive, threads);
+                        spec::aggregate_sums_counted_files(
+                            parent, &counted, is_dir, files, threads, par_min,
+                        );
                     }
                 }
+            }
+        }
 
-                // Two different parent-first orders: the pre-order production uses, and
-                // breadth-first.
-                let everyone = vec![true; n];
-                let orders = [
-                    super::preorder(&sorted, root, &everyone, &depth, u32::MAX),
-                    breadth_first(&built, root),
-                    super::by_depth(&depth).unwrap(),
-                ];
-                for order in &orders {
-                    assert!(spec::is_parent_first_order(&parent, root, order));
-                }
+        // `--min-size` runs on whatever `--prune`, patterns and `--dirs-only` left
+        // alive: every connected set containing the root, with its pre-order (and, for
+        // the whole tree, also breadth-first). Sizes are 2^i, all set or with the odd
+        // nodes unsized; thresholds sit at every distinct boundary.
+        let all_sized: Vec<Option<u64>> = (0..n).map(|i| Some(1 << i)).collect();
+        let some_unsized: Vec<Option<u64>> =
+            (0..n).map(|i| (i % 2 == 0).then_some(1 << i)).collect();
+        for mask in (0..1 << n).filter(|m| m >> r & 1 == 1) {
+            let alive = bits(mask, n);
+            let connected =
+                (0..n).all(|i| !alive[i] || parent[i] == NONE || alive[super::ix(parent[i])]);
+            if !connected {
+                continue;
+            }
 
-                for mask in 0..1 << n {
-                    let is_dir = &bits(mask, n);
-                    if !spec::only_dirs_have_children(&parent, is_dir) {
-                        continue;
-                    }
+            let mut alive_orders = vec![super::preorder(&sorted, root, &alive, &depth, u32::MAX)];
+            if alive.iter().all(|&a| a) {
+                alive_orders.push(breadth_first(&built, root));
+                alive_orders.push(super::by_depth(&depth).unwrap());
+            }
 
-                    for order in &orders {
-                        spec::prune_removes_exactly_empty_dirs(&parent, root, order, is_dir);
-                    }
-                    spec::dirs_only_keeps_connected_dirs(&parent, root, is_dir);
-
-                    // Distinct powers of two make every subset sum distinct; values near
-                    // u64::MAX exercise saturation.
-                    let small: Vec<Option<u64>> =
-                        (0..n).map(|i| (!is_dir[i]).then_some(1 << i)).collect();
-                    let huge: Vec<Option<u64>> = (0..n)
-                        .map(|i| (!is_dir[i]).then_some(u64::MAX - (1 << i)))
-                        .collect();
-
-                    // Whether the root is counted does not matter (it has no parent), so it
-                    // stays counted.
-                    for counted in (0..1 << n).filter(|m| m >> r & 1 == 1) {
-                        let counted = bits(counted, n);
-                        // Starting threads is slow: share the sums out only for small trees.
-                        let few_uncounted = n <= 4;
-                        for files in [&small, &huge] {
-                            for (threads, par_min) in [(1, usize::MAX), (3, 0)] {
-                                if threads > 1 && !few_uncounted {
-                                    continue;
-                                }
-                                spec::aggregate_sums_counted_files(
-                                    &parent, &counted, is_dir, files, threads, par_min,
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // `--min-size` runs on whatever `--prune`, patterns and `--dirs-only` left
-                // alive: every connected set containing the root, with its pre-order (and, for
-                // the whole tree, also breadth-first). Sizes are 2^i, all set or with the odd
-                // nodes unsized; thresholds sit at every distinct boundary.
-                let all_sized: Vec<Option<u64>> = (0..n).map(|i| Some(1 << i)).collect();
-                let some_unsized: Vec<Option<u64>> =
-                    (0..n).map(|i| (i % 2 == 0).then_some(1 << i)).collect();
-                for mask in (0..1 << n).filter(|m| m >> r & 1 == 1) {
-                    let alive = bits(mask, n);
-                    let connected = (0..n)
-                        .all(|i| !alive[i] || parent[i] == NONE || alive[super::ix(parent[i])]);
-                    if !connected {
-                        continue;
-                    }
-
-                    let mut alive_orders =
-                        vec![super::preorder(&sorted, root, &alive, &depth, u32::MAX)];
-                    if alive.iter().all(|&a| a) {
-                        alive_orders.push(breadth_first(&built, root));
-                        alive_orders.push(super::by_depth(&depth).unwrap());
-                    }
-
-                    for order in &alive_orders {
-                        assert!(spec::is_parent_first_order_of(&parent, root, &alive, order));
-                        for threshold in (0..=n).map(|i| 1_u64 << i).chain([0]) {
-                            for sizes in [&all_sized, &some_unsized] {
-                                spec::hide_small_keeps_large_and_their_ancestors(
-                                    &parent, root, &alive, order, sizes, threshold,
-                                );
-                            }
-                        }
+            for order in &alive_orders {
+                assert!(spec::is_parent_first_order_of(parent, root, &alive, order));
+                for threshold in (0..=n).map(|i| 1_u64 << i).chain([0]) {
+                    for sizes in [&all_sized, &some_unsized] {
+                        spec::hide_small_keeps_large_and_their_ancestors(
+                            parent, root, &alive, order, sizes, threshold,
+                        );
                     }
                 }
             }
