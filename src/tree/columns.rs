@@ -290,7 +290,11 @@ impl Columns {
 
         let inode = Inode::try_new(path, stat, record.is_symlink).ok();
 
-        if let Some(inode) = inode.filter(|inode| inode.nlink > 1) {
+        // A directory can be reached again through a followed symlink even with one link, as
+        // on btrfs, where directories always have one.
+        if let Some(inode) =
+            inode.filter(|inode| inode.nlink > 1 || probe.follow && file_type.is_dir())
+        {
             self.multi_linked.push((index, inode));
         }
 
