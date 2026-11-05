@@ -101,7 +101,7 @@ nix build                       # crane release build (result/bin/erd); `nix run
 ## Testing & QA
 
 - Standard `#[test]` harness. No `assert_cmd` or snapshot crate. Dev deps: `indoc`, `strip-ansi-escapes`, `tempfile`.
-- Integration tests call `tests/utils/mod.rs::run_cmd(&[...])`, which runs `cargo run -- --threads 1 --disk-usage logical --sort name --no-config <args>`, strips ANSI, trims, and panics with stderr on non-zero exit. Assert the full rendered tree against an `indoc!` string.
+- Integration tests call `tests/utils/mod.rs::run_cmd(&[...])`, which runs the test build of `erd` (`CARGO_BIN_EXE_erd`) with `--threads 1 --disk-usage logical --sort name --no-config <args>`, strips ANSI, trims, and panics with stderr on non-zero exit. Assert the full rendered tree against an `indoc!` string.
 - Unit tests sit beside the code, for example `src/context/config/toml/test.rs`, `src/fs/permissions/test.rs` (Unix), `src/disk_usage/file_size/line_count.rs`.
 - Run one test:
   ```sh
