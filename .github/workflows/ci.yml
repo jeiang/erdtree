@@ -57,6 +57,25 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo test --locked
 
+  # Release targets that no other job builds. Checking needs no linker or SDK.
+  cross:
+    name: clippy (cross targets)
+    runs-on: ubuntu-latest
+    env:
+      TARGETS: >-
+        aarch64-unknown-linux-gnu aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+        x86_64-apple-darwin i686-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          rustup toolchain install
+          # shellcheck disable=SC2086 # TARGETS is split on purpose
+          rustup target add $TARGETS
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - run: for t in $TARGETS; do cargo clippy --all-targets --locked --target "$t" -- -D warnings || exit 1; done
+
   msrv:
     name: msrv
     runs-on: ubuntu-latest
@@ -82,7 +101,7 @@ jobs:
   ci-pass:
     name: ci-pass
     if: always()
-    needs: [fmt, clippy, test, msrv, deny]
+    needs: [fmt, clippy, cross, test, msrv, deny]
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
