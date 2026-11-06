@@ -54,31 +54,16 @@ fn reconcile(
     user_args: ArgMatches,
     validated: bool,
 ) -> Result<ArgMatches, Error> {
-    let maybe_config_args = {
-        if user_args.get_one::<bool>("no_config").is_some_and(|b| *b) {
-            return cli_only(&mut cmd, user_args, validated);
+    if user_args.get_one::<bool>("no_config").is_some_and(|b| *b) {
+        return cli_only(&mut cmd, user_args, validated);
+    }
+
+    let named_table = user_args.get_one::<String>("config").map(String::as_str);
+
+    let Some(config_args) = load_toml_config_args(named_table)? else {
+        if named_table.is_some() {
+            return Err(Error::NoToml);
         }
-
-        let named_table = user_args.get_one::<String>("config");
-
-        if let Some(rc) = load_rc_config_args() {
-            if named_table.is_some() {
-                return Err(Error::Rc);
-            }
-
-            Some(rc?)
-        } else {
-            let toml = load_toml_config_args(named_table.map(String::as_str))?;
-
-            if named_table.is_some() && toml.is_none() {
-                return Err(Error::NoToml);
-            }
-
-            toml
-        }
-    };
-
-    let Some(config_args) = maybe_config_args else {
         return cli_only(&mut cmd, user_args, validated);
     };
 
@@ -203,17 +188,6 @@ fn validate(
 #[inline]
 fn init_empty_args() -> Vec<OsString> {
     vec![OsString::from("--")]
-}
-
-/// Loads an [`ArgMatches`] from `.erdtreerc`.
-#[inline]
-fn load_rc_config_args() -> Option<Result<ArgMatches, Error>> {
-    config::rc::read_config_to_string().map(|rc_config| {
-        let parsed_args = config::rc::parse(&rc_config);
-        Context::command()
-            .try_get_matches_from(parsed_args)
-            .map_err(Error::Config)
-    })
 }
 
 /// Loads an [`ArgMatches`] from `.erdtree.toml`, or `None` if there is no such file.

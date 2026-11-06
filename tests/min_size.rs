@@ -11,7 +11,6 @@ fn run_erd(config: Option<&str>, args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_erd"));
 
     cmd.env_remove("ERDTREE_TOML_PATH")
-        .env_remove("ERDTREE_CONFIG_PATH")
         .env("HOME", dir.path())
         .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
         .env("APPDATA", dir.path().join("appdata"));
