@@ -85,7 +85,7 @@ struct Inner {
     common: Arc<Common>,
     dir: PathBuf,
     /// Device and inode of `dir`, for symlink loop detection; `None` if unknown.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     ident: Option<Ident>,
     parent: Option<Arc<Self>>,
     /// The canonical path given to [`Rules::add_parents`]; used to match against the ignore files
@@ -165,7 +165,7 @@ impl Rules {
                     cwd,
                 }),
                 dir: PathBuf::new(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(fd_walk)]
                 ident: None,
                 parent: None,
                 absolute_base: None,
@@ -258,7 +258,7 @@ impl Rules {
 
     fn child_inner(&self, dir: &Path, found: Found, ident: Option<Ident>, fd: DirFd) -> Inner {
         // Loops are found by path elsewhere.
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(not(fd_walk))]
         let _ = ident;
 
         let opts = self.inner.opts;
@@ -298,7 +298,7 @@ impl Rules {
         Inner {
             common: Arc::clone(&self.inner.common),
             dir: dir.to_path_buf(),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(fd_walk)]
             ident,
             parent: Some(Arc::clone(&self.inner)),
             absolute_base: self.inner.absolute_base.clone(),
@@ -434,7 +434,7 @@ impl Rules {
 
     /// The directory these rules were built for, and those of its walked ancestors (not the
     /// ancestors of the root). Used for symlink loop detection.
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(fd_walk))]
     pub fn walked_dirs(&self) -> impl Iterator<Item = &Path> {
         self.parents()
             .take_while(|ig| !ig.is_absolute_parent)
@@ -444,7 +444,7 @@ impl Rules {
     /// Whether `ident` is that of the directory these rules were built for, or of one of its
     /// walked ancestors (not the ancestors of the root). Used for symlink loop detection; unlike
     /// opening the directories by path, it works at any depth.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     pub fn is_walked(&self, ident: Ident) -> bool {
         self.parents()
             .take_while(|ig| !ig.is_absolute_parent)
@@ -458,7 +458,7 @@ fn open_in(dir: &Path, fd: DirFd, name: &str) -> io::Result<File> {
     #[cfg(target_os = "macos")]
     let fd = fd.filter(|_| crate::fs::at::fits_path_max(dir.as_os_str().len() + 1 + name.len()));
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     if let Some(dir) = fd {
         use crate::fs::at::{self, At};
 
@@ -474,7 +474,7 @@ fn kind_in(dir: &Path, fd: DirFd, name: &str) -> Option<Kind> {
     #[cfg(target_os = "macos")]
     let fd = fd.filter(|_| crate::fs::at::fits_path_max(dir.as_os_str().len() + 1 + name.len()));
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     if let Some(dir) = fd {
         use crate::fs::{
             at::{self, At},

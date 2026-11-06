@@ -6,15 +6,15 @@ use super::rules::Found;
 use crate::fs::stat::{Fields, Kind, Stat};
 use std::ffi::OsStr;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 use super::fds::DirFd;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 use crate::fs::at::{self, At};
 #[cfg(target_os = "macos")]
 use crate::fs::bulk;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 use std::{ffi::CStr, os::unix::ffi::OsStrExt, path::Path, sync::Arc};
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(fd_walk))]
 use std::{fs, path::Path};
 
 /// Directories with at least this many entries are visited in inode order (when that helps).
@@ -48,13 +48,13 @@ pub struct Listing {
     /// Entries the directory listed that cannot be used (the read failed for them).
     pub unusable: usize,
     /// The open directory, which `statx` of the entries is relative to.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     pub dir: Option<Arc<DirFd>>,
     /// Metadata of each entry without following a symlink, as far as it came with the listing
     /// (never for a directory).
     #[cfg(target_os = "macos")]
     known: Vec<Option<Stat>>,
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(fd_walk))]
     std: Vec<fs::DirEntry>,
 }
 
@@ -69,13 +69,13 @@ impl Listing {
         self.names.clear();
         self.ents.clear();
         self.unusable = 0;
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(fd_walk)]
         {
             self.dir = None;
         }
         #[cfg(target_os = "macos")]
         self.known.clear();
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(not(fd_walk))]
         self.std.clear();
     }
 
@@ -292,7 +292,7 @@ impl Listing {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 impl Listing {
     /// Entry `i` as the target of a relative system call.
     pub fn at(&self, i: usize) -> Option<At<'_>> {
@@ -327,7 +327,7 @@ impl Listing {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(fd_walk))]
 impl Listing {
     /// Reads every entry of the directory at `path`. Returns `false` when it cannot be read.
     pub fn fill(&mut self, path: &Path, found: &mut Found) -> bool {
