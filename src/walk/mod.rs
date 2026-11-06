@@ -332,30 +332,34 @@ struct Run<'a, S, F> {
     make_sink: F,
     /// Number of workers the walk may have now: `threads`, and more once it grows.
     workers: AtomicUsize,
-    /// Every sink, by sink index: those of the first `threads` workers, the root's, then those
-    /// of extra workers once the walk grows. A running worker holds its sink and puts it back
-    /// when it is done.
+    /// The sink of each worker, by worker index: those of the first `threads` workers (worker 0
+    /// also holds the root), then those of extra workers once the walk grows. Sinks are made in
+    /// index order and never removed, so the slots holding one are a prefix and a sink's index
+    /// is its position in what [`Walker::run`] returns. A running worker holds its sink and puts
+    /// it back when it is done.
     pool: Vec<Mutex<Option<S>>>,
-    /// Sink index of the next of the first `threads` workers to start. Worker 0 starts with the
+    /// Index of the next of the first `threads` workers to start. Worker 0 starts with the
     /// walk; the others start when work is available for them.
     next: AtomicUsize,
+    /// Device of the root, with `--one-file-system`.
+    root_device: Option<u64>,
     /// How many directory descriptors queued jobs may hold.
     #[cfg(fd_walk)]
     budget: Arc<Budget>,
 }
 
-/// Runs the worker with sink index `sink_index` until the walk is done. It takes its sink from
+/// Runs the worker with index `index` until the walk is done. It takes its sink from
 /// `run.pool` and puts it back there.
 fn run_worker<'scope, 'env, S, F>(
     scope: &'scope thread::Scope<'scope, 'env>,
     run: &'env Run<'env, S, F>,
-    sink_index: usize,
+    index: usize,
     local: Vec<Task>,
 ) where
     S: Sink + 'env,
-    F: Fn(u32) -> S + Sync + 'env,
+    F: Fn() -> S + Sync + 'env,
 {
-    let slot = &run.pool[sink_index];
+    let slot = &run.pool[index];
     let Some(sink) = unpoisoned(slot.lock()).take() else {
         return;
     };
@@ -363,7 +367,7 @@ fn run_worker<'scope, 'env, S, F>(
     let guard = QuitOnPanic(&run.shared);
     let mut worker = Worker {
         walker: run.walker,
-        sink_index: crate::tree::id::id(sink_index),
+        sink_index: crate::tree::id::id(index),
         shared: &run.shared,
         run,
         scope,
@@ -371,33 +375,31 @@ fn run_worker<'scope, 'env, S, F>(
         sink,
         local,
         progress: run.progress,
-        root_device: None,
         listing: Listing::default(),
         #[cfg(fd_walk)]
         dirent_buf: Vec::new(),
         #[cfg(target_os = "macos")]
         volumes: crate::fs::bulk::Volumes::default(),
         path_buf: Vec::new(),
-        deferred: 0,
     };
     worker.run();
     mem::forget(guard);
     *unpoisoned(slot.lock()) = Some(worker.sink);
 }
 
-/// Starts a thread for the worker with sink index `sink_index`, whose sink is in `run.pool`. A
-/// refused thread leaves the sink there.
+/// Starts a thread for the worker with index `index`, whose sink is in `run.pool`. A refused
+/// thread leaves the sink there.
 fn spawn_worker<'scope, 'env, S, F>(
     scope: &'scope thread::Scope<'scope, 'env>,
     run: &'env Run<'env, S, F>,
-    sink_index: usize,
+    index: usize,
 ) -> std::io::Result<()>
 where
     S: Sink + 'env,
-    F: Fn(u32) -> S + Sync + 'env,
+    F: Fn() -> S + Sync + 'env,
 {
     thread::Builder::new().spawn_scoped(scope, move || {
-        run_worker(scope, run, sink_index, vec![]);
+        run_worker(scope, run, index, vec![]);
     })?;
 
     Ok(())
@@ -409,11 +411,10 @@ impl Walker {
         self.threads.max(self.max_threads)
     }
 
-    /// Walks the tree. `make_sink(i)` creates the sink with index `i`; the root record goes to
-    /// the sink with index `threads`. Returns every sink, in index order: the workers' first,
-    /// then the root's, then those of extra workers (see [`Walker::max_threads`]). `progress`
-    /// counts kept entries.
-    pub fn run<S: Sink, F: Fn(u32) -> S + Sync>(
+    /// Walks the tree, with a sink from `make_sink` per worker. Returns every sink, by worker
+    /// index (the index [`NodeRef::sink`] refers to): the root is the first record of the first
+    /// sink. `progress` counts kept entries below the root.
+    pub fn run<S: Sink, F: Fn() -> S + Sync>(
         &self,
         make_sink: F,
         progress: Option<&AtomicU64>,
@@ -421,16 +422,15 @@ impl Walker {
         let threads = self.threads;
 
         // The pool has room for the sinks of extra workers too.
-        let mut pool: Vec<Mutex<Option<S>>> = (0..=self.max_workers())
-            .map(|i| Mutex::new((i <= threads).then(|| make_sink(crate::tree::id::id(i)))))
+        let mut pool: Vec<Mutex<Option<S>>> = (0..self.max_workers())
+            .map(|i| Mutex::new((i < threads).then(&make_sink)))
             .collect();
 
-        let root_sink_index = crate::tree::id::id(threads);
-        let root = unpoisoned(pool[threads].get_mut())
+        let root = unpoisoned(pool[0].get_mut())
             .as_mut()
-            .and_then(|sink| self.root_job(sink, root_sink_index));
+            .and_then(|sink| self.root_job(sink));
 
-        if let Some(root) = root {
+        if let Some((root, root_device)) = root {
             // Parent directories stay open while their subdirectories wait, so allow many
             // files, and hold no more of them than the limit allows.
             #[cfg(fd_walk)]
@@ -450,6 +450,7 @@ impl Walker {
                 workers: AtomicUsize::new(threads),
                 pool,
                 next: AtomicUsize::new(1),
+                root_device,
                 #[cfg(fd_walk)]
                 budget,
             };
@@ -460,14 +461,14 @@ impl Walker {
             pool = run.pool;
         }
 
-        // Every worker the walk had, and the root, put a sink in the first slots.
         pool.into_iter()
-            .filter_map(|slot| unpoisoned(slot.into_inner()))
+            .map_while(|slot| unpoisoned(slot.into_inner()))
             .collect()
     }
 
-    /// Records the root and returns the job that reads it.
-    fn root_job<S: Sink>(&self, sink: &mut S, sink_index: u32) -> Option<Job> {
+    /// Records the root in `sink`, the sink of worker 0, and returns the job that reads it and
+    /// the device of the root (with `--one-file-system`).
+    fn root_job<S: Sink>(&self, sink: &mut S) -> Option<(Job, Option<u64>)> {
         let metadata = fs::symlink_metadata(&self.root).ok()?;
         let stat = Stat::from_metadata(&metadata, self.fields);
         let name = self
@@ -490,13 +491,17 @@ impl Walker {
             return None;
         }
 
-        Some(Job {
+        // A directory root is not a symlink, so its own metadata is its target's.
+        let root_device = if self.same_file_system {
+            crate::fs::inode::device_of(&stat, &self.root)
+        } else {
+            None
+        };
+
+        let job = Job {
             path: self.root.clone(),
             me: Me::Pushed {
-                id: NodeRef {
-                    sink: sink_index,
-                    index,
-                },
+                id: NodeRef { sink: 0, index },
                 foreign: false,
             },
             depth: 0,
@@ -507,7 +512,9 @@ impl Walker {
             follow: true,
             #[cfg(target_os = "macos")]
             bulk: true,
-        })
+        };
+
+        Some((job, root_device))
     }
 }
 
@@ -550,6 +557,27 @@ enum Kept {
     },
 }
 
+/// What a task did with the entries it visited: the progress counter counts the recorded ones,
+/// and `--report-ignored` the rest of the listed ones.
+#[derive(Clone, Copy, Default)]
+struct Tally {
+    /// Entries listed. A directory whose own job stores its record is listed again by that job,
+    /// which then records it or counts it as ignored.
+    listed: usize,
+    /// Entries recorded.
+    recorded: usize,
+    /// Directories kept whose own job stores their record.
+    deferred: usize,
+}
+
+impl std::ops::AddAssign for Tally {
+    fn add_assign(&mut self, other: Self) {
+        self.listed += other.listed;
+        self.recorded += other.recorded;
+        self.deferred += other.deferred;
+    }
+}
+
 struct Worker<'scope, 'env, S, F> {
     walker: &'env Walker,
     sink_index: u32,
@@ -560,8 +588,6 @@ struct Worker<'scope, 'env, S, F> {
     sink: S,
     local: Vec<Task>,
     progress: Option<&'env AtomicU64>,
-    /// Device of the root, with `--one-file-system`.
-    root_device: Option<u64>,
     /// Buffers reused from directory to directory.
     listing: Listing,
     #[cfg(fd_walk)]
@@ -570,26 +596,17 @@ struct Worker<'scope, 'env, S, F> {
     #[cfg(target_os = "macos")]
     volumes: crate::fs::bulk::Volumes,
     path_buf: Vec<u8>,
-    /// Directories the current task queued whose record their own job stores. Those jobs count
-    /// them as kept (for the progress counter) when they do.
-    deferred: u64,
 }
 
 impl<'env, S, F> Worker<'_, 'env, S, F>
 where
     S: Sink + 'env,
-    F: Fn(u32) -> S + Sync + 'env,
+    F: Fn() -> S + Sync + 'env,
 {
     fn run(&mut self) {
-        self.root_device = if self.walker.same_file_system {
-            crate::fs::inode::device_num(&self.walker.root)
-        } else {
-            None
-        };
-
         while let Some(task) = self.next_job() {
             let started = Instant::now();
-            let kept = match task {
+            let tally = match task {
                 Task::Dir(job) => self.read_dir(job),
                 Task::Chunk(chunk) => self.walk_chunk(&chunk.dir, chunk.lo, chunk.hi),
             };
@@ -598,11 +615,7 @@ where
                 self.grow();
             }
 
-            let deferred = mem::take(&mut self.deferred);
-            if let Some(progress) = self.progress {
-                progress.fetch_add(kept.saturating_sub(deferred), Ordering::Relaxed);
-            }
-
+            self.account(tally);
             self.share();
 
             if self.shared.pending.fetch_sub(1, Ordering::AcqRel) == 1 {
@@ -611,6 +624,29 @@ where
                 self.shared.wake.notify_all();
             }
         }
+    }
+
+    /// Counts the entries a task visited.
+    fn account(&mut self, tally: Tally) {
+        if let Some(progress) = self.progress {
+            progress.fetch_add(
+                u64::try_from(tally.recorded).unwrap_or(u64::MAX),
+                Ordering::Relaxed,
+            );
+        }
+
+        if self.walker.count_ignored {
+            self.sink
+                .add_ignored(tally.listed - tally.recorded - tally.deferred);
+        }
+    }
+
+    /// Whether the directory at `path` with metadata `stat` is on another file system than the
+    /// root (`--one-file-system`).
+    fn is_foreign(&self, stat: &Stat, path: &Path) -> bool {
+        self.run.root_device.is_some_and(|root| {
+            crate::fs::inode::device_of(stat, path).is_some_and(|dev| dev != root)
+        })
     }
 
     /// Doubles the number of workers, up to the limit, because the workers wait for the file
@@ -636,14 +672,13 @@ where
         }
 
         let want = (have * 2).min(cap);
-        // Sink `threads` is the root's, so the extra workers follow it. Every sink of the range
-        // exists before any worker starts, so a refused thread leaves no gap in the numbering.
-        for index in have + 1..=want {
-            let sink = (run.make_sink)(crate::tree::id::id(index));
-            *unpoisoned(run.pool[index].lock()) = Some(sink);
+        // Every sink of the range exists before any worker starts, so a refused thread leaves no
+        // gap in the numbering.
+        for index in have..want {
+            *unpoisoned(run.pool[index].lock()) = Some((run.make_sink)());
         }
 
-        for index in have + 1..=want {
+        for index in have..want {
             self.walker.tuning.grown.fetch_add(1, Ordering::Relaxed);
 
             // A refused thread leaves the walk with the workers it has.
@@ -729,11 +764,11 @@ where
         }
     }
 
-    /// Reads one directory, records its kept entries and queues its subdirectories. Returns the
-    /// number of kept entries.
-    fn read_dir(&mut self, job: Job) -> u64 {
-        let Some((id, listing, found, ident)) = self.open(&job) else {
-            return 0;
+    /// Reads one directory, records its kept entries and queues its subdirectories.
+    fn read_dir(&mut self, job: Job) -> Tally {
+        let mut tally = Tally::default();
+        let Some((id, listing, found, ident)) = self.open(&job, &mut tally) else {
+            return tally;
         };
 
         #[cfg(fd_walk)]
@@ -756,31 +791,20 @@ where
 
         let len = dir.listing.len();
 
-        if self.walker.count_ignored {
-            self.sink.add_ignored(dir.listing.unusable);
-        }
-
         if len >= self.walker.tuning.split_min && self.walker.max_workers() > 1 {
             // Idle workers may take over parts of a directory this large.
             let dir = Arc::new(dir);
-            let kept = self.walk_chunk(&dir, 0, len);
+            tally += self.walk_chunk(&dir, 0, len);
 
             if let Ok(dir) = Arc::try_unwrap(dir) {
                 self.recycle(dir.listing);
             }
-
-            return kept;
+        } else {
+            tally += self.walk_entries(&dir, 0, len);
+            self.recycle(dir.listing);
         }
 
-        let kept = self.walk_entries(&dir, 0, len);
-
-        if self.walker.count_ignored {
-            self.sink
-                .add_ignored(len - usize::try_from(kept).unwrap_or(len));
-        }
-
-        self.recycle(dir.listing);
-        kept
+        tally
     }
 
     /// Keeps the buffers of `listing` for the next directory, but not the directory's file
@@ -791,12 +815,12 @@ where
     }
 
     /// Visits the entries `lo..hi` of `dir` in blocks, handing the second half of what is left
-    /// to an idle worker. Returns how many entries were kept.
-    fn walk_chunk(&mut self, dir: &Arc<Dir>, lo: usize, mut hi: usize) -> u64 {
+    /// to an idle worker.
+    fn walk_chunk(&mut self, dir: &Arc<Dir>, lo: usize, mut hi: usize) -> Tally {
         let tuning = &self.walker.tuning;
         let block = tuning.block;
 
-        let mut kept = 0;
+        let mut tally = Tally::default();
         let mut at = lo;
 
         while at < hi {
@@ -821,17 +845,11 @@ where
             self.share();
 
             let n = end.min(hi) - at;
-            kept += self.walk_entries(dir, at, at + n);
+            tally += self.walk_entries(dir, at, at + n);
             at += n;
         }
 
-        if self.walker.count_ignored {
-            let listed = hi - lo;
-            self.sink
-                .add_ignored(listed - usize::try_from(kept).unwrap_or(listed));
-        }
-
-        kept
+        tally
     }
 
     /// Queues `task` for an idle worker.
@@ -841,15 +859,20 @@ where
         self.shared.wake.notify_one();
     }
 
-    /// Opens and lists the directory of `job`, storing its record if that is still to do.
-    /// Returns its record, listing, which ignore files it has and its device and inode numbers
-    /// (with `--follow`); `None` when it cannot be read or is not walked.
+    /// Opens and lists the directory of `job`, storing its record if that is still to do, and
+    /// counts what it recorded and listed without walking in `tally`. Returns its record,
+    /// listing, which ignore files it has and its device and inode numbers (with `--follow`);
+    /// `None` when it cannot be read or is not walked.
     ///
     /// A directory the parent listed as one but that cannot be looked up (its parent is
     /// readable but not searchable, or it vanished) has no record. It counts as ignored, as an
     /// entry whose metadata cannot be read does.
     #[cfg(fd_walk)]
-    fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
+    fn open(
+        &mut self,
+        job: &Job,
+        tally: &mut Tally,
+    ) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
         let walker = self.walker;
         let fd = open_dir(job);
         let mut ident = None;
@@ -881,42 +904,29 @@ where
             },
             #[cfg(fd_walk)]
             Me::Deferred(parent) => {
+                // The parent counted the directory as deferred; it is recorded or ignored here.
+                tally.listed += 1;
+
                 let from_fd = fd
                     .as_ref()
                     .and_then(|fd| at::stat_fd(fd.as_raw_fd(), walker.fields).ok());
 
-                let stored = from_fd
-                    .or_else(|| lstat_in_parent(job, walker.fields))
-                    .and_then(|stat| {
-                        let index = self.store_dir(job, parent, &stat)?;
-                        Some((stat, index))
-                    });
-
-                let Some((stat, index)) = stored else {
-                    if walker.count_ignored {
-                        self.sink.add_ignored(1);
-                    }
-                    return None;
-                };
-
-                // The parent's task did not count the directory.
-                if let Some(progress) = self.progress {
-                    progress.fetch_add(1, Ordering::Relaxed);
-                }
+                let stat = from_fd.or_else(|| lstat_in_parent(job, walker.fields))?;
+                let index = self.store_dir(job, parent, &stat)?;
+                tally.recorded += 1;
 
                 ident = Some((stat.dev, stat.ino));
                 #[cfg(target_os = "macos")]
                 {
                     links = Some(stat.nlink);
                 }
-                let foreign = self.root_device.is_some_and(|root| stat.dev != root);
 
                 (
                     NodeRef {
                         sink: self.sink_index,
                         index,
                     },
-                    foreign,
+                    self.is_foreign(&stat, &job.path),
                 )
             },
         };
@@ -954,18 +964,22 @@ where
 
         if foreign {
             // Contents of another file system are not walked, only counted.
-            self.sink.add_ignored(listing.len() + listing.unusable);
-            listing.clear();
-            self.listing = listing;
+            tally.listed += listing.len() + listing.unusable;
+            self.recycle(listing);
             return None;
         }
 
+        tally.listed += listing.unusable;
         Some((id, listing, found, ident))
     }
 
     /// Opens and lists the directory of `job`.
     #[cfg(not(fd_walk))]
-    fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
+    fn open(
+        &mut self,
+        job: &Job,
+        tally: &mut Tally,
+    ) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
         let Me::Pushed { id, foreign } = job.me;
 
         if foreign && !self.walker.count_ignored {
@@ -975,23 +989,20 @@ where
         let mut listing = mem::take(&mut self.listing);
         let mut found = Found::default();
         listing.clear();
-        let readable = listing.fill(&job.path, &mut found);
+
+        if !listing.fill(&job.path, &mut found) {
+            self.listing = listing;
+            return None;
+        }
 
         if foreign {
             // Contents of another file system are not walked, only counted.
-            if readable {
-                self.sink.add_ignored(listing.len() + listing.unusable);
-            }
-            listing.clear();
-            self.listing = listing;
+            tally.listed += listing.len() + listing.unusable;
+            self.recycle(listing);
             return None;
         }
 
-        if !readable {
-            self.listing = listing;
-            return None;
-        }
-
+        tally.listed += listing.unusable;
         Some((id, listing, found, None))
     }
 
@@ -1017,8 +1028,7 @@ where
     }
 
     /// Visits the entries `lo..hi` of `dir`: records the kept ones and queues the subdirectories.
-    /// Returns how many entries were kept.
-    fn walk_entries(&mut self, dir: &Dir, lo: usize, hi: usize) -> u64 {
+    fn walk_entries(&mut self, dir: &Dir, lo: usize, hi: usize) -> Tally {
         let walker = self.walker;
         let depth = dir.depth + 1;
         let may_descend = walker.max_depth.is_none_or(|max| depth < max);
@@ -1031,7 +1041,10 @@ where
         }
         let dir_len = buf.len();
 
-        let mut kept = 0;
+        let mut tally = Tally {
+            listed: hi - lo,
+            ..Tally::default()
+        };
         // Files listed and how many of them were recorded, which needs their metadata; and where
         // the subdirectories queued here start.
         #[cfg(target_os = "macos")]
@@ -1055,7 +1068,6 @@ where
             let Some(entry) = self.visit(dir, i, path, may_descend) else {
                 continue;
             };
-            kept += 1;
 
             // Every kept entry is recorded but a directory whose own job stores it.
             let Kept::Dir {
@@ -1064,6 +1076,7 @@ where
                 follow,
             } = entry
             else {
+                tally.recorded += 1;
                 #[cfg(target_os = "macos")]
                 {
                     recorded += usize::from(file);
@@ -1071,14 +1084,15 @@ where
                 continue;
             };
 
+            match me {
+                Me::Pushed { .. } => tally.recorded += 1,
+                #[cfg(fd_walk)]
+                Me::Deferred(_) => tally.deferred += 1,
+            }
+
             #[cfg(target_os = "macos")]
             {
                 recorded += usize::from(file && matches!(me, Me::Pushed { .. }));
-            }
-
-            #[cfg(fd_walk)]
-            if let Me::Deferred(_) = me {
-                self.deferred += 1;
             }
 
             #[cfg(fd_walk)]
@@ -1119,7 +1133,7 @@ where
         }
 
         self.path_buf = buf;
-        kept
+        tally
     }
 
     /// Applies the walk rules to entry `i` of `dir` and records it. Returns what is needed to
@@ -1218,9 +1232,7 @@ where
             return Some(Kept::Leaf);
         }
 
-        let foreign = self.root_device.is_some_and(|root| {
-            crate::fs::inode::device_of(&stat, path).is_some_and(|dev| dev != root)
-        });
+        let foreign = self.is_foreign(&stat, path);
 
         Some(Kept::Dir {
             me: Me::Pushed {
@@ -1452,12 +1464,12 @@ mod test {
         };
 
         let progress = AtomicU64::new(0);
-        let sinks = walker.run(|_| Collect::default(), Some(&progress));
+        let sinks = walker.run(Collect::default, Some(&progress));
         let grown = walker.tuning.grown.load(Ordering::Relaxed);
+        assert_eq!(sinks.len(), threads + grown, "a sink per worker");
         assert_eq!(
-            sinks.len(),
-            threads + 1 + grown,
-            "a sink per worker and the root's"
+            sinks[0].records[0].3, None,
+            "the root is the first record of the first sink"
         );
 
         let parent_path = |parent: Option<NodeRef>| {
@@ -1575,8 +1587,8 @@ mod test {
             tuning: Tuning::default(),
         };
 
-        let sinks = walker.run(|_| Collect::default(), None);
-        assert_eq!(sinks.len(), threads + 1, "a sink per worker and the root's");
+        let sinks = walker.run(Collect::default, None);
+        assert_eq!(sinks.len(), threads, "a sink per worker");
         walker.tuning.started.load(Ordering::Relaxed)
     }
 
@@ -1651,7 +1663,7 @@ mod test {
         };
 
         // `walk_with` checks that there is a sink per worker and that parents resolve to the
-        // sinks that recorded them; at the limit that is `max_workers() + 1` sinks.
+        // sinks that recorded them; at the limit that is `max_workers()` sinks.
         let mut reached = false;
         for _ in 0..50 {
             let (got, added) = walk_with(&root, 2, 16, 32, always);

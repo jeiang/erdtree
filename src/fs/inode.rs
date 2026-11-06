@@ -102,26 +102,8 @@ fn file_information(
     }
 }
 
-/// Device number of the file system `path` is on (following symlinks), for
+/// Device number of the file system of the directory at `path` given its stat, for
 /// `--one-file-system`. On Windows, the serial number of the volume.
-pub fn device_num(path: &Path) -> Option<u64> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-
-        std::fs::metadata(path).ok().map(|md| md.dev())
-    }
-
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
-
-        file_information(path, FILE_FLAG_BACKUP_SEMANTICS)
-            .map(|info| u64::from(info.dwVolumeSerialNumber))
-    }
-}
-
-/// Device number of the directory at `path` given its stat.
 // Only the Windows lookup can fail or is not `const`.
 #[cfg_attr(unix, allow(clippy::unnecessary_wraps, clippy::missing_const_for_fn))]
 pub fn device_of(stat: &Stat, path: &Path) -> Option<u64> {
@@ -131,10 +113,19 @@ pub fn device_of(stat: &Stat, path: &Path) -> Option<u64> {
         Some(stat.dev)
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
         let _ = stat;
-        device_num(path)
+        file_information(path, FILE_FLAG_BACKUP_SEMANTICS)
+            .map(|info| u64::from(info.dwVolumeSerialNumber))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (stat, path);
+        None
     }
 }
 

@@ -118,7 +118,7 @@ impl Tree {
         let probe = Probe::new(ctx);
         let walker = walker(ctx, root, probe)?;
 
-        let sinks = walker.run(|_| Collector::new(probe, colors), progress);
+        let sinks = walker.run(|| Collector::new(probe, colors), progress);
         let cols = Columns::merge(sinks.into_iter().map(Collector::into_columns).collect());
 
         Self::assemble(cols, ctx)
