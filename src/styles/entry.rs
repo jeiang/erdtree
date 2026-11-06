@@ -166,6 +166,20 @@ mod test {
         Box::leak(Box::new(LsColors::from_string("no=00;37:fi=:di=01;34")))
     }
 
+    /// Checks every path under each `LS_COLORS` above and the default one.
+    fn check_all(paths: &[std::path::PathBuf]) {
+        for ls in [
+            all_styled(),
+            few_styled(),
+            no_file_fallback(),
+            Box::leak(Box::new(LsColors::default())),
+        ] {
+            for path in paths {
+                check(ls, path);
+            }
+        }
+    }
+
     #[test]
     fn matches_lscolors_for_every_kind_of_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -175,9 +189,6 @@ mod test {
         file(&p("code.rs"), 0o644);
         file(&p("upper.TXT"), 0o644);
         file(&p("exec"), 0o755);
-        file(&p("setuid"), 0o4755);
-        file(&p("setgid"), 0o2644);
-        file(&p("setuid-plain"), 0o4644);
         file(&p("linked"), 0o644);
         fs::hard_link(p("linked"), p("linked2")).unwrap();
         file(&p("exec.rs"), 0o755);
@@ -209,18 +220,9 @@ mod test {
             .unwrap()
             .map(|e| e.unwrap().path())
             .collect();
-        assert_eq!(names.len(), 21);
+        assert_eq!(names.len(), 18);
 
-        for ls in [
-            all_styled(),
-            few_styled(),
-            no_file_fallback(),
-            Box::leak(Box::new(LsColors::default())),
-        ] {
-            for path in &names {
-                check(ls, path);
-            }
-        }
+        check_all(&names);
 
         // Character and block devices.
         for path in ["/dev/null", "/dev/zero"] {
@@ -228,6 +230,20 @@ mod test {
                 check(all_styled(), Path::new(path));
             }
         }
+    }
+
+    /// Separate from the other kinds because the Nix build sandbox refuses setuid and setgid
+    /// bits.
+    #[test]
+    fn setuid_bits_match_ls_colors() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = |name: &str| dir.path().join(name);
+
+        file(&p("setuid"), 0o4755);
+        file(&p("setgid"), 0o2644);
+        file(&p("setuid-plain"), 0o4644);
+
+        check_all(&["setuid", "setgid", "setuid-plain"].map(p));
     }
 
     #[test]

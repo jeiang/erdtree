@@ -90,7 +90,7 @@
               // {
                 inherit cargoArtifacts;
                 # The Nix sandbox forbids setting setuid/setgid bits (EPERM), which these tests need.
-                cargoTestExtraArgs = "-- --skip styles::entry::test::matches_lscolors_for_every_kind_of_entry --skip colored::";
+                cargoTestExtraArgs = "-- --skip styles::entry::test::setuid_bits_match_ls_colors --skip setuid_bit::";
               }
             );
           };
