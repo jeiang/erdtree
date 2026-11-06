@@ -9,31 +9,38 @@ use crate::{
     bytes::digits,
     context::Context,
     disk_usage::{
-        file_size::byte,
+        file_size::{DiskUsage, byte},
         units::{PREFIXES, PrefixKind},
     },
 };
 use std::ops::Range;
 
-/// How the size column shows sizes, decided once from the [`Context`].
+/// How the size column shows sizes, decided once from the [`Context`]. Each variant carries the
+/// prefix kind that picks the colors of sizes, by the closest prefix.
 #[derive(Clone, Copy)]
 pub enum SizeFormat {
     /// Bytes in the largest unit of this kind that fits, e.g. `1.5 KiB`.
     Human(PrefixKind),
 
     /// Bytes as an integer, with the byte unit.
-    Bytes,
+    Bytes(PrefixKind),
 
-    /// Blocks, lines or words as an integer, without a unit.
+    /// Blocks as an integer, without a unit, colored by the prefix of their size in bytes.
+    #[cfg(unix)]
+    Blocks(PrefixKind),
+
+    /// Lines or words as an integer, without a unit, colored as bytes.
     Count,
 }
 
 impl SizeFormat {
     pub const fn new(ctx: &Context) -> Self {
-        match (ctx.disk_usage.is_bytes(), ctx.human) {
-            (true, true) => Self::Human(ctx.unit),
-            (true, false) => Self::Bytes,
-            (false, _) => Self::Count,
+        match ctx.disk_usage {
+            DiskUsage::Logical | DiskUsage::Physical if ctx.human => Self::Human(ctx.unit),
+            DiskUsage::Logical | DiskUsage::Physical => Self::Bytes(ctx.unit),
+            #[cfg(unix)]
+            DiskUsage::Block => Self::Blocks(ctx.unit),
+            DiskUsage::Line | DiskUsage::Word => Self::Count,
         }
     }
 
@@ -41,7 +48,9 @@ impl SizeFormat {
     const fn human(self) -> Option<PrefixKind> {
         match self {
             Self::Human(unit) => Some(unit),
-            Self::Bytes | Self::Count => None,
+            Self::Bytes(_) | Self::Count => None,
+            #[cfg(unix)]
+            Self::Blocks(_) => None,
         }
     }
 
@@ -55,8 +64,10 @@ impl SizeFormat {
                 .max()
                 .unwrap_or(0),
             // Both kinds name bytes `B`.
-            Self::Bytes => PrefixKind::Bin.names()[0].len(),
+            Self::Bytes(_) => PrefixKind::Bin.names()[0].len(),
             Self::Count => 0,
+            #[cfg(unix)]
+            Self::Blocks(_) => 0,
         }
     }
 }
@@ -83,13 +94,18 @@ pub struct Widths {
 }
 
 impl Widths {
-    /// The widths that fit the nodes `stats` was scanned from, whose owner and group names
-    /// are in `owners`.
+    /// The widths that fit the nodes `stats` was scanned from with sizes in `format`, whose
+    /// owner and group names are in `owners`.
     #[cfg_attr(
         not(unix),
         allow(unused_variables, reason = "only the Unix long view reads `ctx`")
     )]
-    pub fn new(ctx: &Context, stats: &Stats, #[cfg(unix)] owners: &Owners) -> Self {
+    pub fn new(
+        ctx: &Context,
+        format: SizeFormat,
+        stats: &Stats,
+        #[cfg(unix)] owners: &Owners,
+    ) -> Self {
         #[cfg(unix)]
         let (ino, nlink, owner, group) = if ctx.long {
             let (owner, group) = stats
@@ -107,9 +123,9 @@ impl Widths {
 
         Self {
             // A size column exists exactly when some node has a size.
-            size_format: number.map(|_| stats.format),
+            size_format: number.map(|_| format),
             max_size_width: number.unwrap_or(0),
-            max_size_unit_width: stats.format.unit_width(),
+            max_size_unit_width: format.unit_width(),
             #[cfg(unix)]
             max_nlink_width: nlink,
             #[cfg(unix)]
@@ -221,7 +237,6 @@ impl SizeStats {
 
 /// Maxima and the owners over some nodes.
 pub struct Stats {
-    format: SizeFormat,
     size: SizeStats,
     #[cfg(unix)]
     ino: u64,
@@ -254,16 +269,23 @@ impl Stats {
 }
 
 impl Tree {
-    /// Scans `scope` for the facts that column widths depend on, with up to `threads` threads.
-    pub fn scan(&self, ctx: &Context, scope: Scope<'_>, threads: usize) -> Stats {
+    /// Scans `scope` for the facts that column widths of sizes in `format` depend on, with up
+    /// to `threads` threads.
+    pub fn scan(
+        &self,
+        ctx: &Context,
+        format: SizeFormat,
+        scope: Scope<'_>,
+        threads: usize,
+    ) -> Stats {
         let len = scope.len(self.cols.len());
 
         #[cfg_attr(not(unix), allow(unused_mut, reason = "only Unix collects owners"))]
         let mut stats = if len < PAR_MIN || threads < 2 {
-            self.scan_range(ctx, scope, 0..len)
+            self.scan_range(ctx, format, scope, 0..len)
         } else {
             let parts = crate::par::run_parts(0..threads, |k| {
-                self.scan_range(ctx, scope, crate::par::split(len, threads, k))
+                self.scan_range(ctx, format, scope, crate::par::split(len, threads, k))
             });
             let mut parts = parts.into_iter();
             let mut total = parts.next().expect("parallel scan has parts");
@@ -282,11 +304,19 @@ impl Tree {
     }
 
     /// [`Self::scan`] of the nodes at positions `range` of `scope`, on this thread.
-    fn scan_range(&self, ctx: &Context, scope: Scope<'_>, range: Range<usize>) -> Stats {
+    #[cfg_attr(
+        not(unix),
+        allow(unused_variables, reason = "only the Unix long view reads `ctx`")
+    )]
+    fn scan_range(
+        &self,
+        ctx: &Context,
+        format: SizeFormat,
+        scope: Scope<'_>,
+        range: Range<usize>,
+    ) -> Stats {
         let cols = &self.cols;
-        let format = SizeFormat::new(ctx);
         let mut stats = Stats {
-            format,
             size: SizeStats::new(format.human()),
             #[cfg(unix)]
             ino: 0,
