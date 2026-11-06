@@ -10,10 +10,7 @@ use super::{
 use crate::{
     ansi::Escaped,
     context::{Context, column},
-    disk_usage::{
-        file_size::{DiskUsage, FileSize},
-        units::PrefixKind,
-    },
+    disk_usage::file_size::{DiskUsage, FileSize},
     icons::{self, fs::Paint},
     styles,
     tree::{Tree, node::Node},
@@ -22,12 +19,14 @@ use crate::{
 #[cfg(unix)]
 use super::long;
 #[cfg(unix)]
-use crate::disk_usage::file_size::BLOCK_SIZE_BYTES;
+use crate::disk_usage::{file_size::BLOCK_SIZE_BYTES, units::PrefixKind};
 
 /// How the size column is written.
 struct Size {
     width: usize,
     unit_width: usize,
+    /// Picks the color of block counts, by the prefix of their size in bytes.
+    #[cfg(unix)]
     unit: PrefixKind,
     disk_usage: DiskUsage,
 
@@ -53,6 +52,7 @@ impl Size {
         Self {
             width: widths.max_size_width,
             unit_width: widths.max_size_unit_width,
+            #[cfg(unix)]
             unit: ctx.unit,
             disk_usage: ctx.disk_usage,
             placeholder,
