@@ -34,7 +34,4 @@ pub enum Error {
 
     #[error("{0}")]
     UninitializedTheme(#[from] StyleError<'static>),
-
-    #[error("Terminated erdtree...")]
-    Terminated,
 }

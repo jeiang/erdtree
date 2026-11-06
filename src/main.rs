@@ -19,7 +19,7 @@
 
 use clap::CommandFactory;
 use context::{Context, layout};
-use progress::{Indicator, IndicatorHandle, Message};
+use progress::{Indicator, IndicatorHandle};
 use render::{Engine, Flat, FlatInverted, Inverted, Regular};
 use std::{
     error::Error,
@@ -111,18 +111,15 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let mut trees = vec![];
 
+    // On an error return, dropping `indicator` restores the terminal before the error is printed.
     for ctx in ctx.split_roots() {
-        match Tree::try_init(ctx, indicator.as_ref().map(IndicatorHandle::indexed)) {
-            Ok(res) => trees.push(res),
-            Err(err) => {
-                let _ = IndicatorHandle::try_terminate(indicator);
-                return Err(Box::new(err));
-            },
-        }
+        trees.push(Tree::try_init(
+            ctx,
+            indicator.as_ref().map(IndicatorHandle::indexed),
+        )?);
     }
 
     if !roots_only && trees.iter().all(|(tree, _)| tree.is_stump()) {
-        let _ = IndicatorHandle::try_terminate(indicator);
         return Err(Box::new(tree::error::Error::NoMatches));
     }
 
@@ -131,13 +128,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     });
 
     // Rows are streamed to stdout, so the indicator must be gone first.
-    if let Some(mut progress) = indicator {
-        progress
-            .mailbox()
-            .send(Message::RenderReady)
-            .map_err(|_e| tree::error::Error::Terminated)?;
-
-        progress.join()?;
+    if let Some(progress) = indicator {
+        progress.finish()?;
     }
 
     #[cfg(debug_assertions)]
