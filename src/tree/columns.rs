@@ -629,12 +629,8 @@ fn size(probe: Probe, record: &Record<'_>, file_type: Kind, scratch: &mut Vec<u8
         DiskUsage::Physical => Some(stat.blocks * 512),
         #[cfg(not(unix))]
         DiskUsage::Physical => Some(filesize::file_real_size(record.path).unwrap_or(stat.size)),
-        DiskUsage::Line => {
-            line_count::Metric::from_file(record.open().ok()?, hint, scratch).map(|m| m.value)
-        },
-        DiskUsage::Word => {
-            word_count::Metric::from_file(record.open().ok()?, hint, scratch).map(|m| m.value)
-        },
+        DiskUsage::Line => line_count::from_file(record.open().ok()?, hint, scratch),
+        DiskUsage::Word => word_count::from_file(record.open().ok()?, hint, scratch),
         #[cfg(unix)]
         DiskUsage::Block => Some(stat.blocks),
     }

@@ -5,7 +5,7 @@
 use super::{Tree, topo::ix};
 use crate::{
     context::Context,
-    disk_usage::{file_size::FileSize, units::PrefixKind},
+    disk_usage::{file_size::byte, units::PrefixKind},
     utils,
 };
 use std::ops::Range;
@@ -39,9 +39,9 @@ pub struct SizeStats {
     /// The largest size.
     max: Option<u64>,
 
-    /// For human-readable sizes, the least value of buckets 1 to 4 (the prefix indices of
-    /// [`PrefixKind::index_of`]).
-    limits: Option<[u64; 4]>,
+    /// For human-readable sizes, their unit and the least value of buckets 1 to 4 (the prefix
+    /// indices of [`PrefixKind::index_of`]).
+    human: Option<(PrefixKind, [u64; 4])>,
 
     /// For each bucket below the last, one more than the largest size under the next bucket's
     /// least value (0 for none).
@@ -53,7 +53,7 @@ impl SizeStats {
     pub fn new(human: Option<PrefixKind>) -> Self {
         Self {
             max: None,
-            limits: human.map(|unit| std::array::from_fn(|k| unit.base(k + 1))),
+            human: human.map(|unit| (unit, std::array::from_fn(|k| unit.base(k + 1)))),
             below: [0; 4],
         }
     }
@@ -65,7 +65,7 @@ impl SizeStats {
             self.max = Some(value);
         }
 
-        if let Some(limits) = &self.limits {
+        if let Some((_, limits)) = &self.human {
             for (below, &limit) in self.below.iter_mut().zip(limits) {
                 if value < limit {
                     *below = (*below).max(value + 1);
@@ -82,17 +82,17 @@ impl SizeStats {
         }
     }
 
-    /// The widths of the widest number and unit, as the size column shows them, with `format`
-    /// building the size to show for a value. Both are 0 without sizes, and the unit is 0
-    /// unless sizes are human-readable.
-    pub fn widths(&self, format: impl Fn(u64) -> FileSize) -> (usize, usize) {
+    /// The widths of the widest number and unit, as the size column shows them. Both are 0
+    /// without sizes, and the unit is 0 unless sizes are human-readable.
+    pub fn widths(&self) -> (usize, usize) {
         let Some(max) = self.max else {
             return (0, 0);
         };
-        let Some(limits) = self.limits else {
+        let Some((unit, limits)) = self.human else {
             return (utils::num_integral(max), 0);
         };
 
+        let format = byte::Metric::new(unit, true);
         let mut widest = (0, 0);
 
         for b in 0..=4 {
@@ -106,7 +106,7 @@ impl SizeStats {
             let least = if b == 0 { 0 } else { limits[b - 1] };
 
             if let Some(value) = candidate.filter(|&v| v >= least) {
-                let (number, unit) = super::human_widths(&format(value));
+                let (number, unit) = format.widths(value);
                 widest = (widest.0.max(number), widest.1.max(unit));
             }
         }
@@ -217,14 +217,12 @@ impl Tree {
 
     /// Widens the tree's column widths to fit the nodes `stats` was scanned from, and resolves
     /// their owner and group names.
+    #[cfg_attr(
+        not(unix),
+        allow(unused_variables, reason = "only the Unix long view reads `ctx`")
+    )]
     pub fn apply_widths(&mut self, ctx: &Context, stats: &Stats) {
-        let (number, unit) = stats.size.widths(|value| {
-            let mut size = FileSize::from(ctx);
-            if let FileSize::Byte(metric) = &mut size {
-                metric.value = value;
-            }
-            size
-        });
+        let (number, unit) = stats.size.widths();
         let props = &mut self.widths;
         props.max_size_width = props.max_size_width.max(number);
         props.max_size_unit_width = props.max_size_unit_width.max(unit);
@@ -280,22 +278,14 @@ pub fn lookup(table: &[(u32, Option<String>)], id: u32) -> Option<&str> {
 #[cfg(test)]
 mod test {
     use super::SizeStats;
-    use crate::disk_usage::{
-        file_size::{FileSize, byte},
-        units::PrefixKind,
-    };
+    use crate::disk_usage::{file_size::byte, units::PrefixKind};
 
     /// The widths a node-by-node pass gives.
     fn reference(values: &[u64], unit: PrefixKind) -> (usize, usize) {
         values.iter().fold((0, 0), |acc, &v| {
-            let (number, unit) = crate::tree::human_widths(&format(unit, v));
+            let (number, unit) = byte::Metric::new(unit, true).widths(v);
             (acc.0.max(number), acc.1.max(unit))
         })
-    }
-
-    /// A human-readable size of `v` bytes.
-    fn format(unit: PrefixKind, v: u64) -> FileSize {
-        FileSize::Byte(byte::Metric::new(v, byte::MetricKind::Logical, unit, true))
     }
 
     /// Per-unit maxima give the widths of the per-node pass, for values around every rounding
@@ -348,7 +338,7 @@ mod test {
                 stats.merge(&other);
 
                 assert_eq!(
-                    stats.widths(|v| format(unit, v)),
+                    stats.widths(),
                     reference(&values, unit),
                     "round {round}: {values:?}"
                 );
@@ -360,10 +350,10 @@ mod test {
     #[test]
     fn plain_widths_come_from_the_largest() {
         let mut stats = SizeStats::new(None);
-        assert_eq!(stats.widths(|_| unreachable!()), (0, 0));
+        assert_eq!(stats.widths(), (0, 0));
         for v in [0, 7, 12345, 99] {
             stats.add(v);
         }
-        assert_eq!(stats.widths(|_| unreachable!()), (5, 0));
+        assert_eq!(stats.widths(), (5, 0));
     }
 }

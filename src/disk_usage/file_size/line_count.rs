@@ -1,73 +1,58 @@
 #[cfg(test)]
 use std::path::Path;
-use std::{
-    convert::From,
-    fmt::{self, Display},
-    fs::File,
-    io::Read,
-};
+use std::{fs::File, io::Read};
 
 #[cfg(test)]
 use super::utf8_stream::for_each_chunk;
 use super::utf8_stream::{BUF_SIZE, for_each_chunk_in};
 
-/// Concerned with measuring file size using line count as a metric.
-#[derive(Default)]
-pub struct Metric {
-    pub value: u64,
+/// Streams the contents of a file given by `path` through a fixed-size buffer and computes
+/// the total number of lines in that file, as `str::lines` would. If a file is not UTF-8
+/// encoded as in the case of a binary jpeg file then `None` will be returned.
+#[cfg(test)]
+fn init(path: impl AsRef<Path>) -> Option<u64> {
+    from_reader(File::open(path.as_ref()).ok()?, BUF_SIZE)
 }
 
-impl Metric {
-    /// Streams the contents of a file given by `path` through a fixed-size buffer and computes
-    /// the total number of lines in that file, as `str::lines` would. If a file is not UTF-8
-    /// encoded as in the case of a binary jpeg file then `None` will be returned.
-    #[cfg(test)]
-    pub fn init(path: impl AsRef<Path>) -> Option<Self> {
-        Self::from_reader(File::open(path.as_ref()).ok()?, BUF_SIZE)
+/// Counts the lines of an open file, reading through `scratch`, which is grown to the read
+/// size when it is smaller. One buffer can serve many files. `size` is what the file system
+/// reports for the file, or 0 when unknown.
+pub fn from_file(file: File, size: u64, scratch: &mut Vec<u8>) -> Option<u64> {
+    if scratch.len() < BUF_SIZE {
+        scratch.resize(BUF_SIZE, 0);
     }
 
-    /// Counts the lines of an open file, reading through `scratch`, which is grown to the read
-    /// size when it is smaller. One buffer can serve many files. `size` is what the file system
-    /// reports for the file, or 0 when unknown.
-    pub fn from_file(file: File, size: u64, scratch: &mut Vec<u8>) -> Option<Self> {
-        if scratch.len() < BUF_SIZE {
-            scratch.resize(BUF_SIZE, 0);
-        }
+    count(file, size, &mut scratch[..BUF_SIZE])
+}
 
-        Self::count(file, size, &mut scratch[..BUF_SIZE])
-    }
+/// Counts lines in `reader` using a buffer of `buf_size` bytes.
+///
+/// Equivalent to `str::lines().count()`: lines are terminated by `\n` (a preceding `\r` is
+/// part of the terminator and does not matter for counting), a final line without a
+/// terminator counts, and an empty input has zero lines.
+#[cfg(test)]
+fn from_reader(reader: impl Read, buf_size: usize) -> Option<u64> {
+    tally(|f| for_each_chunk(reader, buf_size, f))
+}
 
-    /// Counts lines in `reader` using a buffer of `buf_size` bytes.
-    ///
-    /// Equivalent to `str::lines().count()`: lines are terminated by `\n` (a preceding `\r` is
-    /// part of the terminator and does not matter for counting), a final line without a
-    /// terminator counts, and an empty input has zero lines.
-    #[cfg(test)]
-    fn from_reader(reader: impl Read, buf_size: usize) -> Option<Self> {
-        Self::tally(|f| for_each_chunk(reader, buf_size, f))
-    }
+/// Like [`from_reader`], reading through `buf`, from a file the file system reports as
+/// `size` bytes long (0 if unknown).
+fn count(reader: impl Read, size: u64, buf: &mut [u8]) -> Option<u64> {
+    tally(|f| for_each_chunk_in(reader, buf, size, f))
+}
 
-    /// Like [`Self::from_reader`], reading through `buf`, from a file the file system reports as
-    /// `size` bytes long (0 if unknown).
-    fn count(reader: impl Read, size: u64, buf: &mut [u8]) -> Option<Self> {
-        Self::tally(|f| for_each_chunk_in(reader, buf, size, f))
-    }
+/// Counts the lines of the chunks `run` produces.
+fn tally(run: impl FnOnce(&mut dyn FnMut(&str)) -> Option<()>) -> Option<u64> {
+    let mut newlines = 0_u64;
+    let mut last_byte = None;
 
-    /// Counts the lines of the chunks `run` produces.
-    fn tally(run: impl FnOnce(&mut dyn FnMut(&str)) -> Option<()>) -> Option<Self> {
-        let mut newlines = 0_u64;
-        let mut last_byte = None;
+    run(&mut |chunk: &str| {
+        newlines += count_newlines(chunk.as_bytes());
+        last_byte = chunk.as_bytes().last().copied().or(last_byte);
+    })?;
 
-        run(&mut |chunk: &str| {
-            newlines += count_newlines(chunk.as_bytes());
-            last_byte = chunk.as_bytes().last().copied().or(last_byte);
-        })?;
-
-        let unterminated = last_byte.is_some_and(|b| b != b'\n');
-        Some(Self {
-            value: newlines + u64::from(unterminated),
-        })
-    }
+    let unterminated = last_byte.is_some_and(|b| b != b'\n');
+    Some(newlines + u64::from(unterminated))
 }
 
 /// Number of `\n` bytes in `bytes`. Counting in `u8` lanes of 255 lets the compiler use vector
@@ -85,24 +70,11 @@ fn count_newlines(bytes: &[u8]) -> u64 {
         .sum()
 }
 
-impl From<u64> for Metric {
-    fn from(value: u64) -> Self {
-        Self { value }
-    }
-}
-
-impl Display for Metric {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <u64 as Display>::fmt(&self.value, f)
-    }
-}
-
 #[test]
 fn test_line_count() {
-    let metric =
-        Metric::init("tests/data/nemesis.txt").expect("Expected 'tests/data/nemesis.txt' to exist");
+    let count = init("tests/data/nemesis.txt").expect("Expected 'tests/data/nemesis.txt' to exist");
 
-    assert_eq!(metric.value, 4);
+    assert_eq!(count, 4);
 }
 
 #[cfg(test)]
@@ -115,7 +87,7 @@ mod tests {
     }
 
     fn streamed(data: &[u8], buf_size: usize) -> Option<u64> {
-        Metric::from_reader(data, buf_size).map(|m| m.value)
+        from_reader(data, buf_size)
     }
 
     #[test]
