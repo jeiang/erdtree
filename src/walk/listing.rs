@@ -312,7 +312,7 @@ impl Listing {
     /// Metadata of entry `i`, following a symlink.
     pub fn stat(&self, i: usize, path: &Path, fields: Fields) -> Option<Stat> {
         #[cfg(target_os = "macos")]
-        if !at::fits_path_max(path.as_os_str().len()) {
+        if !crate::fs::fits_path_max(path.as_os_str().len()) {
             return None;
         }
         #[cfg(target_os = "linux")]

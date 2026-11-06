@@ -1,14 +1,19 @@
 //! Linux: `getdents64`, `statx` (with `fstatat64` as the fallback) and `fstatfs`.
 
-use super::{At, check, retry};
-use crate::fs::stat::{Fields, Kind, Stat};
+use super::{check, retry};
+use crate::fs::{
+    probe::Probed,
+    stat::{Fields, Kind, Stat},
+};
 use std::{
     ffi::{CStr, c_char, c_int, c_long, c_void},
     io,
     os::fd::RawFd,
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     time::SystemTime,
 };
+
+/// `statx`; without it, metadata comes from `fstatat`.
+static STATX: Probed = Probed::new();
 
 /// `O_LARGEFILE` is zero on 64-bit targets. On 32-bit glibc, `openat` and `open` do not set it,
 /// and without it the kernel refuses (`EOVERFLOW`) to open a file of 2 GiB or more.
@@ -56,14 +61,14 @@ pub fn for_each_dirent(buf: &[u8], len: usize, mut f: impl FnMut(Dirent<'_>)) {
         };
 
         let field = &record[NAME..];
-        let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+        let name = CStr::from_bytes_until_nul(field).map_or(field, CStr::to_bytes);
 
         f(Dirent {
             ino: u64::from_ne_bytes([
                 head[0], head[1], head[2], head[3], head[4], head[5], head[6], head[7],
             ]),
             kind: Kind::from_dtype(head[18]),
-            name: &field[..end],
+            name,
         });
 
         at += reclen;
@@ -119,22 +124,11 @@ const STATX_SIZE: u32 = 0x200;
 const STATX_BLOCKS: u32 = 0x400;
 const STATX_BTIME: u32 = 0x800;
 
-/// Set once `statx` turned out to be unavailable (an old kernel, or a sandbox that blocks it);
-/// metadata then comes from `fstatat`.
-static NO_STATX: AtomicBool = AtomicBool::new(false);
-
 /// Reads metadata of `path` relative to `dir`, with the `AT_*` `flags`.
 pub fn stat_raw(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<Stat> {
-    if !NO_STATX.load(Ordering::Relaxed) {
-        match statx(dir, path, flags, fields) {
-            Err(e) if matches!(e.raw_os_error(), Some(libc::ENOSYS | libc::EPERM)) => {
-                NO_STATX.store(true, Ordering::Relaxed);
-            },
-            result => return result,
-        }
-    }
-
-    fstatat(dir, path, flags, fields)
+    STATX
+        .run(|| statx(dir, path, flags, fields))
+        .unwrap_or_else(|| fstatat(dir, path, flags, fields))
 }
 
 /// Reads metadata of the open file `fd` itself.
@@ -283,71 +277,6 @@ pub fn inode_order_is_useless(fd: RawFd) -> bool {
     let magic = i64::from(unsafe { buf.assume_init() }.f_type as u32);
 
     [NFS, TMPFS, FUSE, SMB, SMB2, CIFS, NINEP, CEPH].contains(&magic)
-}
-
-/// Whether `has_xattrs` can use `listxattrat`: not known yet, yes or no.
-static LISTXATTRAT: AtomicU8 = AtomicU8::new(UNKNOWN);
-const UNKNOWN: u8 = 0;
-const SUPPORTED: u8 = 1;
-const UNSUPPORTED: u8 = 2;
-
-/// The number of `listxattrat` (Linux 6.17), which is the same on the architectures that have
-/// the common system call numbers after 400.
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "x86",
-    target_arch = "aarch64",
-    target_arch = "arm",
-    target_arch = "riscv64",
-    target_arch = "powerpc64",
-    target_arch = "s390x",
-    target_arch = "loongarch64"
-))]
-const SYS_LISTXATTRAT: Option<c_long> = Some(465);
-#[cfg(not(any(
-    target_arch = "x86_64",
-    target_arch = "x86",
-    target_arch = "aarch64",
-    target_arch = "arm",
-    target_arch = "riscv64",
-    target_arch = "powerpc64",
-    target_arch = "s390x",
-    target_arch = "loongarch64"
-)))]
-const SYS_LISTXATTRAT: Option<c_long> = None;
-
-/// Whether the entry `at` has extended attributes, following a symlink like `listxattr`; `None`
-/// when the kernel has no `listxattrat` (or a sandbox blocks it), so the caller must use the
-/// path-based call. A failing call means no attributes, as with `listxattr`.
-pub fn has_xattrs(at: At<'_>) -> Option<bool> {
-    let state = LISTXATTRAT.load(Ordering::Relaxed);
-    let number = SYS_LISTXATTRAT.filter(|_| state != UNSUPPORTED)?;
-
-    // SAFETY: `at.name` is NUL-terminated; a null list with size 0 only asks for the size.
-    let ret = unsafe {
-        libc::syscall(
-            number,
-            c_long::from(at.dir),
-            at.name.as_ptr(),
-            0 as c_long,
-            std::ptr::null_mut::<c_char>(),
-            0 as libc::size_t,
-        )
-    };
-
-    if ret >= 0 {
-        LISTXATTRAT.store(SUPPORTED, Ordering::Relaxed);
-        return Some(ret > 0);
-    }
-
-    let errno = io::Error::last_os_error().raw_os_error();
-
-    if state == UNKNOWN && matches!(errno, Some(libc::ENOSYS | libc::EPERM | libc::EINVAL)) {
-        LISTXATTRAT.store(UNSUPPORTED, Ordering::Relaxed);
-        return None;
-    }
-
-    Some(false)
 }
 
 #[cfg(test)]

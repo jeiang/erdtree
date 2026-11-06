@@ -11,14 +11,6 @@ use std::{
 /// No flag beyond the common ones is needed to open a file.
 pub const OPEN_FLAGS: c_int = 0;
 
-/// Whether a path of `len` bytes fits in `PATH_MAX` (1024 on macOS, counting the NUL), so a
-/// path-based system call can take it. erdtree once read directories, followed symlinks and
-/// opened files on macOS by path only; what did not fit then is not reached relative to a
-/// descriptor either, so the output stays the same.
-pub const fn fits_path_max(len: usize) -> bool {
-    len < 1024
-}
-
 /// Reads metadata of `path` relative to `dir`, with the `AT_*` `flags`.
 pub fn stat_raw(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<Stat> {
     let mut buf = std::mem::MaybeUninit::<libc::stat>::zeroed();

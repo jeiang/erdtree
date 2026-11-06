@@ -456,7 +456,7 @@ impl Rules {
 /// one, else by path.
 fn open_in(dir: &Path, fd: DirFd, name: &str) -> io::Result<File> {
     #[cfg(target_os = "macos")]
-    let fd = fd.filter(|_| crate::fs::at::fits_path_max(dir.as_os_str().len() + 1 + name.len()));
+    let fd = fd.filter(|_| crate::fs::fits_path_max(dir.as_os_str().len() + 1 + name.len()));
 
     #[cfg(fd_walk)]
     if let Some(dir) = fd {
@@ -472,7 +472,7 @@ fn open_in(dir: &Path, fd: DirFd, name: &str) -> io::Result<File> {
 /// The type of `name` in `dir`, following a symlink; `None` if it does not exist.
 fn kind_in(dir: &Path, fd: DirFd, name: &str) -> Option<Kind> {
     #[cfg(target_os = "macos")]
-    let fd = fd.filter(|_| crate::fs::at::fits_path_max(dir.as_os_str().len() + 1 + name.len()));
+    let fd = fd.filter(|_| crate::fs::fits_path_max(dir.as_os_str().len() + 1 + name.len()));
 
     #[cfg(fd_walk)]
     if let Some(dir) = fd {

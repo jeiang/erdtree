@@ -112,12 +112,11 @@ impl Record<'_> {
     /// Whether the entry has extended attributes (following a symlink).
     #[cfg(unix)]
     pub fn has_xattrs(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        if let Some(has) = self.at.and_then(at::has_xattrs) {
-            return has;
-        }
-
-        crate::fs::xattr::has_xattrs(self.path)
+        crate::fs::xattr::has_xattrs(
+            self.path,
+            #[cfg(target_os = "linux")]
+            self.at,
+        )
     }
 
     /// Whether the target of the entry, which must be a symlink, exists.
@@ -1187,7 +1186,7 @@ where
         #[cfg(target_os = "linux")]
         let readable = true;
         #[cfg(target_os = "macos")]
-        let readable = at::fits_path_max(path.as_os_str().len());
+        let readable = crate::fs::fits_path_max(path.as_os_str().len());
         #[cfg(fd_walk)]
         if reported.is_dir() && may_descend && stat.is_none() && followed.is_none() && readable {
             return Some(Kept::Dir {
@@ -1214,7 +1213,7 @@ where
             #[cfg(target_os = "macos")]
             at: listing
                 .at(i)
-                .filter(|_| at::fits_path_max(path.as_os_str().len())),
+                .filter(|_| crate::fs::fits_path_max(path.as_os_str().len())),
         })?;
 
         if !(stat.kind.is_dir() && may_descend) {
@@ -1276,7 +1275,7 @@ const SHARED_DIR_FACTOR: u64 = 16;
 fn open_dir(job: &Job) -> Option<OwnedFd> {
     // The path-based walk could not read a directory whose path does not fit.
     #[cfg(target_os = "macos")]
-    if !at::fits_path_max(job.path.as_os_str().len()) {
+    if !crate::fs::fits_path_max(job.path.as_os_str().len()) {
         return None;
     }
 

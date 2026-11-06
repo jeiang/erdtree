@@ -21,9 +21,9 @@ use std::{
 const RESERVED: usize = 64;
 const PER_WORKER: usize = 4;
 
-/// Paths this long or longer are not opened by path: `PATH_MAX` is 4096 with the NUL, and the
-/// margin covers a name appended to a path of this length.
-pub const LONG_PATH: usize = 4000;
+/// Paths this long or longer are not opened by path: the margin below `PATH_MAX` covers a name
+/// appended to a path of this length.
+pub const LONG_PATH: usize = crate::fs::PATH_MAX - 96;
 
 /// How many descriptors queued jobs may hold.
 #[derive(Debug)]
