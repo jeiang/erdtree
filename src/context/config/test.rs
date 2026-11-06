@@ -26,15 +26,12 @@ fn parse_str(toml: &str, table: Option<&str>) -> Result<Vec<String>, Error> {
         .collect())
 }
 
-/// The arguments after the leading `--`, by flag: the values of each occurrence, in order.
-/// Flags come out in the order of a hash map, so only their order among themselves is ignored.
+/// The arguments by flag: the values of each occurrence, in order. Flags come out in the order
+/// of a hash map, so only their order among themselves is ignored.
 fn by_flag(args: &[String]) -> BTreeMap<&str, Vec<Vec<&str>>> {
-    let (first, rest) = args.split_first().expect("arguments start with `--`");
-    assert_eq!(first, "--");
-
     let mut flags: BTreeMap<&str, Vec<Vec<&str>>> = BTreeMap::new();
     let mut current = None;
-    for arg in rest {
+    for arg in args {
         if arg.starts_with("--") {
             flags.entry(arg).or_default().push(vec![]);
             current = Some(arg.as_str());

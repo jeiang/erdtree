@@ -57,6 +57,17 @@ fn config_glob_without_pattern_errors() {
     assert!(err.contains("Usage: erd"), "{err}");
 }
 
+/// An unknown config key reads as a usage error of `erd`.
+#[test]
+fn config_unknown_key_usage_names_erd() {
+    let err = Erd::new()
+        .config("bogus = true\n")
+        .arg("tests/data")
+        .fails(1);
+    assert!(err.contains("unexpected argument '--bogus'"), "{err}");
+    assert!(err.contains("Usage: erd [OPTIONS] [DIR]..."), "{err}");
+}
+
 #[test]
 fn config_conflicting_glob_and_iglob_errors() {
     let err = Erd::new()

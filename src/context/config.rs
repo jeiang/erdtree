@@ -45,9 +45,9 @@ enum ArgInstructions {
     Pass,
 }
 
-/// The command-line arguments that `.erdtree.toml` gives, led by `--` in place of the binary
-/// name. If a `named_table` is provided then the top-level table in `.erdtree.toml` is ignored
-/// and the configurations specified in the `named_table` will be used instead.
+/// The command-line arguments that `.erdtree.toml` gives, without a program name. If a
+/// `named_table` is provided then the top-level table in `.erdtree.toml` is ignored and the
+/// configurations specified in the `named_table` will be used instead.
 pub fn parse(config: Config, named_table: Option<&str>) -> Result<Vec<OsString>, Error> {
     let mut args_map = config.cache.into_table()?;
 
@@ -62,7 +62,7 @@ pub fn parse(config: Config, named_table: Option<&str>) -> Result<Vec<OsString>,
         args_map.retain(|_k, v| !matches!(v.kind, ValueKind::Table(_)));
     }
 
-    let mut parsed_args = vec![OsString::from("--")];
+    let mut parsed_args = Vec::new();
 
     let process_key = |s| OsString::from(format!("--{s}").replace('_', "-"));
 
