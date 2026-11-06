@@ -1,8 +1,4 @@
 use clap::ValueEnum;
-use std::{
-    convert::From,
-    fmt::{self, Display},
-};
 
 /// Determines whether to use SI prefixes or binary prefixes.
 #[derive(Copy, Clone, Debug, ValueEnum, Default)]
@@ -15,132 +11,31 @@ pub enum PrefixKind {
     Si,
 }
 
-/// Binary prefixes.
-#[derive(Debug, PartialEq, Eq)]
-pub enum BinPrefix {
-    Base,
-    Kibi,
-    Mebi,
-    Gibi,
-    Tebi,
-}
-
-/// SI prefixes.
-#[derive(Debug, PartialEq, Eq)]
-pub enum SiPrefix {
-    Base,
-    Kilo,
-    Mega,
-    Giga,
-    Tera,
-}
-
-impl SiPrefix {
-    /// Returns the human readable representation of the SI prefix.
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Base => "B",
-            Self::Kilo => "KB",
-            Self::Mega => "MB",
-            Self::Giga => "GB",
-            Self::Tera => "TB",
-        }
-    }
-}
-
-impl BinPrefix {
-    /// Returns the human readable representation of the binary prefix.
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Base => "B",
-            Self::Kibi => "KiB",
-            Self::Mebi => "MiB",
-            Self::Gibi => "GiB",
-            Self::Tebi => "TiB",
-        }
-    }
-}
-
-pub trait UnitPrefix {
-    fn base_value(&self) -> u64;
-}
-
-impl UnitPrefix for SiPrefix {
-    fn base_value(&self) -> u64 {
-        match self {
-            Self::Base => 1,
-            Self::Kilo => 10_u64.pow(3),
-            Self::Mega => 10_u64.pow(6),
-            Self::Giga => 10_u64.pow(9),
-            Self::Tera => 10_u64.pow(12),
-        }
-    }
-}
-
-impl UnitPrefix for BinPrefix {
-    fn base_value(&self) -> u64 {
-        match self {
-            Self::Base => 1,
-            Self::Kibi => 2_u64.pow(10),
-            Self::Mebi => 2_u64.pow(20),
-            Self::Gibi => 2_u64.pow(30),
-            Self::Tebi => 2_u64.pow(40),
-        }
-    }
-}
-
-impl BinPrefix {
-    /// The prefix of position `index` (0 for none, 4 for tebi).
-    const fn from_index(index: usize) -> Self {
-        match index {
-            0 => Self::Base,
-            1 => Self::Kibi,
-            2 => Self::Mebi,
-            3 => Self::Gibi,
-            _ => Self::Tebi,
-        }
-    }
-
-    /// Position of the closest human-readable prefix of `value`: the number of times it reaches
-    /// another power of 1024, at most 4. Exact on integers, unlike a float `log2`.
-    pub const fn index_of(value: u64) -> usize {
-        match value.checked_ilog2() {
-            Some(bits) if bits >= 40 => 4,
-            Some(bits) => (bits / 10) as usize,
-            None => 0,
-        }
-    }
-}
-
-impl SiPrefix {
-    /// The prefix of position `index` (0 for none, 4 for tera).
-    const fn from_index(index: usize) -> Self {
-        match index {
-            0 => Self::Base,
-            1 => Self::Kilo,
-            2 => Self::Mega,
-            3 => Self::Giga,
-            _ => Self::Tera,
-        }
-    }
-
-    /// Position of the closest human-readable prefix of `value`: the number of times it reaches
-    /// another power of 1000, at most 4. Exact on integers, unlike a float `log10`.
-    pub const fn index_of(value: u64) -> usize {
-        match value.checked_ilog10() {
-            Some(exp) if exp >= 12 => 4,
-            Some(exp) => (exp / 3) as usize,
-            None => 0,
-        }
-    }
-}
-
 impl PrefixKind {
-    /// Position of the closest human-readable prefix of `value`, from 0 (bytes) to 4.
+    /// Position of the closest human-readable prefix of `value`, from 0 (bytes) to 4: the number
+    /// of times it reaches another power of 1024 (or 1000). Exact on integers, unlike a float
+    /// logarithm.
     pub const fn index_of(self, value: u64) -> usize {
         match self {
-            Self::Bin => BinPrefix::index_of(value),
-            Self::Si => SiPrefix::index_of(value),
+            Self::Bin => match value.checked_ilog2() {
+                Some(bits) if bits >= 40 => 4,
+                Some(bits) => (bits / 10) as usize,
+                None => 0,
+            },
+            Self::Si => match value.checked_ilog10() {
+                Some(exp) if exp >= 12 => 4,
+                Some(exp) => (exp / 3) as usize,
+                None => 0,
+            },
+        }
+    }
+
+    /// The value of one unit of prefix `index` (at most 4), which is also the least value whose
+    /// [`Self::index_of`] is `index`.
+    pub const fn base(self, index: usize) -> u64 {
+        match self {
+            Self::Bin => [1, 1 << 10, 1 << 20, 1 << 30, 1 << 40][index],
+            Self::Si => [1, 1_000, 1_000_000, 1_000_000_000, 1_000_000_000_000][index],
         }
     }
 
@@ -150,32 +45,6 @@ impl PrefixKind {
             Self::Bin => ["B", "KiB", "MiB", "GiB", "TiB"],
             Self::Si => ["B", "KB", "MB", "GB", "TB"],
         }
-    }
-}
-
-/// Get the closest human-readable unit prefix for value.
-impl From<u64> for BinPrefix {
-    fn from(value: u64) -> Self {
-        Self::from_index(Self::index_of(value))
-    }
-}
-
-/// Get the closest human-readable unit prefix for value.
-impl From<u64> for SiPrefix {
-    fn from(value: u64) -> Self {
-        Self::from_index(Self::index_of(value))
-    }
-}
-
-impl Display for BinPrefix {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-impl Display for SiPrefix {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
     }
 }
 
@@ -215,20 +84,30 @@ mod test {
         around(p);
 
         for v in values {
-            assert_eq!(BinPrefix::index_of(v), float_bin(v), "bin {v}");
-            assert_eq!(SiPrefix::index_of(v), float_si(v), "si {v}");
+            assert_eq!(PrefixKind::Bin.index_of(v), float_bin(v), "bin {v}");
+            assert_eq!(PrefixKind::Si.index_of(v), float_si(v), "si {v}");
+        }
+    }
+
+    #[test]
+    fn bases_are_index_thresholds() {
+        for unit in [PrefixKind::Bin, PrefixKind::Si] {
+            assert_eq!(unit.base(0), 1);
+            assert_eq!(unit.index_of(0), 0);
+
+            for i in 1..=4 {
+                assert_eq!(unit.index_of(unit.base(i)), i, "{unit:?} {i}");
+                assert_eq!(unit.index_of(unit.base(i) - 1), i - 1, "{unit:?} {i}");
+            }
         }
     }
 
     #[test]
     fn names_follow_indices() {
-        assert_eq!(
-            BinPrefix::from(1 << 20).as_str(),
-            PrefixKind::Bin.names()[2]
-        );
-        assert_eq!(
-            SiPrefix::from(5_000_000_000).as_str(),
-            PrefixKind::Si.names()[3]
-        );
+        let bin = PrefixKind::Bin;
+        assert_eq!(bin.names()[bin.index_of(1 << 20)], "MiB");
+
+        let si = PrefixKind::Si;
+        assert_eq!(si.names()[si.index_of(5_000_000_000)], "GB");
     }
 }

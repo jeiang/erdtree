@@ -10,10 +10,7 @@ use super::{
 use crate::{
     ansi::Escaped,
     context::{Context, column},
-    disk_usage::{
-        file_size::{DiskUsage, FileSize},
-        units::PrefixKind,
-    },
+    disk_usage::file_size::{DiskUsage, FileSize},
     icons::{self, fs::Paint},
     styles,
     tree::{Tree, node::Node},
@@ -22,16 +19,19 @@ use crate::{
 #[cfg(unix)]
 use super::long;
 #[cfg(unix)]
-use crate::disk_usage::file_size::BLOCK_SIZE_BYTES;
+use crate::disk_usage::{file_size::BLOCK_SIZE_BYTES, units::PrefixKind};
 
 /// How the size column is written.
 struct Size {
     width: usize,
     unit_width: usize,
+    /// Picks the color of block counts, by the prefix of their size in bytes.
+    #[cfg(unix)]
     unit: PrefixKind,
+    disk_usage: DiskUsage,
 
-    /// Padding of the placeholder; `None` if rows without a size have no size column at all.
-    placeholder: Option<usize>,
+    /// Whether rows without a size still get a size column, holding the placeholder.
+    placeholder: bool,
     placeholder_esc: Option<Esc>,
 
     /// Sequences of the unit colors from bytes up; `None` without color.
@@ -40,19 +40,7 @@ struct Size {
 
 impl Size {
     fn new(ctx: &Context, widths: &column::Properties, color: bool) -> Self {
-        let placeholder = (!ctx.suppress_size && widths.max_size_width != 0).then(|| {
-            let padding = widths.max_size_width + 1;
-
-            match ctx.disk_usage {
-                DiskUsage::Logical | DiskUsage::Physical => match ctx.unit {
-                    PrefixKind::Si if ctx.human => padding + 2,
-                    PrefixKind::Bin if ctx.human => padding + 3,
-                    PrefixKind::Si => padding,
-                    PrefixKind::Bin => padding + 1,
-                },
-                _ => padding - 1,
-            }
-        });
+        let placeholder = !ctx.suppress_size && widths.max_size_width != 0;
 
         let du = color.then(|| {
             let theme = styles::get_du_theme().unwrap();
@@ -64,7 +52,9 @@ impl Size {
         Self {
             width: widths.max_size_width,
             unit_width: widths.max_size_unit_width,
+            #[cfg(unix)]
             unit: ctx.unit,
+            disk_usage: ctx.disk_usage,
             placeholder,
             placeholder_esc: color
                 .then(|| styles::get_placeholder_style().ok().map(|s| Esc::new(*s)))
@@ -72,16 +62,13 @@ impl Size {
             du,
         }
     }
-}
 
-/// Position in the unit colors of a displayed human-readable unit.
-const fn unit_index(unit: &str) -> usize {
-    match unit.as_bytes()[0] {
-        b'B' => 0,
-        b'K' => 1,
-        b'M' => 2,
-        b'G' => 3,
-        _ => 4,
+    /// Width of the size column: the number, then a space and the unit for byte metrics.
+    const fn column_width(&self) -> usize {
+        match self.disk_usage {
+            DiskUsage::Logical | DiskUsage::Physical => self.width + 1 + self.unit_width,
+            _ => self.width,
+        }
     }
 }
 
@@ -327,10 +314,10 @@ impl<'a> RowFmt<'a> {
         let size = &self.size;
 
         let Some(file_size) = node.file_size() else {
-            if let Some(padding) = size.placeholder {
+            if size.placeholder {
                 let esc = size.placeholder_esc.as_ref();
                 out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
-                push_spaces(out, padding.saturating_sub(1));
+                push_spaces(out, size.column_width() - 1);
                 out.extend_from_slice(styles::PLACEHOLDER.as_bytes());
                 out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
             }
@@ -343,12 +330,8 @@ impl<'a> RowFmt<'a> {
         match &file_size {
             FileSize::Byte(metric) => {
                 let mut buf = [0; 32];
-                let (number, unit) = metric.parts(&mut buf);
-                let esc = paint(if metric.human_readable {
-                    unit_index(unit)
-                } else {
-                    size.unit.index_of(metric.value)
-                });
+                let (number, unit, index) = metric.parts(&mut buf);
+                let esc = paint(index);
 
                 out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
                 push_str_padded(out, number, size.width);
