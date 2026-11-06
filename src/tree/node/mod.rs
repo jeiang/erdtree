@@ -82,11 +82,6 @@ impl<'a> Node<'a> {
             .flatten()
     }
 
-    /// Target of the symlink, as shown after the arrow.
-    pub fn symlink_target_file_name(self) -> Option<&'a OsStr> {
-        self.symlink_target_path().map(Path::as_os_str)
-    }
-
     /// The `ls -F` style indicator for the kind of entry: `@` symlink, `/` directory and, on
     /// Unix, `|` FIFO, `=` socket, `*` executable regular file.
     pub fn indicator(self) -> Option<&'static str> {

@@ -124,17 +124,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         progress.finish()?;
     }
 
-    #[cfg(debug_assertions)]
-    let should_write = std::env::var_os("ERDTREE_DEBUG").is_none();
-
-    #[cfg(not(debug_assertions))]
-    let should_write = true;
-
-    let mut out: Box<dyn Write> = if should_write {
-        Box::new(BufWriter::with_capacity(1 << 16, stdout().lock()))
-    } else {
-        Box::new(io::sink())
-    };
+    let mut out = BufWriter::with_capacity(1 << 16, stdout().lock());
 
     // Every rendered tree ends in a newline, so the "\n" separator leaves a blank line between
     // trees.
@@ -146,8 +136,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         render(tree, ctx, &mut out, k + 1 == roots)?;
     }
-
-    let file_count = file_count.to_string();
 
     // The count is empty when no tree has any entries (only possible at level 0).
     if !no_report && !file_count.is_empty() {

@@ -16,6 +16,13 @@ pub struct FileCount {
     pub num_ignored: usize,
 }
 
+impl FileCount {
+    /// Whether the summary line would be empty: nothing counted at all.
+    pub const fn is_empty(&self) -> bool {
+        self.num_dirs == 0 && self.num_files == 0 && self.num_links == 0 && self.num_ignored == 0
+    }
+}
+
 impl AddAssign<Node<'_>> for FileCount {
     /// Update [Self] with information from [Node].
     fn add_assign(&mut self, rhs: Node<'_>) {
