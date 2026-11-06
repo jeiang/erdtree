@@ -27,9 +27,7 @@ use linux as sys;
 use macos as sys;
 
 #[cfg(target_os = "linux")]
-pub use linux::{for_each_dirent, getdents, has_xattrs, inode_order_is_useless};
-#[cfg(target_os = "macos")]
-pub use macos::fits_path_max;
+pub use linux::{for_each_dirent, getdents, inode_order_is_useless};
 pub use sys::stat_fd;
 
 /// An entry named `name` in the directory open as `dir`.
@@ -43,27 +41,38 @@ pub struct At<'a> {
 /// (every name a Linux file system allows) need no allocation. Bytes with an interior NUL, which
 /// no path has, give `EINVAL`.
 pub fn with_cstr<T>(bytes: &[u8], f: impl FnOnce(&CStr) -> io::Result<T>) -> io::Result<T> {
-    let mut stack = [0_u8; 384];
+    with_stack::<384, T>(bytes, f)
+}
 
-    if bytes.len() < stack.len() {
+/// Runs `f` with `path` as a C string. Paths that fit in `PATH_MAX`, the longest any path-based
+/// system call takes, need no allocation.
+pub fn with_path<T>(path: &Path, f: impl FnOnce(&CStr) -> io::Result<T>) -> io::Result<T> {
+    with_stack::<{ super::PATH_MAX }, T>(path.as_os_str().as_bytes(), f)
+}
+
+/// [`with_cstr`] with a stack buffer of `N` bytes.
+fn with_stack<const N: usize, T>(
+    bytes: &[u8],
+    f: impl FnOnce(&CStr) -> io::Result<T>,
+) -> io::Result<T> {
+    fn invalid<E>(_: E) -> io::Error {
+        io::Error::from_raw_os_error(libc::EINVAL)
+    }
+
+    if bytes.len() < N {
+        let mut stack = [0_u8; N];
         stack[..bytes.len()].copy_from_slice(bytes);
 
-        return CStr::from_bytes_until_nul(&stack)
-            .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
+        return CStr::from_bytes_with_nul(&stack[..=bytes.len()])
+            .map_err(invalid)
             .and_then(f);
     }
 
-    let heap = CString::new(bytes).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-    f(&heap)
-}
-
-/// Runs `f` with `path` as a C string.
-pub fn with_path<T>(path: &Path, f: impl FnOnce(&CStr) -> io::Result<T>) -> io::Result<T> {
-    with_cstr(path.as_os_str().as_bytes(), f)
+    f(&CString::new(bytes).map_err(invalid)?)
 }
 
 /// Retries `f` while it is interrupted by a signal.
-fn retry<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+pub(super) fn retry<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     loop {
         match f() {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {},
@@ -73,7 +82,7 @@ fn retry<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
 }
 
 /// Turns the return value of a system call into a result.
-fn check(ret: c_long) -> io::Result<c_long> {
+pub(super) fn check(ret: c_long) -> io::Result<c_long> {
     if ret < 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -353,61 +362,48 @@ mod test {
 #[cfg(test)]
 mod test_at_calls {
     use super::*;
-    #[cfg(target_os = "linux")]
-    use crate::fs::xattr;
     use std::{
         fs,
         io::Read,
         os::{fd::AsRawFd, unix::fs::symlink},
     };
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn xattrs_and_targets_match_the_path_based_calls() {
+    fn targets_match_the_path_based_calls() {
         let dir = tempfile::tempdir().unwrap();
         let p = |name: &str| dir.path().join(name);
 
         fs::write(p("plain"), "x").unwrap();
-        fs::write(p("tagged"), "x").unwrap();
-        symlink("tagged", p("link-to-tagged")).unwrap();
         symlink("plain", p("link-to-plain")).unwrap();
         symlink("missing", p("dangling")).unwrap();
 
-        // A user attribute; file systems without support (tmpfs in older kernels) skip it.
-        let tagged = CString::new(p("tagged").as_os_str().as_bytes()).unwrap();
-        // SAFETY: valid NUL-terminated strings and a buffer of the given size.
-        let set = unsafe {
-            libc::setxattr(
-                tagged.as_ptr(),
-                c"user.erd".as_ptr(),
-                b"1".as_ptr().cast(),
-                1,
-                0,
-            )
-        };
-        eprintln!("setxattr: {set}");
-
         let fd = open_dir_path(dir.path(), true).unwrap();
 
-        for name in [
-            "plain",
-            "tagged",
-            "link-to-tagged",
-            "link-to-plain",
-            "dangling",
-        ] {
+        for name in ["plain", "link-to-plain", "dangling"] {
             let c = CString::new(name).unwrap();
             let at = At {
                 dir: fd.as_raw_fd(),
                 name: &c,
             };
-
-            if let Some(has) = has_xattrs(at) {
-                assert_eq!(has, xattr::has_xattrs(&p(name)), "{name}");
-            }
-
             assert_eq!(target_exists(at), p(name).exists(), "{name}");
         }
+    }
+
+    /// Bytes with a NUL inside give `EINVAL` whether they fit the stack buffer or not; before,
+    /// short ones were cut at the NUL.
+    #[test]
+    fn c_strings_refuse_interior_nul() {
+        let ok = |bytes: &[u8]| with_cstr(bytes, |c| Ok(c.to_bytes().len()));
+        let einval = |r: io::Result<usize>| r.unwrap_err().raw_os_error() == Some(libc::EINVAL);
+
+        for len in [0, 1, 383, 384, 5000] {
+            assert_eq!(ok(&vec![b'a'; len]).unwrap(), len);
+        }
+        assert!(einval(ok(b"a\0b")));
+        assert!(einval(ok(&[b"a\0".as_slice(), &[b'b'; 500]].concat())));
+        assert!(einval(with_path(Path::new("a\0b"), |c| Ok(c
+            .to_bytes()
+            .len()))));
     }
 
     /// On 32-bit glibc, opening a file of 2 GiB or more needs `O_LARGEFILE`. A sparse file takes

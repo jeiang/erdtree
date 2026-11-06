@@ -15,7 +15,11 @@
 //! attributes are those `lstat` reports.
 
 use super::stat::{Fields, Kind, Stat};
-use std::{ffi::c_void, io, os::fd::RawFd};
+use std::{
+    ffi::{CStr, c_void},
+    io,
+    os::fd::RawFd,
+};
 
 /// Size of the buffer one call fills. A directory of a few hundred entries is read in one call.
 pub const BUF_LEN: usize = 64 * 1024;
@@ -106,7 +110,7 @@ pub fn read(
 ) -> io::Result<usize> {
     let mut list = req.list;
 
-    let count = loop {
+    let count = super::at::retry(|| {
         // SAFETY: `list` is a valid `attrlist` and the kernel writes at most `buf.len()` bytes
         // into `buf`.
         let ret = unsafe {
@@ -118,15 +122,8 @@ pub fn read(
                 0,
             )
         };
-
-        if let Ok(count) = usize::try_from(ret) {
-            break count;
-        }
-        let e = io::Error::last_os_error();
-        if e.kind() != io::ErrorKind::Interrupted {
-            return Err(e);
-        }
-    };
+        usize::try_from(ret).map_err(|_| io::Error::last_os_error())
+    })?;
 
     let mut at = 0;
     for _ in 0..count {
@@ -292,8 +289,7 @@ fn parse<'a>(
         let len = usize::try_from(c.u32()?).ok()?;
         let start = base.checked_add_signed(offset)?;
         let bytes = c.record.get(start..start + len)?;
-        let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-        Some(&bytes[..end])
+        Some(CStr::from_bytes_until_nul(bytes).map_or(bytes, CStr::to_bytes))
     })??;
 
     if name.is_empty() {
