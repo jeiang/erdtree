@@ -446,7 +446,7 @@ mod test {
             root: 0,
             order: vec![],
             last: vec![],
-            shown_depth: u32::MAX,
+            level: u32::MAX,
             stump: false,
             widths: Widths::default(),
             #[cfg(unix)]
