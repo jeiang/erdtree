@@ -7,9 +7,7 @@ use crate::{
     styles::{self, PLACEHOLDER},
     tree::node::Node,
 };
-use chrono::DateTime;
-#[cfg(not(target_os = "macos"))]
-use chrono::Local;
+use chrono::{DateTime, FixedOffset, Utc};
 use nu_ansi_term::Style;
 use std::time::SystemTime;
 
@@ -19,9 +17,6 @@ mod clock;
 /// The local time zone as chrono finds it, without linking CoreFoundation.
 #[cfg(target_os = "macos")]
 mod zone;
-
-/// Width of the timestamp column.
-const TIME_WIDTH: usize = 12;
 
 /// Permission cells kept per thread; modes are few, so this is not reached in practice.
 const PERMS_CAP: usize = 512;
@@ -185,44 +180,40 @@ impl Long {
         };
 
         painted(out, self.time_esc.as_ref(), |out| {
-            let Some(time) = time else {
-                push_spaces(out, TIME_WIDTH - 1);
-                out.extend_from_slice(PLACEHOLDER.as_bytes());
-                return;
-            };
-
-            state.time.clear();
-            if !state.clock.write(&mut state.time, time, self.format) {
-                chrono_format(&mut state.time, time, self.format);
-            }
-
-            push_spaces(out, TIME_WIDTH.saturating_sub(state.time.len()));
-            out.extend_from_slice(&state.time);
+            push_time(out, state, time, self.format);
         });
     }
+}
+
+/// Appends `time` in `format` right-aligned to the width of the format, or the placeholder.
+fn push_time(out: &mut Vec<u8>, state: &mut State, time: Option<SystemTime>, format: time::Format) {
+    let Some(time) = time else {
+        push_spaces(out, format.width() - 1);
+        out.extend_from_slice(PLACEHOLDER.as_bytes());
+        return;
+    };
+
+    state.time.clear();
+    if !state.clock.write(&mut state.time, time, format) {
+        chrono_format(&mut state.time, time, format);
+    }
+
+    push_spaces(out, format.width().saturating_sub(state.time.len()));
+    out.extend_from_slice(&state.time);
 }
 
 /// Appends `time` in `format` the way chrono does it.
 fn chrono_format(out: &mut Vec<u8>, time: SystemTime, format: time::Format) {
     use std::io::Write;
 
-    #[cfg(not(target_os = "macos"))]
-    let dt = DateTime::<Local>::from(time);
-
-    #[cfg(target_os = "macos")]
-    let dt = {
-        let utc = DateTime::<chrono::Utc>::from(time);
-        let offset = chrono::FixedOffset::east_opt(zone::local_offset(utc.timestamp()))
-            .expect("offsets are checked by local_offset");
-        utc.with_timezone(&offset)
-    };
-
-    let _ = match format {
-        time::Format::Default => write!(out, "{}", dt.format("%d %h %H:%M %g")),
-        time::Format::Iso => write!(out, "{}", dt.format("%Y-%m-%d %H:%M:%S")),
-        time::Format::IsoStrict => write!(out, "{}", dt.format("%Y-%m-%dT%H:%M:%S%Z")),
-        time::Format::Short => write!(out, "{}", dt.format("%Y-%m-%d")),
-    };
+    let utc = DateTime::<Utc>::from(time);
+    let offset = FixedOffset::east_opt(clock::local_offset(utc.timestamp()))
+        .expect("offsets are checked by local_offset");
+    let _ = write!(
+        out,
+        "{}",
+        utc.with_timezone(&offset).format(format.pattern())
+    );
 }
 
 #[cfg(test)]
@@ -241,6 +232,26 @@ mod test {
                 );
                 assert_eq!(String::from_utf8(out).unwrap(), expected);
             }
+        }
+    }
+
+    /// A missing timestamp takes the column width of a present one in every format.
+    #[test]
+    fn missing_time_is_as_wide_as_a_time() {
+        let mut state = State::default();
+        let time = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_735_689_600);
+        for format in [
+            time::Format::Default,
+            time::Format::Iso,
+            time::Format::IsoStrict,
+            time::Format::Short,
+        ] {
+            let (mut present, mut missing) = (vec![], vec![]);
+            push_time(&mut present, &mut state, Some(time), format);
+            push_time(&mut missing, &mut state, None, format);
+            assert_eq!(missing.len(), present.len(), "{format:?}");
+            assert_eq!(missing.len(), format.width(), "{format:?}");
+            assert!(missing.ends_with(PLACEHOLDER.as_bytes()));
         }
     }
 }
