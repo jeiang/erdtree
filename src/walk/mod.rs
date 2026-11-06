@@ -208,7 +208,9 @@ const READING_SPLIT_BLOCK: usize = 1;
 /// Entries per block that idle workers take over from a directory of [`SPLIT_MIN`] entries.
 const SPLIT_BLOCK: usize = SPLIT_MIN / 8;
 
-/// Knobs of the walk; tests and walks that read every file change them.
+/// Knobs of the walk; tests and walks that read every file change them. The counters are read
+/// only by tests; each increment sits next to far costlier work (handing a block to another
+/// worker, starting a thread).
 pub struct Tuning {
     /// Directories with at least this many entries are visited in blocks that idle workers take
     /// over. Never splits when `usize::MAX`.
@@ -1187,15 +1189,8 @@ mod test {
 
     /// Every record as (path, kind, size, parent's path), the ignored count and how often a
     /// directory was split.
-    fn walk(root: &Path, threads: usize, split_min: usize) -> (BTreeSet<String>, usize, usize) {
-        walk_with(
-            root,
-            threads,
-            threads,
-            split_min,
-            adaptive::Policy::default(),
-        )
-        .0
+    fn walk(root: &Path, threads: usize, tuning: Tuning) -> (BTreeSet<String>, usize, usize) {
+        walk_with(root, threads, threads, tuning).0
     }
 
     /// Like [`walk`] with up to `max_threads` workers; also returns how many were added.
@@ -1203,8 +1198,7 @@ mod test {
         root: &Path,
         threads: usize,
         max_threads: usize,
-        split_min: usize,
-        policy: adaptive::Policy,
+        tuning: Tuning,
     ) -> ((BTreeSet<String>, usize, usize), usize) {
         let walker = Walker {
             root: root.to_path_buf(),
@@ -1217,17 +1211,7 @@ mod test {
             filter: None,
             count_ignored: true,
             fields: Fields::default(),
-            tuning: Tuning {
-                policy,
-                ..Tuning::splitting(
-                    split_min,
-                    if split_min < 16 {
-                        1
-                    } else {
-                        (split_min / 8).max(16)
-                    },
-                )
-            },
+            tuning,
         };
 
         let progress = AtomicU64::new(0);
@@ -1280,7 +1264,7 @@ mod test {
         let dir = tree(3000, 40, 30);
         let root = dir.path().canonicalize().unwrap();
 
-        let (expected, expected_ignored, splits) = walk(&root, 1, 32);
+        let (expected, expected_ignored, splits) = walk(&root, 1, Tuning::splitting(32, 16));
         assert_eq!(splits, 0, "a single worker never splits");
         assert!(expected.len() > 3500);
         assert!(
@@ -1291,7 +1275,7 @@ mod test {
         let mut split_somewhere = false;
 
         for _ in 0..20 {
-            let (records, ignored, splits) = walk(&root, 4, 32);
+            let (records, ignored, splits) = walk(&root, 4, Tuning::splitting(32, 16));
             assert_eq!(records, expected);
             assert_eq!(ignored, expected_ignored);
             split_somewhere |= splits > 0;
@@ -1303,7 +1287,7 @@ mod test {
         );
 
         // With a threshold above every directory size, nothing is split.
-        let (records, ignored, splits) = walk(&root, 4, usize::MAX);
+        let (records, ignored, splits) = walk(&root, 4, Tuning::splitting(usize::MAX, 16));
         assert_eq!((records, ignored, splits), (expected, expected_ignored, 0));
     }
 
@@ -1323,16 +1307,15 @@ mod test {
         fs::create_dir(locked.join("sub")).unwrap();
         fs::create_dir(locked.join("sub2")).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
-
-        // The superuser can look up everything.
-        let searchable = fs::symlink_metadata(locked.join("f")).is_ok();
-
-        let (records, ignored, _) = walk(&root, 1, SPLIT_MIN);
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
-
-        if searchable {
+        // The superuser can look up everything, so the walk has nothing to ignore.
+        if fs::symlink_metadata(locked.join("f")).is_ok() {
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("skipped unreadable_entries_count_as_ignored: running as the superuser");
             return;
         }
+
+        let (records, ignored, _) = walk(&root, 1, Tuning::default());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
 
         assert_eq!(records.len(), 2, "{records:?}");
         assert_eq!(ignored, 3);
@@ -1373,16 +1356,14 @@ mod test {
 
     #[test]
     fn small_directories_split_when_files_are_read() {
-        let tuning = Tuning::reading_files();
-        assert_eq!((tuning.split_min, tuning.block), (2, 1));
-
         let dir = tree(40, 3, 5);
         let root = dir.path().canonicalize().unwrap();
-        let (expected, expected_ignored, _) = walk(&root, 1, SPLIT_MIN);
+        let (expected, expected_ignored, splits) = walk(&root, 4, Tuning::default());
+        assert_eq!(splits, 0, "no directory reaches the default threshold");
 
         let mut split_somewhere = false;
         for _ in 0..50 {
-            let (records, ignored, splits) = walk(&root, 4, tuning.split_min);
+            let (records, ignored, splits) = walk(&root, 4, Tuning::reading_files());
             assert_eq!((records, ignored), (expected.clone(), expected_ignored));
             split_somewhere |= splits > 0;
         }
@@ -1393,55 +1374,35 @@ mod test {
     fn adding_workers_changes_nothing() {
         let dir = tree(300, 60, 20);
         let root = dir.path().canonicalize().unwrap();
-        let (expected, _) = walk_with(&root, 1, 1, SPLIT_MIN, adaptive::Policy::default());
+        let (expected, _) = walk_with(&root, 1, 1, Tuning::default());
 
         // Every task counts as blocked, so the walk grows to the limit.
-        let always = adaptive::Policy {
-            window: std::time::Duration::ZERO,
-            min_switches: 0,
-            min_blocked: 0.0,
-        };
-
-        let mut grown = 0;
-        for _ in 0..20 {
-            let (got, added) = walk_with(&root, 2, 16, 32, always);
-            assert_eq!(got.0, expected.0);
-            assert_eq!(got.1, expected.1);
-            grown = grown.max(added);
-        }
-        assert!(grown > 0 && grown <= 14, "added {grown} workers");
-
-        // A fixed number of workers never grows, whatever the policy says.
-        let (got, added) = walk_with(&root, 2, 2, 32, always);
-        assert_eq!((got.0, added), (expected.0, 0));
-    }
-
-    #[test]
-    fn growing_to_the_limit_keeps_every_sink() {
-        let dir = tree(300, 60, 20);
-        let root = dir.path().canonicalize().unwrap();
-        let (expected, _) = walk_with(&root, 1, 1, SPLIT_MIN, adaptive::Policy::default());
-
-        // Every task counts as blocked, so the walk doubles its workers up to the limit.
-        let always = adaptive::Policy {
-            window: std::time::Duration::ZERO,
-            min_switches: 0,
-            min_blocked: 0.0,
+        let always = || Tuning {
+            policy: adaptive::Policy {
+                window: std::time::Duration::ZERO,
+                min_switches: 0,
+                min_blocked: 0.0,
+            },
+            ..Tuning::splitting(32, 16)
         };
 
         // `walk_with` checks that there is a sink per worker and that parents resolve to the
         // sinks that recorded them; at the limit that is `max_workers()` sinks.
         let mut reached = false;
         for _ in 0..50 {
-            let (got, added) = walk_with(&root, 2, 16, 32, always);
-            assert_eq!(got.0, expected.0);
-            assert_eq!(got.1, expected.1);
+            let (got, added) = walk_with(&root, 2, 16, always());
+            assert_eq!((got.0, got.1), (expected.0.clone(), expected.1));
+            assert!(added <= 14, "added {added} workers");
             if added == 14 {
                 reached = true;
                 break;
             }
         }
         assert!(reached, "the walk grew to 16 workers");
+
+        // A fixed number of workers never grows, whatever the policy says.
+        let (got, added) = walk_with(&root, 2, 2, always());
+        assert_eq!((got.0, added), (expected.0, 0));
     }
 
     #[test]

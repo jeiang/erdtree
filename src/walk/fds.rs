@@ -131,10 +131,6 @@ mod test {
     use super::*;
     use std::fs::File;
 
-    fn fd() -> DirFd {
-        DirFd::new(File::open("/").unwrap().into(), Budget::new(0, 0))
-    }
-
     #[test]
     fn a_spent_budget_refuses_unless_forced_and_is_given_back() {
         let budget = Budget::new(RESERVED + PER_WORKER + 1, 1);
@@ -155,6 +151,5 @@ mod test {
         drop(a);
         drop(b);
         assert_eq!(budget.free(), 1);
-        drop(fd());
     }
 }

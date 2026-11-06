@@ -1,20 +1,6 @@
-#[cfg(test)]
-use std::path::Path;
 use std::{fs::File, io::Read};
 
-#[cfg(test)]
-use super::utf8_stream::for_each_chunk;
 use super::utf8_stream::{BUF_SIZE, for_each_chunk_in};
-
-/// Streams the contents of a file given by `path` through a fixed-size buffer and computes
-/// the total number of words in that file. If a file is not UTF-8 encoded as in the case of
-/// a binary jpeg file then `None` will be returned.
-///
-/// Words are UTF-8 encoded byte sequences delimited by Unicode Derived Core Property `White_Space`.
-#[cfg(test)]
-fn init(path: impl AsRef<Path>) -> Option<u64> {
-    from_reader(File::open(path.as_ref()).ok()?, BUF_SIZE)
-}
 
 /// Counts the words of an open file, reading through `scratch`, which is grown to the read
 /// size when it is smaller. One buffer can serve many files. `size` is what the file system
@@ -27,18 +13,13 @@ pub fn from_file(file: File, size: u64, scratch: &mut Vec<u8>) -> Option<u64> {
     count(file, size, &mut scratch[..BUF_SIZE])
 }
 
-/// Counts words in `reader` using a buffer of `buf_size` bytes.
+/// Counts the words of `reader`, reading through `buf`, from a file the file system reports as
+/// `size` bytes long (0 if unknown). `None` if it is not UTF-8.
 ///
 /// Equivalent to `str::split_whitespace().count()`: a word starts at each non-whitespace
-/// character that follows whitespace (or the start of input). The "inside a word" state is
-/// carried across chunks, and chunks never split a character.
-#[cfg(test)]
-fn from_reader(reader: impl Read, buf_size: usize) -> Option<u64> {
-    tally(|f| for_each_chunk(reader, buf_size, f))
-}
-
-/// Like [`from_reader`], reading through `buf`, from a file the file system reports as
-/// `size` bytes long (0 if unknown).
+/// character that follows whitespace (or the start of input), where whitespace is the Unicode
+/// `White_Space` property. The "inside a word" state is carried across chunks, and chunks never
+/// split a character.
 fn count(reader: impl Read, size: u64, buf: &mut [u8]) -> Option<u64> {
     tally(|f| for_each_chunk_in(reader, buf, size, f))
 }
@@ -94,13 +75,6 @@ fn ascii_words(chunk: &[u8], in_word: &mut bool) -> u64 {
     words
 }
 
-#[test]
-fn test_line_count() {
-    let count = init("tests/data/nemesis.txt").expect("Expected 'tests/data/nemesis.txt' to exist");
-
-    assert_eq!(count, 27);
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::utf8_stream::test_support::{BUF_SIZES, INVALID, generated_inputs};
@@ -110,8 +84,22 @@ mod tests {
         data.split_whitespace().count() as u64
     }
 
+    /// The count of `data` read through a buffer of `buf_size` bytes, which is the same whether
+    /// the size of the input is known or not.
     fn streamed(data: &[u8], buf_size: usize) -> Option<u64> {
-        from_reader(data, buf_size)
+        let mut buf = vec![0; buf_size];
+        let unknown = count(data, 0, &mut buf);
+        let known = count(data, data.len() as u64, &mut buf);
+        assert_eq!(unknown, known, "{data:?} buf {buf_size}");
+        known
+    }
+
+    #[test]
+    fn words_of_a_file() {
+        let path = "tests/data/nemesis.txt";
+        let size = std::fs::metadata(path).unwrap().len();
+        let count = from_file(File::open(path).unwrap(), size, &mut vec![]);
+        assert_eq!(count, Some(27));
     }
 
     #[test]
@@ -129,7 +117,6 @@ mod tests {
             ("é€😀 é€😀", 2),
             ("😀😀😀", 1),
         ] {
-            assert_eq!(oracle(data), expected, "oracle {data:?}");
             for &size in BUF_SIZES {
                 assert_eq!(
                     streamed(data.as_bytes(), size),
@@ -217,7 +204,6 @@ mod tests {
     #[test]
     fn invalid_utf8_is_none() {
         for &bad in INVALID {
-            assert!(std::str::from_utf8(bad).is_err());
             for &size in BUF_SIZES {
                 assert_eq!(streamed(bad, size), None, "{bad:?} buf {size}");
             }

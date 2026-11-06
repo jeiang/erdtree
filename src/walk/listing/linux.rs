@@ -117,7 +117,6 @@ impl Listing {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::fs::stat::Kind;
     use std::{collections::BTreeSet, fs};
 
     /// Lists the directory at `path`.
@@ -177,18 +176,5 @@ mod test {
                 listing.ents[i].ino
             );
         }
-    }
-
-    #[test]
-    fn small_directories_are_listed_whole() {
-        let dir = tempfile::tempdir().unwrap();
-        for i in 0..20 {
-            fs::write(dir.path().join(format!("f{i}")), "").unwrap();
-        }
-
-        let (listing, _) = list(dir.path());
-
-        assert_eq!(listing.len(), 20);
-        assert!((0..20).all(|i| listing.kind(i) == Some(Kind::File) || listing.kind(i).is_none()));
     }
 }

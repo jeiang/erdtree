@@ -92,6 +92,9 @@ mod test {
             .iter()
             .map(|id| (user_name(*id), group_name(*id)))
             .collect();
+        // Every system names user 0, and group 0 (`root`, or `wheel` on macOS).
+        assert_eq!(expected[0].0.as_deref(), Some("root"));
+        assert!(expected[0].1.is_some());
 
         let handles: Vec<_> = (0..16)
             .map(|_| {

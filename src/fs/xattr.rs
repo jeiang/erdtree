@@ -115,7 +115,7 @@ mod linux {
             symlink("plain", p("link-to-plain")).unwrap();
             symlink("missing", p("dangling")).unwrap();
 
-            // A user attribute; file systems without support (tmpfs in older kernels) skip it.
+            // A user attribute; file systems without support (tmpfs in older kernels) refuse it.
             let tagged = CString::new(p("tagged").as_os_str().as_bytes()).unwrap();
             // SAFETY: valid NUL-terminated strings and a buffer of the given size.
             let set = unsafe {
@@ -127,7 +127,17 @@ mod linux {
                     0,
                 )
             };
-            eprintln!("setxattr: {set}");
+            if set == 0 {
+                assert!(has_xattrs(&p("tagged"), None));
+            } else {
+                let err = std::io::Error::last_os_error();
+                assert_eq!(
+                    err.raw_os_error(),
+                    Some(libc::EOPNOTSUPP),
+                    "setxattr: {err}"
+                );
+                eprintln!("no user xattrs here ({err}): checking entries without them only");
+            }
 
             let fd = open_dir_path(dir.path(), true).unwrap();
 

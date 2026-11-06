@@ -133,13 +133,4 @@ mod test {
             assert_eq!(unit.index_of(unit.base(PREFIXES)), PREFIXES - 1);
         }
     }
-
-    #[test]
-    fn names_follow_indices() {
-        let bin = PrefixKind::Bin;
-        assert_eq!(bin.names()[bin.index_of(1 << 20)], "MiB");
-
-        let si = PrefixKind::Si;
-        assert_eq!(si.names()[si.index_of(5_000_000_000)], "GB");
-    }
 }

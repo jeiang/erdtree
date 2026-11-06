@@ -51,8 +51,12 @@ mod test {
     use chrono::{DateTime, Local, Offset, TimeZone};
     use std::process::Command;
 
-    /// Name of the child test that compares with chrono under the `TZ` it is given.
-    const CHILD: &str = "render::long::zone::test::child_matches_chrono";
+    /// Name of the child test that compares with chrono under the `TZ` it is given, as the test
+    /// harness names it: the module path without the crate name.
+    fn child() -> String {
+        let (_crate, module) = module_path!().split_once("::").unwrap();
+        format!("{module}::child_matches_chrono")
+    }
 
     /// Where the system zones are.
     const TZDB_LOCATION: &str = "/usr/share/zoneinfo";
@@ -146,14 +150,15 @@ mod test {
         }
 
         let exe = std::env::current_exe().unwrap();
+        let child = child();
         let mut unset = Command::new(&exe);
         unset
-            .args([CHILD, "--exact", "--ignored", "--quiet"])
+            .args([child.as_str(), "--exact", "--ignored", "--quiet"])
             .env_remove("TZ");
         let mut runs = vec![unset];
         for value in &values {
             let mut cmd = Command::new(&exe);
-            cmd.args([CHILD, "--exact", "--ignored", "--quiet"])
+            cmd.args([child.as_str(), "--exact", "--ignored", "--quiet"])
                 .env("TZ", value);
             runs.push(cmd);
         }
@@ -167,8 +172,10 @@ mod test {
                             .iter_mut()
                             .filter_map(|cmd| {
                                 let out = cmd.output().unwrap();
-                                (!out.status.success())
-                                    .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+                                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                                // A name that matches no test also exits successfully.
+                                (!out.status.success() || !stdout.contains(" 1 passed;"))
+                                    .then_some(stdout)
                             })
                             .collect::<Vec<_>>()
                     })

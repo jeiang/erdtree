@@ -3,20 +3,14 @@ use std::io::{ErrorKind, Read};
 /// Size of the read buffer used when streaming file contents.
 pub const BUF_SIZE: usize = 64 * 1024;
 
-/// Streams `reader` through a fixed-size buffer of `buf_size` bytes (at least 4), validating UTF-8
-/// as it goes and handing each valid chunk to `f`. A multi-byte character split across two reads
-/// is carried over and delivered whole in the next chunk, so `f` never sees a partial character.
+/// Streams `reader` through `buf`, which must hold at least 4 bytes, validating UTF-8 as it goes
+/// and handing each valid chunk to `f`. A multi-byte character split across two reads is carried
+/// over and delivered whole in the next chunk, so `f` never sees a partial character. Reusing one
+/// buffer for many files saves allocating and zeroing it per file.
 ///
 /// Returns `None` if the stream is not valid UTF-8 or an I/O error occurs, mirroring
 /// `fs::read_to_string`. `f` may already have been called by then; callers must discard any
 /// partial result.
-#[cfg(test)]
-pub fn for_each_chunk(reader: impl Read, buf_size: usize, f: impl FnMut(&str)) -> Option<()> {
-    for_each_chunk_in(reader, &mut vec![0u8; buf_size.max(4)], 0, f)
-}
-
-/// Like [`for_each_chunk`], reading through `buf`, which must hold at least 4 bytes. Reusing one
-/// buffer for many files saves allocating and zeroing it per file.
 ///
 /// `size` is the size the file system reports for a regular file, or 0 when unknown (a file that
 /// reports 0 may still have contents, as in `/proc`). Once that many bytes have been read the
@@ -74,7 +68,7 @@ pub fn for_each_chunk_in(
     }
 }
 
-/// Shared test helpers: generated inputs plus the original whole-file implementations as oracles.
+/// Inputs shared by the line and word count tests.
 #[cfg(test)]
 pub mod test_support {
     /// Pieces mixing ASCII, 2/3/4-byte characters, Unicode whitespace and line terminators.
