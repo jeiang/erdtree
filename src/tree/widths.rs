@@ -67,7 +67,6 @@ const PAR_MIN: usize = 1 << 18;
 /// The nodes a width scan covers.
 #[derive(Clone, Copy)]
 pub enum Scope<'a> {
-    /// Every node.
     All,
 
     /// The nodes `i` with `shown[i]`.
@@ -75,7 +74,6 @@ pub enum Scope<'a> {
 }
 
 impl Scope<'_> {
-    /// Number of positions to look at.
     const fn len(self, all: usize) -> usize {
         match self {
             Self::All => all,
@@ -87,7 +85,6 @@ impl Scope<'_> {
 /// Maximum sizes, tracked just finely enough to find the widest formatted number.
 #[derive(Clone, Copy)]
 pub struct SizeStats {
-    /// The largest size.
     max: Option<u64>,
 
     /// For human-readable sizes, their unit and the least value of buckets 1 and up (the
@@ -109,7 +106,6 @@ impl SizeStats {
         }
     }
 
-    /// Adds one size.
     #[inline]
     pub fn add(&mut self, value: u64) {
         if self.max.is_none_or(|m| value > m) {
@@ -162,7 +158,7 @@ impl SizeStats {
     }
 }
 
-/// Maxima and the distinct owners over some nodes.
+/// Maxima and the owners over some nodes.
 pub struct Stats {
     size: SizeStats,
     #[cfg(unix)]
@@ -170,13 +166,13 @@ pub struct Stats {
     #[cfg(unix)]
     nlink: u64,
 
-    /// Distinct `(uid, gid)` of nodes whose owner and group were read.
+    /// `(uid, gid)` of nodes whose owner and group were read, without consecutive repeats; not
+    /// yet distinct.
     #[cfg(unix)]
     owners: Vec<(u32, u32)>,
 }
 
 impl Stats {
-    /// Adds the maxima and owners of `other`.
     fn merge(&mut self, other: &Self) {
         self.size.merge(&other.size);
         #[cfg(unix)]

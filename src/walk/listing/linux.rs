@@ -22,7 +22,6 @@ const DIRENT_BUF: usize = 32 * 1024;
 
 /// Opens and lists directories for one worker.
 pub struct Lister {
-    /// The `getdents64` buffer.
     buf: Vec<u8>,
     budget: Arc<Budget>,
 }
@@ -44,7 +43,6 @@ impl Lister {
         }
     }
 
-    /// Opens the directory at `path` as `access` says.
     pub fn open(&self, path: &Path, access: &Access) -> Option<Opened> {
         fd::open(path, access, &self.budget)
     }

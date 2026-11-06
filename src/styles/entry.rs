@@ -22,7 +22,6 @@ pub struct Resolver {
 }
 
 impl Resolver {
-    /// A resolver for `ls`.
     pub fn new(ls: &'static LsColors) -> Self {
         let has = |indicator| ls.has_explicit_style_for(indicator);
 

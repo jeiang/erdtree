@@ -48,7 +48,6 @@ pub struct State {
     time: Vec<u8>,
 }
 
-/// Styles the symbolic notation of file permissions.
 #[cfg(unix)]
 pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
     // A trailing space aligns entries without extended attributes with those with them.
@@ -71,7 +70,6 @@ pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
     }
 }
 
-/// Styles the octal notation of file permissions.
 #[cfg(unix)]
 pub fn style_oct_permissions(mode: u32) -> String {
     let oct = crate::fs::permissions::octal(mode);
@@ -89,7 +87,6 @@ fn esc(style: impl Fn(&styles::Long) -> Style) -> Option<Esc> {
 }
 
 impl Long {
-    /// The long view as selected by `ctx`, with the column widths `widths`.
     pub fn new(ctx: &Context, widths: &Widths) -> Self {
         Self {
             group: ctx.group,
@@ -111,7 +108,7 @@ impl Long {
     }
 
     /// Appends the long columns of `node`, without a trailing separator: inode, permissions,
-    /// link count, owner, group and time, of which only the selected ones.
+    /// link count, owner, group and time; inode, link count and group only when selected.
     pub fn write(&self, state: &mut State, node: Node<'_>, out: &mut Vec<u8>) {
         if self.ino {
             Self::write_number(out, node.ino(), self.ino_width, self.ino_esc.as_ref());

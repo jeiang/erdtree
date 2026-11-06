@@ -127,7 +127,6 @@ pub struct RowFmt<'a> {
 
     /// The width to cut rows at, if they are cut.
     truncate_to: Option<usize>,
-    /// The size column; `None` if there is none.
     size: Option<Size>,
     link_arrow: Option<Esc>,
 
@@ -136,7 +135,6 @@ pub struct RowFmt<'a> {
 }
 
 impl<'a> RowFmt<'a> {
-    /// The row format `ctx` selects for `tree`.
     pub fn new(tree: &'a Tree, ctx: &Context) -> Self {
         Self {
             tree,

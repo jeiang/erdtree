@@ -78,7 +78,7 @@ nix build                       # crane release build (result/bin/erd); `nix run
 - Platform code: gate with `#[cfg(unix)]` / `#[cfg(windows)]` at module, field, and match-arm level (see `src/fs/`, `src/tree/columns.rs`). The fd-relative walk of Linux and macOS is `#[cfg(fd_walk)]`, a cfg `src/build.rs` sets for those two targets; write `fd_walk`, not `any(target_os = "linux", target_os = "macos")`. Windows builds on stable (hard-link identity via `windows-sys` in `src/fs/inode.rs`); CI builds and tests Windows, so keep both platforms compiling.
 - Options are `Copy` + clap `ValueEnum` enums where practical. Global immutable state uses `OnceLock`; no other shared mutable state.
 - New CLI flag: add it to `Context` (or a sub-struct) with a doc comment (clap uses it as help text), make sure TOML kebab/snake keys map to it, then update the literal `erd --help` output in `README.md` (Usage section).
-- `CONTRIBUTING.md`: rustdoc on every function/struct/trait; update README for user-visible changes; output changes need integration tests; open an issue before a PR. No commit-style rule is defined.
+- `CONTRIBUTING.md`: document what the code cannot say (constraints, invariants, external facts); no comments that restate the code; update README for user-visible changes; output changes need integration tests; open an issue before a PR. No commit-style rule is defined.
 
 ## Important Files
 

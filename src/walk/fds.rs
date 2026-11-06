@@ -21,8 +21,8 @@ use std::{
 const RESERVED: usize = 64;
 const PER_WORKER: usize = 4;
 
-/// Paths this long or longer are not opened by path: the margin below `PATH_MAX` covers a name
-/// appended to a path of this length.
+/// A subdirectory whose path, its own name included, is this long or longer keeps its parent's
+/// descriptor even when the budget is spent, as opening it by path may fail near `PATH_MAX`.
 pub const LONG_PATH: usize = crate::fs::PATH_MAX - 96;
 
 /// How many descriptors queued jobs may hold.

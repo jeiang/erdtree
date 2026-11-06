@@ -43,7 +43,6 @@ const FILE: u32 =
 /// A data vault: `lstat` of it fails (`EPERM`) without an entitlement, a bulk read reports it.
 const UF_DATAVAULT: u32 = 0x0000_0080;
 
-/// The attributes to ask for.
 #[derive(Clone, Copy)]
 pub struct Request {
     list: libc::attrlist,
@@ -206,14 +205,12 @@ struct Cursor<'a> {
 }
 
 impl Cursor<'_> {
-    /// The next `u32`.
     fn u32(&mut self) -> Option<u32> {
         let v = read_u32(self.record, self.at)?;
         self.at += 4;
         Some(v)
     }
 
-    /// The next `u64`.
     fn u64(&mut self) -> Option<u64> {
         let v = read_u64(self.record, self.at)?;
         self.at += 8;
@@ -290,7 +287,7 @@ fn parse<'a>(
         return None;
     }
 
-    // Leave the entry to `fstatat`, as master's `lstat` would see it.
+    // Leave the entry to `fstatat`, which reports it as `lstat` does.
     if error.is_some_and(|e| e != 0) {
         return Some(Entry {
             name,

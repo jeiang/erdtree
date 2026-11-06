@@ -48,7 +48,6 @@ enum Rows {
 }
 
 impl Rows {
-    /// The rows of `tree` in the layout of `ctx`.
     fn new(tree: &Tree, ctx: &Context) -> Self {
         let flat = |ids| Self::Flat {
             ids,
@@ -71,7 +70,6 @@ impl Rows {
         }
     }
 
-    /// Number of rows.
     fn len(&self, tree: &Tree) -> usize {
         match self {
             Self::Tree { .. } => tree.order().len(),

@@ -64,7 +64,6 @@ pub struct Probe {
 }
 
 impl Probe {
-    /// The optional metadata fields the walk must read.
     pub const fn fields(self) -> Fields {
         Fields {
             modified: self.modified,
@@ -79,7 +78,6 @@ impl Probe {
     }
 
     pub fn new(ctx: &Context) -> Self {
-        // Timestamps shown by the long view.
         #[cfg(unix)]
         let (long_mod, long_access, long_create) = match ctx.long.then(|| ctx.time()) {
             Some(time::Stamp::Mod) => (true, false, false),
@@ -150,7 +148,8 @@ pub struct Columns {
     pub multi_linked: Vec<(u32, (u64, u64))>,
     /// Inode of every entry; only with [`Probe::inodes`].
     pub inode: Vec<Option<Inode>>,
-    /// Symlink targets.
+    /// Symlink targets by entry index, in ascending order for [`Self::link_target`]'s binary
+    /// search.
     pub link_target: Vec<(u32, PathBuf)>,
     /// Index into `style_table` of the `LS_COLORS` style; only with color.
     style: Vec<StyleIndex>,
@@ -332,7 +331,6 @@ impl Sink for Collector {
 }
 
 impl Columns {
-    /// Number of entries.
     pub const fn len(&self) -> usize {
         self.name_end.len()
     }
@@ -362,7 +360,6 @@ impl Columns {
         self.name_end.push(self.names.len());
     }
 
-    /// Name of entry `i`.
     #[inline]
     pub fn name(&self, i: usize) -> &OsStr {
         let start = if i == 0 { 0 } else { self.name_end[i - 1] };
@@ -373,7 +370,6 @@ impl Columns {
         unsafe { OsStr::from_encoded_bytes_unchecked(bytes) }
     }
 
-    /// Symlink target of entry `i`, if it is a symlink.
     pub fn link_target(&self, i: u32) -> Option<&Path> {
         self.link_target
             .binary_search_by_key(&i, |(j, _)| *j)

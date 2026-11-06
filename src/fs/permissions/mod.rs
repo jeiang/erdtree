@@ -3,9 +3,9 @@ mod test;
 
 use super::stat::Kind;
 
-/// Symbolic notation of `mode` as `ls -l` prints it: the file type (`?` when unknown) and the
-/// `rwx` triads of user, group and other, with setuid, setgid and the sticky bit shown as `s`/`S`
-/// and `t`/`T` in the execute slot.
+/// Symbolic notation of `mode` as `ls -l` prints it, except that a regular file is `.` (as in
+/// exa): the file type (`?` when unknown) and the `rwx` triads of user, group and other, with
+/// setuid, setgid and the sticky bit shown as `s`/`S` and `t`/`T` in the execute slot.
 pub const fn symbolic(mode: u32) -> [u8; 10] {
     let file_type = match Kind::from_mode(mode) {
         Kind::Dir => b'd',

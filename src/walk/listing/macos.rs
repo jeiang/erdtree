@@ -28,7 +28,6 @@ const SHARED_DIR_FACTOR: u64 = 16;
 
 /// Opens and lists directories for one worker.
 pub struct Lister {
-    /// The `getattrlistbulk` buffer.
     buf: Vec<u8>,
     /// Which file systems are APFS, for bulk reads.
     volumes: bulk::Volumes,
@@ -63,7 +62,6 @@ impl Lister {
         }
     }
 
-    /// Opens the directory at `path` as `access` says.
     pub fn open(&self, path: &Path, access: &Access) -> Option<Opened> {
         fd::open(path, access, &self.budget)
     }
@@ -205,7 +203,6 @@ pub struct Sample {
 }
 
 impl Sample {
-    /// An empty sample.
     pub const fn new() -> Self {
         Self {
             files: 0,

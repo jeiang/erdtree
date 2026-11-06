@@ -392,7 +392,6 @@ impl Tree {
         self.stump
     }
 
-    /// The root node.
     pub const fn root(&self) -> u32 {
         self.root
     }
@@ -424,7 +423,6 @@ impl Tree {
         self.cols.prefetch_name(ix(i));
     }
 
-    /// View of node `i`.
     #[inline]
     pub const fn node(&self, i: u32) -> Node<'_> {
         Node::new(self, i)

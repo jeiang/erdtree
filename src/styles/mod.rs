@@ -102,7 +102,6 @@ impl Long {
 }
 
 impl Glyphs {
-    /// The pieces, each painted in `color` if given.
     fn new(color: Option<Color>) -> Self {
         let paint = |s: &str| {
             color
@@ -191,8 +190,8 @@ fn ls_colors() -> LsColors {
 static PREFETCH: Mutex<Option<JoinHandle<Option<LsColors>>>> = Mutex::new(None);
 
 /// Starts parsing `LS_COLORS` on a helper thread so that it overlaps with argument parsing; a
-/// large theme takes milliseconds to build. [`init`] picks up the result, and parses on the
-/// calling thread when this was not called or the thread failed.
+/// large `LS_COLORS` takes milliseconds to parse. [`init`] picks up the result, and parses on
+/// the calling thread when this was not called or the thread failed.
 pub fn prefetch_ls_colors() {
     *unpoisoned(PREFETCH.lock()) = Some(std::thread::spawn(LsColors::from_env));
 }

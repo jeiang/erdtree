@@ -71,7 +71,6 @@ impl<'a> Sorter<'a> {
         }
     }
 
-    /// Node of `item`.
     const fn node(&self, item: u32) -> Node<'a> {
         let i = match self.ties {
             Ties::Name => item,
@@ -80,7 +79,6 @@ impl<'a> Sorter<'a> {
         Node::new(self.tree, i)
     }
 
-    /// Key of `item`.
     pub fn key(&self, item: u32) -> Key {
         let node = self.node(item);
         let class = dir_class(self.dir_order, node) << 63;

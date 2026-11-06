@@ -135,7 +135,6 @@ impl Children {
         }
     }
 
-    /// Children of `p`.
     #[inline]
     pub fn of(&self, p: u32) -> &[u32] {
         &self.list[range_of(&self.end, p)]
@@ -578,8 +577,8 @@ pub fn dirs_only(parent: &[u32], is_dir: &[bool], alive: &mut [bool]) {
 }
 
 /// `--min-size`: kills every alive non-root node smaller than `threshold` that has no alive
-/// descendant of at least `threshold`. `order` must be a parent-first order of the alive nodes. Returns
-/// the killed nodes.
+/// descendant of at least `threshold`. `order` must be a parent-first order of the alive nodes.
+/// Returns the killed nodes.
 pub fn hide_small(
     order: &[u32],
     parent: &[u32],

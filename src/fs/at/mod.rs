@@ -1,8 +1,8 @@
 //! System calls the walk issues relative to a directory file descriptor: opening directories,
 //! reading them (`getdents64` on Linux, `getattrlistbulk` on macOS, see [`super::bulk`]) and
-//! reading metadata (`statx` on Linux, `fstatat` on macOS). Relative calls look up one path
-//! component instead of the whole path, and they work for paths longer than `PATH_MAX`. What
-//! differs between the two lives in [`linux`] and [`macos`].
+//! reading metadata (`statx` or `fstatat` on Linux, `fstatat` on macOS). Relative calls look up
+//! one path component instead of the whole path, and they work for paths longer than
+//! `PATH_MAX`. What differs between the two lives in [`linux`] and [`macos`].
 
 use super::stat::{Fields, Stat};
 use std::{
@@ -81,7 +81,6 @@ pub(super) fn retry<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     }
 }
 
-/// Turns the return value of a system call into a result.
 pub(super) fn check(ret: c_long) -> io::Result<c_long> {
     if ret < 0 {
         Err(io::Error::last_os_error())
@@ -135,7 +134,6 @@ fn owned(fd: c_int) -> io::Result<OwnedFd> {
     }
 }
 
-/// The target of the symlink `at`.
 pub fn read_link(at: At<'_>) -> io::Result<PathBuf> {
     let mut buf: Vec<u8> = vec![0; 256];
 

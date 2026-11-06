@@ -142,7 +142,6 @@ impl Found {
         has_jj_dir: true,
     };
 
-    /// Records `name` if it is relevant.
     pub fn note(&mut self, name: &OsStr) {
         match name.as_encoded_bytes() {
             b".ignore" => self.has_ignore = true,

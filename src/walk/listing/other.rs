@@ -11,7 +11,6 @@ use std::{fs, path::Path};
 pub struct Access;
 
 impl Access {
-    /// How the root is opened.
     pub const fn root() -> Self {
         Self
     }
@@ -40,7 +39,6 @@ impl Lister {
         Self
     }
 
-    /// A lister for another worker of the same walk.
     pub const fn for_worker(&self) -> Self {
         Self
     }
@@ -129,7 +127,6 @@ impl Listing {
         None
     }
 
-    /// How to open the subdirectory at `path`.
     // The same interface as the descriptor-based walk.
     #[allow(clippy::unused_self)]
     pub const fn access(&self, _path: &Path, _follow: bool) -> Access {

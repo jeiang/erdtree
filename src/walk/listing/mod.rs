@@ -40,7 +40,6 @@ pub use macos::{Lister, Sample};
 #[cfg(not(fd_walk))]
 pub use other::{Access, Lister};
 
-/// One listed entry.
 #[derive(Clone, Copy)]
 struct Ent {
     /// Inode number, for visiting a large directory in inode order.
@@ -61,7 +60,7 @@ pub struct Listing {
     ents: Vec<Ent>,
     /// Entries the directory listed that cannot be used (the read failed for them).
     pub unusable: usize,
-    /// The open directory, which `statx` of the entries is relative to.
+    /// The open directory, which metadata lookups of the entries are relative to.
     #[cfg(fd_walk)]
     dir: Option<Arc<DirFd>>,
     /// Metadata of each entry without following a symlink, as far as it came with the listing
@@ -97,14 +96,12 @@ impl Listing {
         self.std.clear();
     }
 
-    /// Name of entry `i`.
     pub fn name(&self, i: usize) -> &[u8] {
         let e = &self.ents[i];
         let start = e.off as usize;
         &self.names[start..start + usize::from(e.len)]
     }
 
-    /// Name of entry `i`.
     pub fn os_name(&self, i: usize) -> &OsStr {
         // SAFETY: the arena only holds bytes from `OsStr::as_encoded_bytes`, split at the
         // boundaries they were appended with.
@@ -157,7 +154,6 @@ pub struct Sample;
     clippy::needless_pass_by_ref_mut
 )]
 impl Sample {
-    /// An empty sample.
     pub const fn new() -> Self {
         Self
     }
