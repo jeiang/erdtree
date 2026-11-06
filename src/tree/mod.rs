@@ -146,9 +146,10 @@ impl Tree {
             "depth is the distance from the root"
         );
 
-        if !cols.link_target.is_sorted_by_key(|(i, _)| *i) {
-            cols.link_target.sort_unstable_by_key(|(i, _)| *i);
-        }
+        debug_assert!(
+            cols.link_target.is_sorted_by_key(|(i, _)| *i),
+            "each sink records links in index order and the merge appends sinks in offset order"
+        );
 
         let mut link = vec![0_u64; n.div_ceil(64)];
         for &(i, _) in &cols.link_target {

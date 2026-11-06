@@ -317,7 +317,7 @@ impl<'a> RowFmt<'a> {
             b""
         };
 
-        let Some(target) = node.symlink_target_file_name() else {
+        let Some(target) = node.symlink_target_path().map(std::path::Path::as_os_str) else {
             if let Some(style) = style.filter(|style| !style.is_plain()) {
                 let bold = &scratch.styles.get(style).bold;
                 out.extend_from_slice(&bold.pre);
