@@ -5,7 +5,6 @@ use super::disk_usage::{
 };
 
 use crate::walk::Entry;
-use args::Reconciler;
 use clap::{
     CommandFactory, FromArgMatches, Parser, ValueEnum, error::ErrorKind, parser::ValueSource,
 };
@@ -273,7 +272,7 @@ impl Context {
     /// Arguments provided will take precedence over config.
     pub fn try_init() -> Result<Self, Error> {
         let no_color_env = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
-        Self::compute_args().and_then(|args| Self::from_merged(args, no_color_env))
+        args::compute_args().and_then(|args| Self::from_merged(args, no_color_env))
     }
 
     /// Builds [Context] from the merged command-line and config matches.

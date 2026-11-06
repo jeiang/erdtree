@@ -1,51 +1,44 @@
 use super::{Context, config, error::Error};
 use clap::{
-    ArgGroup, ArgMatches, Command, CommandFactory, FromArgMatches, builder::ArgAction,
-    parser::ValueSource,
+    ArgGroup, ArgMatches, Command, CommandFactory, builder::ArgAction, parser::ValueSource,
 };
 use std::{
     ffi::{OsStr, OsString},
     path::PathBuf,
 };
 
-/// Allows the implementor to compute [`ArgMatches`] that reconciles arguments from both the
-/// command-line as well as the config file that gets loaded.
-pub trait Reconciler: CommandFactory + FromArgMatches {
-    /// Loads in arguments from both the command-line as well as the config file and reconciles
-    /// identical arguments between the two using these rules:
-    ///
-    /// 1. If no config file is present, use arguments strictly from the command-line.
-    /// 2. If an argument was provided via the CLI then override the argument from the config.
-    /// 3. If an argument is sourced from its default value because a user didn't provide it via
-    ///    the CLI, then select the argument from the config if it exists.
-    fn compute_args() -> Result<ArgMatches, Error> {
-        // Fast path: parse once with the relations enforced. Success means the plain parse of the
-        // slow path would succeed too (relations only add constraints) with identical values. On
-        // any error, help or version request, take the slow path so that output, error order and
-        // exit status stay exactly as they were.
-        let mut cmd = with_relations(Self::command().args_override_self(true));
+/// Loads in arguments from both the command-line as well as the config file and reconciles
+/// identical arguments between the two using these rules:
+///
+/// 1. If no config file is present, use arguments strictly from the command-line.
+/// 2. If an argument was provided via the CLI then override the argument from the config.
+/// 3. If an argument is sourced from its default value because a user didn't provide it via
+///    the CLI, then select the argument from the config if it exists.
+pub fn compute_args() -> Result<ArgMatches, Error> {
+    // Fast path: parse once with the relations enforced. Success means the plain parse of the
+    // slow path would succeed too (relations only add constraints) with identical values. On
+    // any error, help or version request, take the slow path so that output, error order and
+    // exit status stay exactly as they were.
+    let mut cmd = with_relations(Context::command().args_override_self(true));
 
-        match cmd.try_get_matches_from_mut(std::env::args_os()) {
-            Ok(user_args) => return reconcile(cmd, user_args, true),
-            // Relations do not change help or version text.
-            Err(err) if !err.use_stderr() => err.exit(),
-            Err(_) => {},
-        }
-
-        // Exits for usage errors, like `Command::get_matches`.
-        let user_args = Self::command()
-            .args_override_self(true)
-            .try_get_matches_from(std::env::args_os())
-            .unwrap_or_else(|err| err.exit());
-
-        // A command that has parsed once cannot take `mut_arg`; build another for the relations.
-        let cmd = with_relations(Self::command().args_override_self(true));
-
-        reconcile(cmd, user_args, false)
+    match cmd.try_get_matches_from_mut(std::env::args_os()) {
+        Ok(user_args) => return reconcile(cmd, user_args, true),
+        // Relations do not change help or version text.
+        Err(err) if !err.use_stderr() => err.exit(),
+        Err(_) => {},
     }
-}
 
-impl Reconciler for Context {}
+    // Exits for usage errors, like `Command::get_matches`.
+    let user_args = Context::command()
+        .args_override_self(true)
+        .try_get_matches_from(std::env::args_os())
+        .unwrap_or_else(|err| err.exit());
+
+    // A command that has parsed once cannot take `mut_arg`; build another for the relations.
+    let cmd = with_relations(Context::command().args_override_self(true));
+
+    reconcile(cmd, user_args, false)
+}
 
 /// Merges the config file, if any, into `user_args`, the matches of the command-line. `cmd` must
 /// carry the relations. `validated` tells that `user_args` was parsed with `cmd` already.
@@ -68,7 +61,7 @@ fn reconcile(
     };
 
     let final_args = merge(&cmd, &user_args, &config_args)?;
-    validate(&mut cmd, final_args.into_iter().skip(1))
+    validate(&mut cmd, final_args)
 }
 
 /// The arguments that `validate` parses: per argument, the command-line value if one was given,
@@ -79,7 +72,7 @@ fn merge(
     user_args: &ArgMatches,
     config_args: &ArgMatches,
 ) -> Result<Vec<OsString>, Error> {
-    let mut final_args = init_empty_args();
+    let mut final_args = Vec::new();
 
     for arg in cmd.get_arguments() {
         let arg_id = arg.get_id();
@@ -191,12 +184,6 @@ fn validate(
     cmd.try_get_matches_from_mut(full).map_err(Error::ArgParse)
 }
 
-/// Creates a properly formatted `Vec<OsString>` that [`clap::Command`] would understand.
-#[inline]
-fn init_empty_args() -> Vec<OsString> {
-    vec![OsString::from("--")]
-}
-
 /// Loads an [`ArgMatches`] from `.erdtree.toml`, or `None` if there is no such file.
 #[inline]
 fn load_toml_config_args(named_table: Option<&str>) -> Result<Option<ArgMatches>, Error> {
@@ -229,7 +216,7 @@ mod test {
         };
         let mut cmd = with_relations(command());
         let args = merge(&cmd, &parse(cli), &parse(config)).unwrap();
-        let merged = validate(&mut cmd, args.into_iter().skip(1)).unwrap();
+        let merged = validate(&mut cmd, args).unwrap();
         Context::from_merged(merged, false).unwrap()
     }
 
