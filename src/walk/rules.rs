@@ -8,7 +8,7 @@
 //! are dropped (`erd` never sets them), and errors while reading ignore files are dropped, as `erd`
 //! skipped them before. Matching only answers "ignored" or "not ignored".
 
-use crate::fs::stat::Kind;
+use crate::fs::stat::{Kind, Stat};
 use ignore::{
     Match,
     gitignore::{Gitignore, GitignoreBuilder},
@@ -46,11 +46,13 @@ impl Options {
 }
 
 /// Device and inode numbers of a directory.
+#[cfg(fd_walk)]
 pub type Ident = (u64, u64);
 
-/// A directory descriptor to read ignore files relative to (on Linux), so that they are found
-/// below paths longer than `PATH_MAX` too. The value is ignored elsewhere.
-pub type DirFd = Option<i32>;
+/// A directory descriptor to read ignore files relative to (with the descriptor-based walk of
+/// Linux and macOS), so that they are found below paths longer than `PATH_MAX` too. Elsewhere
+/// it is always `None`.
+pub type OpenDir = Option<i32>;
 
 /// Ignore rules for one directory and, through `parent`, all of its ancestors.
 #[derive(Clone, Debug)]
@@ -230,15 +232,15 @@ impl Rules {
     /// The rules of child directory `dir`, given which ignore files its listing contains (with
     /// [`Found::ALL`] they are probed on disk). A directory without ignore files shares the
     /// rules of its parent, unless `own_rules` asks for rules of its own (symlink loop detection
-    /// lists the walked directories) or the parent is an ancestor of the root. `ident`
-    /// identifies the directory for loop detection; `fd` is its open descriptor.
+    /// lists the walked directories) or the parent is an ancestor of the root. The metadata
+    /// `stat` identifies the directory for loop detection; `fd` is its open descriptor.
     pub fn add_child(
         &self,
         dir: &Path,
         found: Found,
         own_rules: bool,
-        ident: Option<Ident>,
-        fd: DirFd,
+        stat: Option<&Stat>,
+        fd: OpenDir,
     ) -> Self {
         let no_files =
             !found.has_ignore && !found.has_git_ignore && !found.has_git_dir && !found.has_jj_dir;
@@ -248,14 +250,14 @@ impl Rules {
         }
 
         Self {
-            inner: Arc::new(self.child_inner(dir, found, ident, fd).derive()),
+            inner: Arc::new(self.child_inner(dir, found, stat, fd).derive()),
         }
     }
 
-    fn child_inner(&self, dir: &Path, found: Found, ident: Option<Ident>, fd: DirFd) -> Inner {
+    fn child_inner(&self, dir: &Path, found: Found, stat: Option<&Stat>, fd: OpenDir) -> Inner {
         // Loops are found by path elsewhere.
         #[cfg(not(fd_walk))]
-        let _ = ident;
+        let _ = stat;
 
         let opts = self.inner.opts;
 
@@ -295,7 +297,7 @@ impl Rules {
             common: Arc::clone(&self.inner.common),
             dir: dir.to_path_buf(),
             #[cfg(fd_walk)]
-            ident,
+            ident: stat.map(|stat| (stat.dev, stat.ino)),
             parent: Some(Arc::clone(&self.inner)),
             absolute_base: self.inner.absolute_base.clone(),
             is_absolute_parent: false,
@@ -450,7 +452,7 @@ impl Rules {
 
 /// Opens the file `name` (a relative path) of `dir`: relative to its descriptor `fd` if there is
 /// one, else by path.
-fn open_in(dir: &Path, fd: DirFd, name: &str) -> io::Result<File> {
+fn open_in(dir: &Path, fd: OpenDir, name: &str) -> io::Result<File> {
     #[cfg(target_os = "macos")]
     let fd = fd.filter(|_| crate::fs::fits_path_max(dir.as_os_str().len() + 1 + name.len()));
 
@@ -466,7 +468,7 @@ fn open_in(dir: &Path, fd: DirFd, name: &str) -> io::Result<File> {
 }
 
 /// The type of `name` in `dir`, following a symlink; `None` if it does not exist.
-fn kind_in(dir: &Path, fd: DirFd, name: &str) -> Option<Kind> {
+fn kind_in(dir: &Path, fd: OpenDir, name: &str) -> Option<Kind> {
     #[cfg(target_os = "macos")]
     let fd = fd.filter(|_| crate::fs::fits_path_max(dir.as_os_str().len() + 1 + name.len()));
 
@@ -523,7 +525,7 @@ fn create_gitignore(dir: &Path, open: impl FnOnce() -> io::Result<File>) -> Giti
 
 /// The `GIT_COMMON_DIR` of the worktree at `dir`, whose `.git` is a file, which may hold
 /// `info/exclude`.
-fn resolve_git_commondir(dir: &Path, fd: DirFd) -> Option<PathBuf> {
+fn resolve_git_commondir(dir: &Path, fd: OpenDir) -> Option<PathBuf> {
     let first_line = |file: io::Result<File>| -> Option<String> {
         io::BufReader::new(file.ok()?).lines().next()?.ok()
     };

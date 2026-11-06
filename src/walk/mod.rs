@@ -7,11 +7,9 @@
 //! depth limit, same-file-system check and symlink loop detection. Entries whose metadata cannot
 //! be read are dropped, and so are their contents.
 //!
-//! On Linux and macOS a directory is opened relative to its parent's file descriptor and read
-//! into a [`Listing`]: on Linux with `getdents64`, each entry then stat'ed with `statx` relative
-//! to the open directory; on macOS with `getattrlistbulk`, which returns the metadata of the
-//! entries with their names (see [`crate::fs::at`], [`crate::fs::bulk`]). Elsewhere the walk
-//! uses `std::fs::read_dir`.
+//! A worker lists a directory into a [`Listing`] with its [`Lister`], the platform's way to read
+//! a directory: on Linux and macOS relative to its parent's file descriptor, elsewhere with
+//! `std::fs::read_dir` (see [`listing`]).
 
 use crate::{
     fs::stat::{Fields, Kind, Stat},
@@ -32,10 +30,7 @@ use std::{
 #[cfg(fd_walk)]
 use crate::fs::at::{self, At};
 #[cfg(fd_walk)]
-use std::os::{
-    fd::{AsRawFd, OwnedFd},
-    unix::ffi::OsStrExt,
-};
+use std::os::unix::ffi::OsStrExt;
 
 /// Detects workers that wait for the file system.
 mod adaptive;
@@ -44,15 +39,13 @@ mod adaptive;
 mod fds;
 /// Hidden entries, `--exclude`, `--no-git` and the entry filter.
 pub mod filter;
-/// The entries of one directory.
+/// The entries of one directory, and how each platform lists them.
 mod listing;
 /// Ignore rules per directory, adapted from the `ignore` crate.
 pub mod rules;
 
-#[cfg(fd_walk)]
-use fds::{Budget, DirFd};
 use filter::EntryFilter;
-use listing::Listing;
+use listing::{Access, Lister, Listing, Sample};
 use rules::{Found, Rules};
 
 /// Identifies a record: the index of the sink that holds it and its index in that sink.
@@ -300,17 +293,8 @@ struct Job {
     depth: usize,
     /// Rules of the parent directory.
     rules: Rules,
-    /// The parent directory, which the directory is opened relative to. `None` when the budget
-    /// of held descriptors is spent: the directory is then opened by path.
-    #[cfg(fd_walk)]
-    parent: Option<Arc<DirFd>>,
-    /// Whether the directory is a followed symlink, so opening it follows the link.
-    #[cfg(fd_walk)]
-    follow: bool,
-    /// Whether to list the directory with `getattrlistbulk`, which gives the metadata of its
-    /// entries, rather than `readdir`, which gives their names and types only.
-    #[cfg(target_os = "macos")]
-    bulk: bool,
+    /// How to open and list the directory.
+    access: Access,
 }
 
 /// Work shared between workers.
@@ -343,9 +327,9 @@ struct Run<'a, S, F> {
     next: AtomicUsize,
     /// Device of the root, with `--one-file-system`.
     root_device: Option<u64>,
-    /// How many directory descriptors queued jobs may hold.
-    #[cfg(fd_walk)]
-    budget: Arc<Budget>,
+    /// The lister each worker copies: it holds what the workers' listers share, such as the
+    /// budget of directory descriptors queued jobs may hold.
+    lister: Lister,
 }
 
 /// Runs the worker with index `index` until the walk is done. It takes its sink from
@@ -376,10 +360,7 @@ fn run_worker<'scope, 'env, S, F>(
         local,
         progress: run.progress,
         listing: Listing::default(),
-        #[cfg(fd_walk)]
-        dirent_buf: Vec::new(),
-        #[cfg(target_os = "macos")]
-        volumes: crate::fs::bulk::Volumes::default(),
+        lister: run.lister.for_worker(),
         path_buf: Vec::new(),
     };
     worker.run();
@@ -431,10 +412,9 @@ impl Walker {
             .and_then(|sink| self.root_job(sink));
 
         if let Some((root, root_device)) = root {
-            // Parent directories stay open while their subdirectories wait, so allow many
-            // files, and hold no more of them than the limit allows.
-            #[cfg(fd_walk)]
-            let budget = Budget::new(at::raise_open_file_limit(), self.max_workers());
+            // On Linux and macOS this raises the limit of open files and sets the budget of
+            // descriptors, so only a walk that reads a directory does it.
+            let lister = Lister::new(self);
 
             let run = Run {
                 walker: self,
@@ -451,8 +431,7 @@ impl Walker {
                 pool,
                 next: AtomicUsize::new(1),
                 root_device,
-                #[cfg(fd_walk)]
-                budget,
+                lister,
             };
 
             // Each worker owns its sink, so no two threads write next to each other in memory.
@@ -506,12 +485,7 @@ impl Walker {
             },
             depth: 0,
             rules: self.rules.add_parents(&self.root),
-            #[cfg(fd_walk)]
-            parent: None,
-            #[cfg(fd_walk)]
-            follow: true,
-            #[cfg(target_os = "macos")]
-            bulk: true,
+            access: Access::root(),
         };
 
         Some((job, root_device))
@@ -539,9 +513,6 @@ struct Dir {
     id: NodeRef,
     /// Depth of the directory itself.
     depth: usize,
-    /// Whether it was listed in bulk.
-    #[cfg(target_os = "macos")]
-    bulk: bool,
 }
 
 /// An entry the walk kept.
@@ -552,7 +523,6 @@ enum Kept {
     Dir {
         me: Me,
         /// Whether it is a symlink that was followed.
-        #[cfg(fd_walk)]
         follow: bool,
     },
 }
@@ -590,11 +560,7 @@ struct Worker<'scope, 'env, S, F> {
     progress: Option<&'env AtomicU64>,
     /// Buffers reused from directory to directory.
     listing: Listing,
-    #[cfg(fd_walk)]
-    dirent_buf: Vec<u8>,
-    /// Which file systems are APFS, for bulk reads.
-    #[cfg(target_os = "macos")]
-    volumes: crate::fs::bulk::Volumes,
+    lister: Lister,
     path_buf: Vec<u8>,
 }
 
@@ -767,26 +733,23 @@ where
     /// Reads one directory, records its kept entries and queues its subdirectories.
     fn read_dir(&mut self, job: Job) -> Tally {
         let mut tally = Tally::default();
-        let Some((id, listing, found, ident)) = self.open(&job, &mut tally) else {
+        let Some((id, listing, found, stat)) = self.open(&job, &mut tally) else {
             return tally;
         };
 
-        #[cfg(fd_walk)]
-        let fd = listing.dir.as_ref().map(|dir| dir.as_raw_fd());
-        #[cfg(not(fd_walk))]
-        let fd = None;
-
-        let rules = job
-            .rules
-            .add_child(&job.path, found, self.walker.follow_links, ident, fd);
+        let rules = job.rules.add_child(
+            &job.path,
+            found,
+            self.walker.follow_links,
+            stat.as_ref(),
+            listing.fd(),
+        );
         let dir = Dir {
             listing,
             path: job.path,
             rules,
             id,
             depth: job.depth,
-            #[cfg(target_os = "macos")]
-            bulk: job.bulk,
         };
 
         let len = dir.listing.len();
@@ -861,77 +824,52 @@ where
 
     /// Opens and lists the directory of `job`, storing its record if that is still to do, and
     /// counts what it recorded and listed without walking in `tally`. Returns its record,
-    /// listing, which ignore files it has and its device and inode numbers (with `--follow`);
-    /// `None` when it cannot be read or is not walked.
+    /// listing, which ignore files it has and its metadata, if it was read; `None` when it
+    /// cannot be read or is not walked.
     ///
     /// A directory the parent listed as one but that cannot be looked up (its parent is
     /// readable but not searchable, or it vanished) has no record. It counts as ignored, as an
     /// entry whose metadata cannot be read does.
-    #[cfg(fd_walk)]
     fn open(
         &mut self,
         job: &Job,
         tally: &mut Tally,
-    ) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
+    ) -> Option<(NodeRef, Listing, Found, Option<Stat>)> {
         let walker = self.walker;
-        let fd = open_dir(job);
-        let mut ident = None;
-        // Links to the directory, which on APFS counts its entries.
-        #[cfg(target_os = "macos")]
-        let mut links = None;
+        let opened = self.lister.open(&job.path, &job.access);
 
-        let (id, foreign) = match job.me {
+        let (id, foreign, stat) = match job.me {
             Me::Pushed { id, foreign } => {
-                #[cfg(not(target_os = "macos"))]
-                let wanted = walker.follow_links;
-                #[cfg(target_os = "macos")]
-                let wanted = walker.follow_links || walker.max_workers() > 1;
+                // For loop detection (`--follow`), and for the lister.
+                let stat = if walker.follow_links || self.lister.wants_dir_stat() {
+                    opened.as_ref().and_then(|dir| dir.stat(Fields::default()))
+                } else {
+                    None
+                };
 
-                if wanted {
-                    let stat = fd
-                        .as_ref()
-                        .and_then(|fd| at::stat_fd(fd.as_raw_fd(), Fields::default()).ok());
-                    if walker.follow_links {
-                        ident = stat.map(|stat| (stat.dev, stat.ino));
-                    }
-                    #[cfg(target_os = "macos")]
-                    {
-                        links = stat.map(|stat| stat.nlink);
-                    }
-                }
-
-                (id, foreign)
+                (id, foreign, stat)
             },
             #[cfg(fd_walk)]
             Me::Deferred(parent) => {
                 // The parent counted the directory as deferred; it is recorded or ignored here.
                 tally.listed += 1;
 
-                let from_fd = fd
+                let stat = opened
                     .as_ref()
-                    .and_then(|fd| at::stat_fd(fd.as_raw_fd(), walker.fields).ok());
-
-                let stat = from_fd.or_else(|| lstat_in_parent(job, walker.fields))?;
+                    .and_then(|dir| dir.stat(walker.fields))
+                    .or_else(|| listing::lstat_dir(&job.path, &job.access, walker.fields))?;
                 let index = self.store_dir(job, parent, &stat)?;
                 tally.recorded += 1;
 
-                ident = Some((stat.dev, stat.ino));
-                #[cfg(target_os = "macos")]
-                {
-                    links = Some(stat.nlink);
-                }
-
-                (
-                    NodeRef {
-                        sink: self.sink_index,
-                        index,
-                    },
-                    self.is_foreign(&stat, &job.path),
-                )
+                let id = NodeRef {
+                    sink: self.sink_index,
+                    index,
+                };
+                (id, self.is_foreign(&stat, &job.path), Some(stat))
             },
         };
 
-        let fd = fd?;
+        let opened = opened?;
 
         if foreign && !walker.count_ignored {
             return None;
@@ -940,27 +878,8 @@ where
         let mut listing = mem::take(&mut self.listing);
         let mut found = Found::default();
         listing.clear();
-        let dir = DirFd::new(fd, Arc::clone(&self.run.budget));
-        #[cfg(target_os = "linux")]
-        listing.fill(Arc::new(dir), &mut self.dirent_buf, &mut found);
-        // Contents of another file system are only counted, which needs no metadata. Neither is
-        // a bulk read worth it for a directory large enough that idle workers share its entries:
-        // it is serial, while their `fstatat` calls are not.
-        #[cfg(target_os = "macos")]
-        let bulk = job.bulk
-            && !foreign
-            && !(walker.max_workers() > 1
-                && links.is_some_and(|links| {
-                    links >= (walker.tuning.split_min as u64).saturating_mul(SHARED_DIR_FACTOR)
-                }));
-        #[cfg(target_os = "macos")]
-        listing.fill(
-            Arc::new(dir),
-            &mut self.dirent_buf,
-            bulk.then_some(&mut self.volumes),
-            walker.fields,
-            &mut found,
-        );
+        self.lister
+            .fill(&mut listing, opened, stat.as_ref(), foreign, &mut found);
 
         if foreign {
             // Contents of another file system are not walked, only counted.
@@ -970,47 +889,14 @@ where
         }
 
         tally.listed += listing.unusable;
-        Some((id, listing, found, ident))
-    }
-
-    /// Opens and lists the directory of `job`.
-    #[cfg(not(fd_walk))]
-    fn open(
-        &mut self,
-        job: &Job,
-        tally: &mut Tally,
-    ) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
-        let Me::Pushed { id, foreign } = job.me;
-
-        if foreign && !self.walker.count_ignored {
-            return None;
-        }
-
-        let mut listing = mem::take(&mut self.listing);
-        let mut found = Found::default();
-        listing.clear();
-
-        if !listing.fill(&job.path, &mut found) {
-            self.listing = listing;
-            return None;
-        }
-
-        if foreign {
-            // Contents of another file system are not walked, only counted.
-            tally.listed += listing.len() + listing.unusable;
-            self.recycle(listing);
-            return None;
-        }
-
-        tally.listed += listing.unusable;
-        Some((id, listing, found, None))
+        Some((id, listing, found, stat))
     }
 
     /// Stores the record of the directory of `job`, whose records are stored by its own job.
     #[cfg(fd_walk)]
     fn store_dir(&mut self, job: &Job, parent: NodeRef, stat: &Stat) -> Option<u32> {
         let name = job.path.file_name()?;
-        let parent_fd = job.parent.as_deref().map(DirFd::as_raw_fd);
+        let parent_fd = job.access.parent_fd();
 
         at::with_cstr(name.as_bytes(), |cname| {
             Ok(self.sink.push(&Record {
@@ -1045,10 +931,9 @@ where
             listed: hi - lo,
             ..Tally::default()
         };
-        // Files listed and how many of them were recorded, which needs their metadata; and where
-        // the subdirectories queued here start.
-        #[cfg(target_os = "macos")]
-        let (mut files, mut recorded, queued) = (0_usize, 0_usize, self.local.len());
+        // How many of the entries were recorded tells how to list the subdirectories queued here.
+        let mut sample = Sample::new();
+        let queued = self.local.len();
 
         for i in lo..hi {
             buf.truncate(dir_len);
@@ -1058,51 +943,38 @@ where
             // name, so it is valid as an `OsStr`.
             let path = Path::new(unsafe { OsStr::from_encoded_bytes_unchecked(&buf) });
 
-            #[cfg(target_os = "macos")]
-            let file = dir.listing.kind(i).is_none_or(|kind| !kind.is_dir());
-            #[cfg(target_os = "macos")]
-            {
-                files += usize::from(file);
-            }
-
-            let Some(entry) = self.visit(dir, i, path, may_descend) else {
-                continue;
-            };
+            let kept = self.visit(dir, i, path, may_descend);
 
             // Every kept entry is recorded but a directory whose own job stores it.
-            let Kept::Dir {
-                me,
+            let recorded = match kept {
+                None => false,
+                Some(
+                    Kept::Leaf
+                    | Kept::Dir {
+                        me: Me::Pushed { .. },
+                        ..
+                    },
+                ) => true,
                 #[cfg(fd_walk)]
-                follow,
-            } = entry
-            else {
-                tally.recorded += 1;
-                #[cfg(target_os = "macos")]
-                {
-                    recorded += usize::from(file);
-                }
+                Some(Kept::Dir {
+                    me: Me::Deferred(_),
+                    ..
+                }) => false,
+            };
+            sample.add(dir.listing.kind(i), recorded);
+
+            let Some(Kept::Dir { me, follow }) = kept else {
+                tally.recorded += usize::from(recorded);
                 continue;
             };
 
-            match me {
-                Me::Pushed { .. } => tally.recorded += 1,
-                #[cfg(fd_walk)]
-                Me::Deferred(_) => tally.deferred += 1,
+            if recorded {
+                tally.recorded += 1;
+            } else {
+                tally.deferred += 1;
             }
 
-            #[cfg(target_os = "macos")]
-            {
-                recorded += usize::from(file && matches!(me, Me::Pushed { .. }));
-            }
-
-            #[cfg(fd_walk)]
-            let parent = dir.listing.dir.as_ref().and_then(|parent| {
-                // A path this long cannot be opened by path, so the job needs the descriptor.
-                parent
-                    .retain(buf.len() >= fds::LONG_PATH)
-                    .then(|| Arc::clone(parent))
-            });
-
+            let access = dir.listing.access(path, follow);
             self.shared.pending.fetch_add(1, Ordering::AcqRel);
             self.local.push(Task::Dir(Job {
                 // SAFETY: as above.
@@ -1110,27 +982,18 @@ where
                 me,
                 depth,
                 rules: dir.rules.clone(),
-                #[cfg(fd_walk)]
-                parent,
-                #[cfg(fd_walk)]
-                follow,
-                #[cfg(target_os = "macos")]
-                bulk: dir.bulk,
+                access,
             }));
         }
 
-        // A bulk read costs more per entry than `readdir` but saves an `fstatat` per recorded
-        // file: it pays when about a third of the files are recorded. The files of the parent
-        // tell; too few of them leave the subdirectories to be listed as the parent was.
-        #[cfg(target_os = "macos")]
-        if files >= DENSITY_SAMPLE {
-            let bulk = recorded * 3 >= files;
-            for task in &mut self.local[queued..] {
-                if let Task::Dir(job) = task {
-                    job.bulk = bulk;
-                }
-            }
-        }
+        sample.apply(
+            self.local[queued..]
+                .iter_mut()
+                .filter_map(|task| match task {
+                    Task::Dir(job) => Some(&mut job.access),
+                    Task::Chunk(_) => None,
+                }),
+        );
 
         self.path_buf = buf;
         tally
@@ -1148,7 +1011,7 @@ where
         let mut stat = None;
         let reported = match listing.kind(i) {
             Some(kind) => kind,
-            None => stat.insert(listing.lstat(i, path, fields)?).kind,
+            None => stat.insert(listing.lstat(i, fields)?).kind,
         };
 
         let is_symlink = reported.is_symlink();
@@ -1209,7 +1072,7 @@ where
 
         let stat = match followed.or(stat) {
             Some(stat) => stat,
-            None => listing.lstat(i, path, fields)?,
+            None => listing.lstat(i, fields)?,
         };
 
         let index = self.sink.push(&Record {
@@ -1242,101 +1105,9 @@ where
                 },
                 foreign,
             },
-            #[cfg(fd_walk)]
             follow: is_symlink && walker.follow_links,
         })
     }
-}
-
-/// Metadata of the directory of `job` looked up by name in its parent, or by path when the job
-/// holds no descriptor of the parent.
-#[cfg(fd_walk)]
-fn lstat_in_parent(job: &Job, fields: Fields) -> Option<Stat> {
-    let Some(parent) = &job.parent else {
-        return at::lstat_path(&job.path, fields).ok();
-    };
-
-    let dir = parent.as_raw_fd();
-    let name = job.path.file_name()?.as_bytes();
-
-    at::with_cstr(name, |name| at::stat_at(At { dir, name }, false, fields)).ok()
-}
-
-/// How often opening a directory is retried when the process or system is out of descriptors,
-/// and the longest wait between tries.
-#[cfg(fd_walk)]
-const OPEN_RETRIES: u32 = 100;
-
-/// How many files a directory must have listed before they tell how to list its subdirectories;
-/// with fewer, they are listed as the directory was.
-#[cfg(target_os = "macos")]
-const DENSITY_SAMPLE: usize = 8;
-
-/// A directory with this many times the entries that split it is listed with `readdir` when
-/// several workers may share it.
-#[cfg(target_os = "macos")]
-const SHARED_DIR_FACTOR: u64 = 16;
-
-/// Opens the directory of `job`: relative to its parent when it has one, else by path. Running
-/// out of descriptors (`EMFILE`, `ENFILE`) is retried for a while, as other workers close theirs;
-/// only then the directory counts as unreadable. The budget (see [`fds`]) keeps the walk from
-/// causing this by itself, except for paths too long to open by path.
-#[cfg(fd_walk)]
-fn open_dir(job: &Job) -> Option<OwnedFd> {
-    // The path-based walk could not read a directory whose path does not fit.
-    #[cfg(target_os = "macos")]
-    if !crate::fs::fits_path_max(job.path.as_os_str().len()) {
-        return None;
-    }
-
-    for attempt in 1..=OPEN_RETRIES {
-        match open_dir_once(job) {
-            Err(e) if matches!(e.raw_os_error(), Some(libc::EMFILE | libc::ENFILE)) => {
-                thread::sleep(std::time::Duration::from_micros(100 * u64::from(attempt)));
-            },
-            result => return result.ok(),
-        }
-    }
-
-    None
-}
-
-#[cfg(fd_walk)]
-fn open_dir_once(job: &Job) -> std::io::Result<OwnedFd> {
-    if let Some(parent) = &job.parent {
-        let name = job
-            .path
-            .file_name()
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?
-            .as_bytes();
-        let opened = at::with_cstr(name, |name| {
-            at::open_dir_at(parent.as_raw_fd(), name, job.follow)
-        });
-
-        match opened {
-            Ok(fd) => return Ok(fd),
-            // Another lookup cannot fix these.
-            Err(e)
-                if matches!(
-                    e.raw_os_error(),
-                    Some(
-                        libc::ENOENT
-                            | libc::EACCES
-                            | libc::ENOTDIR
-                            | libc::ELOOP
-                            | libc::EPERM
-                            | libc::EMFILE
-                            | libc::ENFILE
-                    )
-                ) =>
-            {
-                return Err(e);
-            },
-            Err(_) => {},
-        }
-    }
-
-    at::open_dir_path(&job.path, job.follow)
 }
 
 /// Whether the directory `target` (a followed symlink's target) is one of the walked directories
