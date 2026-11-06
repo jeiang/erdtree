@@ -81,24 +81,6 @@ pub struct Long {
     pub datetime: Style,
 }
 
-#[cfg(unix)]
-impl Long {
-    /// The style of a character of symbolic permissions.
-    pub fn permission(ch: char) -> Style {
-        match ch {
-            'd' => Color::Blue.bold(),
-            'p' => Color::Yellow.normal(),
-            'r' => Color::Green.bold(),
-            'w' | 'c' | 'b' => Color::Yellow.bold(),
-            'l' | 'x' | 's' | 'S' | 't' | 'T' => Color::Red.bold(),
-            '@' => Color::Cyan.bold(),
-            ' ' => Color::White.normal(),
-            // `-`, `.` and `?`.
-            _ => Color::Purple.normal(),
-        }
-    }
-}
-
 impl Glyphs {
     fn new(color: Option<Color>) -> Self {
         let paint = |s: &str| {

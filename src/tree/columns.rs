@@ -34,8 +34,10 @@ use std::{
 pub struct StyleIndex(u16);
 
 impl StyleIndex {
+    /// Index `index`, or the default style (index 0) past `u16::MAX`: a tree with more distinct
+    /// styles than that shows the rest unstyled rather than failing.
     fn new(index: usize) -> Self {
-        Self(u16::try_from(index).expect("too many distinct LS_COLORS styles"))
+        Self(u16::try_from(index).unwrap_or(0))
     }
 
     pub const fn index(self) -> usize {
@@ -663,6 +665,14 @@ mod test {
         path::PathBuf,
         time::{Duration, SystemTime},
     };
+
+    /// Past the last `u16` index, styles fall back to the default style instead of panicking.
+    #[test]
+    fn style_indices_past_u16_are_the_default_style() {
+        assert_eq!(StyleIndex::new(usize::from(u16::MAX)).index(), 65_535);
+        assert_eq!(StyleIndex::new(65_536).index(), 0);
+        assert_eq!(StyleIndex::new(usize::MAX).index(), 0);
+    }
 
     /// A number unique to entry `k` of sink `id`.
     fn tag(id: usize, k: usize) -> u64 {
