@@ -29,9 +29,10 @@ struct Size {
     width: usize,
     unit_width: usize,
     unit: PrefixKind,
+    disk_usage: DiskUsage,
 
-    /// Padding of the placeholder; `None` if rows without a size have no size column at all.
-    placeholder: Option<usize>,
+    /// Whether rows without a size still get a size column, holding the placeholder.
+    placeholder: bool,
     placeholder_esc: Option<Esc>,
 
     /// Sequences of the unit colors from bytes up; `None` without color.
@@ -40,19 +41,7 @@ struct Size {
 
 impl Size {
     fn new(ctx: &Context, widths: &column::Properties, color: bool) -> Self {
-        let placeholder = (!ctx.suppress_size && widths.max_size_width != 0).then(|| {
-            let padding = widths.max_size_width + 1;
-
-            match ctx.disk_usage {
-                DiskUsage::Logical | DiskUsage::Physical => match ctx.unit {
-                    PrefixKind::Si if ctx.human => padding + 2,
-                    PrefixKind::Bin if ctx.human => padding + 3,
-                    PrefixKind::Si => padding,
-                    PrefixKind::Bin => padding + 1,
-                },
-                _ => padding - 1,
-            }
-        });
+        let placeholder = !ctx.suppress_size && widths.max_size_width != 0;
 
         let du = color.then(|| {
             let theme = styles::get_du_theme().unwrap();
@@ -65,11 +54,20 @@ impl Size {
             width: widths.max_size_width,
             unit_width: widths.max_size_unit_width,
             unit: ctx.unit,
+            disk_usage: ctx.disk_usage,
             placeholder,
             placeholder_esc: color
                 .then(|| styles::get_placeholder_style().ok().map(|s| Esc::new(*s)))
                 .flatten(),
             du,
+        }
+    }
+
+    /// Width of the size column: the number, then a space and the unit for byte metrics.
+    const fn column_width(&self) -> usize {
+        match self.disk_usage {
+            DiskUsage::Logical | DiskUsage::Physical => self.width + 1 + self.unit_width,
+            _ => self.width,
         }
     }
 }
@@ -327,10 +325,10 @@ impl<'a> RowFmt<'a> {
         let size = &self.size;
 
         let Some(file_size) = node.file_size() else {
-            if let Some(padding) = size.placeholder {
+            if size.placeholder {
                 let esc = size.placeholder_esc.as_ref();
                 out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
-                push_spaces(out, padding.saturating_sub(1));
+                push_spaces(out, size.column_width() - 1);
                 out.extend_from_slice(styles::PLACEHOLDER.as_bytes());
                 out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
             }
