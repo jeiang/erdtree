@@ -52,40 +52,24 @@ pub struct Regular;
 /// `tree` command.
 pub struct Inverted;
 
-/// An explicit list of rows: the node of each row and, for tree layouts, its box-drawing prefix.
-/// Computing it is sequential; layouts use it only where rows depend on each other (flat
-/// layouts, and the link theme of `--follow`).
-#[derive(Default)]
+/// An explicit list of tree rows: the node of each row and its box-drawing prefix. Computing it
+/// is sequential; tree layouts use it only for `--follow`, whose link theme depends on the rows
+/// before.
 pub struct Plan {
     ids: Vec<u32>,
-    /// Concatenated prefixes; row `k` has `prefixes[prefix_end[k - 1]..prefix_end[k]]`. Empty
-    /// for flat layouts.
+    /// Concatenated prefixes; row `k` has `prefixes[prefix_end[k - 1]..prefix_end[k]]`.
     prefixes: String,
     prefix_end: Vec<usize>,
-
-    /// The directory paths that flat rows are made of.
-    paths: Option<paths::DirPaths>,
 }
 
 impl Plan {
     /// A plan with room for `rows` rows.
-    pub fn with_capacity(rows: usize, prefixed: bool) -> Self {
+    pub fn with_capacity(rows: usize) -> Self {
         Self {
             ids: Vec::with_capacity(rows),
             // Most prefixes are a few box-drawing segments of 3 to 9 bytes.
-            prefixes: String::with_capacity(if prefixed { rows * 24 } else { 0 }),
-            prefix_end: Vec::with_capacity(if prefixed { rows } else { 0 }),
-            paths: None,
-        }
-    }
-
-    /// Flat rows of the nodes `ids`, whose paths are made from the directories of `tree` down to
-    /// `level`, found with `threads` threads.
-    pub fn flat(ids: Vec<u32>, tree: &Tree, level: usize, threads: usize) -> Self {
-        Self {
-            ids,
-            paths: Some(paths::DirPaths::new(tree, level, threads)),
-            ..Self::default()
+            prefixes: String::with_capacity(rows * 24),
+            prefix_end: Vec::with_capacity(rows),
         }
     }
 
@@ -98,53 +82,50 @@ impl Plan {
         self.prefix_end.push(self.prefixes.len());
     }
 
-    /// Requests the data of the rows after `k` in stages, the rows further ahead first, so that
-    /// the dependent loads of a flat row (name, parent, parent's path) overlap.
-    #[inline]
-    fn prefetch(&self, tree: &Tree, k: usize) {
-        const AHEAD: usize = 16;
-
-        let Some(paths) = &self.paths else { return };
-        let at = |d: usize| self.ids.get(k + d).copied();
-
-        if let Some(id) = at(AHEAD) {
-            tree.prefetch_cols(id);
-        }
-        if let Some(id) = at(AHEAD / 2) {
-            tree.prefetch_name(id);
-            paths.prefetch_span(tree.parent(id));
-        }
-        if let Some(id) = at(AHEAD / 4) {
-            paths.prefetch_prefix(tree.parent(id));
-        }
-    }
-
-    fn prefix(&self, k: usize) -> Option<&str> {
-        let end = *self.prefix_end.get(k)?;
+    /// The prefix of row `k`.
+    fn prefix(&self, k: usize) -> &str {
+        let end = self.prefix_end[k];
         let start = k.checked_sub(1).map_or(0, |p| self.prefix_end[p]);
-        Some(&self.prefixes[start..end])
+        &self.prefixes[start..end]
     }
 }
 
 /// Which rows a layout prints, in order.
 pub enum Rows {
-    /// The rows of a [`Plan`].
-    Plan(Plan),
-
     /// The shown nodes of the tree in pre-order, or reversed, with the prefixes worked out from
     /// each row's ancestors. Rows deeper than the level are left out.
     Tree {
         reverse: bool,
         glyphs: prefix::Glyphs,
     },
+
+    /// The tree rows of a [`Plan`].
+    Prefixed(Plan),
+
+    /// Flat rows of the nodes `ids`, each the path of its parent directory in `paths` and its
+    /// name.
+    Flat {
+        ids: Vec<u32>,
+        paths: paths::DirPaths,
+    },
 }
 
 impl Rows {
+    /// Flat rows of the nodes `ids`, whose paths are made from the directories of `tree` down to
+    /// `level`, found with `threads` threads.
+    pub fn flat(ids: Vec<u32>, tree: &Tree, level: usize, threads: usize) -> Self {
+        Self::Flat {
+            ids,
+            paths: paths::DirPaths::new(tree, level, threads),
+        }
+    }
+
     /// Number of positions to format; a tree layout may skip some of them.
     fn len(&self, tree: &Tree) -> usize {
         match self {
-            Self::Plan(plan) => plan.ids.len(),
             Self::Tree { .. } => tree.order().len(),
+            Self::Prefixed(plan) => plan.ids.len(),
+            Self::Flat { ids, .. } => ids.len(),
         }
     }
 
@@ -159,19 +140,6 @@ impl Rows {
         out: &mut Vec<u8>,
     ) {
         match self {
-            Self::Plan(plan) => {
-                for k in positions {
-                    plan.prefetch(tree, k);
-                    let id = plan.ids[k];
-
-                    match plan.prefix(k) {
-                        Some(prefix) => fmt.tree_row(scratch, id, out, |_, out| {
-                            out.extend_from_slice(prefix.as_bytes());
-                        }),
-                        None => fmt.flat_row(scratch, plan.paths.as_ref(), id, out),
-                    }
-                }
-            },
             Self::Tree { reverse, glyphs } => {
                 let order = tree.order();
                 let last = order.len().saturating_sub(1);
@@ -187,7 +155,41 @@ impl Rows {
                     }
                 }
             },
+            Self::Prefixed(plan) => {
+                for k in positions {
+                    let prefix = plan.prefix(k);
+                    fmt.tree_row(scratch, plan.ids[k], out, |_, out| {
+                        out.extend_from_slice(prefix.as_bytes());
+                    });
+                }
+            },
+            Self::Flat { ids, paths } => {
+                for k in positions {
+                    prefetch_flat(ids, paths, tree, k);
+                    fmt.flat_row(scratch, paths, ids[k], out);
+                }
+            },
         }
+    }
+}
+
+/// Requests the data of the flat rows after `k` in stages, the rows further ahead first, so that
+/// the dependent loads of a flat row (name, parent, parent's path) overlap.
+#[inline]
+fn prefetch_flat(ids: &[u32], paths: &paths::DirPaths, tree: &Tree, k: usize) {
+    const AHEAD: usize = 16;
+
+    let at = |d: usize| ids.get(k + d).copied();
+
+    if let Some(id) = at(AHEAD) {
+        tree.prefetch_cols(id);
+    }
+    if let Some(id) = at(AHEAD / 2) {
+        tree.prefetch_name(id);
+        paths.prefetch_span(tree.parent(id));
+    }
+    if let Some(id) = at(AHEAD / 4) {
+        paths.prefetch_prefix(tree.parent(id));
     }
 }
 

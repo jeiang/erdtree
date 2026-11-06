@@ -1,6 +1,6 @@
 use crate::{
     context::Context,
-    render::{Flat, Layout, Plan, Rows},
+    render::{Flat, Layout, Rows},
     tree::Tree,
 };
 
@@ -10,6 +10,6 @@ impl Layout for Flat {
         let mut ids = tree.flat_order(ctx);
         ids.reverse();
 
-        Rows::Plan(Plan::flat(ids, tree, ctx.level(), ctx.threads))
+        Rows::flat(ids, tree, ctx.level(), ctx.threads)
     }
 }
