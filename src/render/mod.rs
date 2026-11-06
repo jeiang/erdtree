@@ -217,7 +217,7 @@ impl<T: Layout> Engine<T> {
 
         write_chunked(
             rows.len(tree),
-            self.ctx.threads.max(1),
+            self.ctx.threads,
             CHUNK,
             INLINE_MAX,
             &|scratch: &mut Scratch, positions, buf: &mut Vec<u8>| {

@@ -315,6 +315,13 @@ impl Context {
             let threads_explicit = args.value_source("threads") == Some(ValueSource::CommandLine);
             let mut ctx = Self::from_arg_matches_mut(&mut args).map_err(Error::Config)?;
             ctx.threads_explicit = threads_explicit;
+
+            // `--threads 0` means one thread per core.
+            if ctx.threads == 0 {
+                ctx.threads =
+                    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+            }
+
             ctx.validate_min_size()?;
 
             if ctx.summarize {

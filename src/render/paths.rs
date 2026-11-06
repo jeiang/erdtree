@@ -42,7 +42,7 @@ impl DirPaths {
         let order = tree.order();
         let share = order
             .len()
-            .div_ceil(threads.clamp(1, order.len() / MIN_SHARE + 1));
+            .div_ceil(threads.min(order.len() / MIN_SHARE + 1));
         let parts: Vec<(usize, Vec<u32>)> = std::thread::scope(|scope| {
             // Every thread starts before the first is joined.
             #[allow(clippy::needless_collect)]

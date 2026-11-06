@@ -115,15 +115,6 @@ struct SizeFormat {
 
 pub type Result<T> = StdResult<T, Error>;
 
-/// Number of threads for CPU-bound work: `--threads`, or one per core for 0.
-fn thread_count(ctx: &Context) -> usize {
-    if ctx.threads == 0 {
-        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
-    } else {
-        ctx.threads
-    }
-}
-
 impl Tree {
     /// Walks the root of `ctx` and builds the [Tree]; also computes the column widths that
     /// rendering needs into the returned [Context]. The tree may be a stump (see
@@ -159,7 +150,7 @@ impl Tree {
         col_props: &mut column::Properties,
     ) -> Result<Self> {
         let n = cols.len();
-        let threads = thread_count(ctx);
+        let threads = ctx.threads;
         let root = cols
             .parent
             .iter()
@@ -535,7 +526,7 @@ impl Tree {
 
         topo::sort_keyed(
             &mut positions,
-            thread_count(ctx),
+            ctx.threads,
             &|k| keys.key(rest[ix(k)]),
             // Names are not in the keys: unless a key was clamped, equal keys are ties.
             &|a, b| {
@@ -613,7 +604,7 @@ fn walker(ctx: &Context) -> Result<Walker> {
         }))
     };
 
-    let threads = thread_count(ctx);
+    let threads = ctx.threads;
 
     Ok(Walker {
         root,
