@@ -1,4 +1,4 @@
-use super::super::units::{BinPrefix, PrefixKind, SiPrefix, UnitPrefix};
+use super::super::units::PrefixKind;
 use crate::render::bytes::u64_into;
 use std::{
     fmt::{self, Display},
@@ -49,40 +49,30 @@ impl Metric {
         Self::new(0, MetricKind::Physical, prefix_kind, human_readable)
     }
 
-    /// The number and the unit as displayed, e.g. `("1.0", "KiB")`. The number is formatted into
-    /// `buf`, so nothing is allocated.
-    pub fn parts<'b>(&self, buf: &'b mut [u8; 32]) -> (&'b str, &'static str) {
+    /// The number and the unit as displayed, e.g. `("1.0", "KiB")`, and the prefix index of the
+    /// value, which picks its color. Without human-readable units the unit is bytes, but the
+    /// index is still that of the closest prefix. The number is formatted into `buf`, so nothing
+    /// is allocated.
+    pub fn parts<'b>(&self, buf: &'b mut [u8; 32]) -> (&'b str, &'static str, usize) {
         let value = self.value;
-        let (unit, base) = match self.prefix_kind {
-            PrefixKind::Si if self.human_readable => {
-                let unit = SiPrefix::from(value);
-                (
-                    unit.as_str(),
-                    (unit != SiPrefix::Base).then(|| unit.base_value()),
-                )
-            },
-            PrefixKind::Bin if self.human_readable => {
-                let unit = BinPrefix::from(value);
-                (
-                    unit.as_str(),
-                    (unit != BinPrefix::Base).then(|| unit.base_value()),
-                )
-            },
-            PrefixKind::Si => (SiPrefix::Base.as_str(), None),
-            PrefixKind::Bin => (BinPrefix::Base.as_str(), None),
-        };
+        let index = self.prefix_kind.index_of(value);
+        let shown = if self.human_readable { index } else { 0 };
 
-        let len = if let Some(base) = base {
-            tenths(buf, value, base)
-        } else {
+        let len = if shown == 0 {
             let mut digits = [0_u8; 20];
             let start = u64_into(&mut digits, value);
             buf[..20 - start].copy_from_slice(&digits[start..]);
             20 - start
+        } else {
+            tenths(buf, value, self.prefix_kind.base(shown))
         };
 
         // Only ASCII digits and '.' were written.
-        (std::str::from_utf8(&buf[..len]).unwrap_or_default(), unit)
+        (
+            std::str::from_utf8(&buf[..len]).unwrap_or_default(),
+            self.prefix_kind.names()[shown],
+            index,
+        )
     }
 }
 
@@ -124,7 +114,7 @@ fn tenths(buf: &mut [u8; 32], value: u64, base: u64) -> usize {
 impl Display for Metric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut buf = [0; 32];
-        let (number, unit) = self.parts(&mut buf);
+        let (number, unit, _) = self.parts(&mut buf);
         write!(f, "{number} {unit}")
     }
 }

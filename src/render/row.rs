@@ -72,17 +72,6 @@ impl Size {
     }
 }
 
-/// Position in the unit colors of a displayed human-readable unit.
-const fn unit_index(unit: &str) -> usize {
-    match unit.as_bytes()[0] {
-        b'B' => 0,
-        b'K' => 1,
-        b'M' => 2,
-        b'G' => 3,
-        _ => 4,
-    }
-}
-
 /// Memory one thread needs to write rows: caches and scratch space. Contents carry no meaning
 /// from one row to the next other than as caches.
 #[derive(Default)]
@@ -341,12 +330,8 @@ impl<'a> RowFmt<'a> {
         match &file_size {
             FileSize::Byte(metric) => {
                 let mut buf = [0; 32];
-                let (number, unit) = metric.parts(&mut buf);
-                let esc = paint(if metric.human_readable {
-                    unit_index(unit)
-                } else {
-                    size.unit.index_of(metric.value)
-                });
+                let (number, unit, index) = metric.parts(&mut buf);
+                let esc = paint(index);
 
                 out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
                 push_str_padded(out, number, size.width);

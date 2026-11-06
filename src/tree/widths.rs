@@ -5,10 +5,7 @@
 use super::{Tree, topo::ix};
 use crate::{
     context::Context,
-    disk_usage::{
-        file_size::FileSize,
-        units::{BinPrefix, PrefixKind, SiPrefix},
-    },
+    disk_usage::{file_size::FileSize, units::PrefixKind},
     utils,
 };
 use std::ops::Range;
@@ -36,55 +33,14 @@ impl Scope<'_> {
     }
 }
 
-/// The unit bucket of `value` for human-readable sizes: 0 for bytes up to 4 for the largest
-/// unit. Grows with the value.
-fn bucket(unit: PrefixKind, value: u64) -> usize {
-    match unit {
-        PrefixKind::Bin => match BinPrefix::from(value) {
-            BinPrefix::Base => 0,
-            BinPrefix::Kibi => 1,
-            BinPrefix::Mebi => 2,
-            BinPrefix::Gibi => 3,
-            BinPrefix::Tebi => 4,
-        },
-        PrefixKind::Si => match SiPrefix::from(value) {
-            SiPrefix::Base => 0,
-            SiPrefix::Kilo => 1,
-            SiPrefix::Mega => 2,
-            SiPrefix::Giga => 3,
-            SiPrefix::Tera => 4,
-        },
-    }
-}
-
-/// For each bucket 1 to 4, the least value in it.
-fn limits(unit: PrefixKind) -> [u64; 4] {
-    let mut out = [0; 4];
-
-    for (k, limit) in out.iter_mut().enumerate() {
-        // The largest value is in the top bucket, so the search range always holds the answer.
-        let (mut lo, mut hi) = (0_u64, u64::MAX);
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            if bucket(unit, mid) > k {
-                hi = mid;
-            } else {
-                lo = mid + 1;
-            }
-        }
-        *limit = lo;
-    }
-
-    out
-}
-
 /// Maximum sizes, tracked just finely enough to find the widest formatted size.
 #[derive(Clone, Copy)]
 pub struct SizeStats {
     /// The largest size.
     max: Option<u64>,
 
-    /// For human-readable sizes, the least value of buckets 1 to 4.
+    /// For human-readable sizes, the least value of buckets 1 to 4 (the prefix indices of
+    /// [`PrefixKind::index_of`]).
     limits: Option<[u64; 4]>,
 
     /// For each bucket below the last, one more than the largest size under the next bucket's
@@ -97,7 +53,7 @@ impl SizeStats {
     pub fn new(human: Option<PrefixKind>) -> Self {
         Self {
             max: None,
-            limits: human.map(limits),
+            limits: human.map(|unit| std::array::from_fn(|k| unit.base(k + 1))),
             below: [0; 4],
         }
     }
@@ -323,7 +279,7 @@ pub fn lookup(table: &[(u32, Option<String>)], id: u32) -> Option<&str> {
 
 #[cfg(test)]
 mod test {
-    use super::{SizeStats, bucket, limits};
+    use super::SizeStats;
     use crate::disk_usage::{
         file_size::{FileSize, byte},
         units::PrefixKind,
@@ -340,19 +296,6 @@ mod test {
     /// A human-readable size of `v` bytes.
     fn format(unit: PrefixKind, v: u64) -> FileSize {
         FileSize::Byte(byte::Metric::new(v, byte::MetricKind::Logical, unit, true))
-    }
-
-    /// The buckets start where `limits` says they do.
-    #[test]
-    fn limits_are_bucket_starts() {
-        for unit in [PrefixKind::Bin, PrefixKind::Si] {
-            let limits = limits(unit);
-
-            for (k, &limit) in limits.iter().enumerate() {
-                assert_eq!(bucket(unit, limit), k + 1);
-                assert_eq!(bucket(unit, limit - 1), k);
-            }
-        }
     }
 
     /// Per-unit maxima give the widths of the per-node pass, for values around every rounding
