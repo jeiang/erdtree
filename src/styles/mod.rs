@@ -27,9 +27,6 @@ pub const UPRT: &str = "\u{2514}\u{2500} ";
 /// The `├─` box drawing characters.
 pub const VTRT: &str = "\u{251C}\u{2500} ";
 
-/// The theme of the run, set once by [`init`].
-static THEME: OnceLock<Theme> = OnceLock::new();
-
 /// Everything output is drawn with: the branches, and the colors unless output is plain.
 pub struct Theme {
     /// Branches of the tree.
@@ -74,6 +71,7 @@ pub struct Colors {
 
 /// Styles of the columns of the long view.
 #[cfg(unix)]
+#[derive(Clone, Copy)]
 pub struct Long {
     pub octal: Style,
     pub ino: Style,
@@ -119,12 +117,20 @@ impl Glyphs {
     }
 }
 
-/// Sets the theme of the run. If `plain`, output has no color and `LS_COLORS` is not read.
-pub fn init(plain: bool) {
+/// The theme of the run, kept for the whole process (walk workers hold its `LS_COLORS`); the
+/// first call builds it. If `plain`, output has no color and `LS_COLORS` is not read.
+pub fn init(plain: bool) -> &'static Theme {
+    static THEME: OnceLock<Theme> = OnceLock::new();
+
+    THEME.get_or_init(|| build(plain))
+}
+
+/// A new theme, plain or in color.
+fn build(plain: bool) -> Theme {
     #[cfg(windows)]
     let _ = nu_ansi_term::enable_ansi_support();
 
-    let theme = if plain {
+    if plain {
         Theme {
             tree: Glyphs::new(None),
             link: Glyphs::new(None),
@@ -156,23 +162,7 @@ pub fn init(plain: bool) {
                 },
             }),
         }
-    };
-
-    assert!(THEME.set(theme).is_ok(), "the theme is set once");
-}
-
-/// The theme of the run.
-///
-/// # Panics
-///
-/// If [`init`] has not run.
-pub fn theme() -> &'static Theme {
-    THEME.get().expect("styles::init runs first")
-}
-
-/// The colors of the run, `None` without color.
-pub fn colors() -> Option<&'static Colors> {
-    theme().colors.as_ref()
+    }
 }
 
 /// Reads the `LS_COLORS` environment variable, or takes the result of [`prefetch_ls_colors`]. If

@@ -5,15 +5,13 @@ use crate::{styles, tree::Tree};
 
 /// The glyphs of the prefixes: [`styles::Theme::tree`], and with `--follow`
 /// [`styles::Theme::link`] for symlinks and everything below a symlink.
-pub struct Themes {
-    tree: &'static styles::Glyphs,
-    link: Option<&'static styles::Glyphs>,
+pub struct Glyphs<'a> {
+    tree: &'a styles::Glyphs,
+    link: Option<&'a styles::Glyphs>,
 }
 
-impl Themes {
-    pub fn new(follow: bool) -> Self {
-        let theme = styles::theme();
-
+impl<'a> Glyphs<'a> {
+    pub fn new(theme: &'a styles::Theme, follow: bool) -> Self {
         Self {
             tree: &theme.tree,
             link: follow.then_some(&theme.link),
@@ -63,7 +61,7 @@ impl Cursor {
         tree: &Tree,
         id: u32,
         depth: usize,
-        glyphs: &Themes,
+        glyphs: &Glyphs<'_>,
         inverted: bool,
         out: &mut Vec<u8>,
     ) {

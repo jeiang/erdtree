@@ -2,7 +2,7 @@ use super::paint::{Esc, paint, placeholder};
 use crate::{
     bytes::{push_spaces, push_str_padded, push_u64_padded},
     context::{Context, time},
-    styles::{self, PLACEHOLDER},
+    styles::{self, Colors, PLACEHOLDER},
     tree::{node::Node, widths::Widths},
 };
 use chrono::{DateTime, FixedOffset, Utc};
@@ -31,6 +31,8 @@ pub struct Long {
     nlink_width: usize,
     stamp: time::Stamp,
     format: time::Format,
+    /// The long-view styles; `None` without color.
+    styles: Option<styles::Long>,
     ino_esc: Option<Esc>,
     nlink_esc: Option<Esc>,
     owner_esc: Option<Esc>,
@@ -49,7 +51,7 @@ pub struct State {
 }
 
 #[cfg(unix)]
-pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
+pub fn style_sym_permissions(mode: u32, has_xattrs: bool, colored: bool) -> String {
     // A trailing space aligns entries without extended attributes with those with them.
     let symb: String = crate::fs::permissions::symbolic(mode)
         .iter()
@@ -57,7 +59,7 @@ pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
         .chain([if has_xattrs { '@' } else { ' ' }])
         .collect();
 
-    if styles::colors().is_some() {
+    if colored {
         symb.chars()
             .map(|ch| {
                 styles::Long::permission(ch)
@@ -71,23 +73,22 @@ pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
 }
 
 #[cfg(unix)]
-pub fn style_oct_permissions(mode: u32) -> String {
+pub fn style_oct_permissions(mode: u32, style: Option<Style>) -> String {
     let oct = crate::fs::permissions::octal(mode);
 
-    if let Some(colors) = styles::colors() {
-        colors.long.octal.paint(oct).to_string()
+    if let Some(style) = style {
+        style.paint(oct).to_string()
     } else {
         oct
     }
 }
 
-/// The sequences of a long-view style, `None` without color.
-fn esc(style: impl Fn(&styles::Long) -> Style) -> Option<Esc> {
-    styles::colors().map(|colors| Esc::new(style(&colors.long)))
-}
-
 impl Long {
-    pub fn new(ctx: &Context, widths: &Widths) -> Self {
+    pub fn new(ctx: &Context, widths: &Widths, colors: Option<&Colors>) -> Self {
+        let styles = colors.map(|colors| colors.long);
+        // The sequences of a long-view style, `None` without color.
+        let esc = |style: fn(&styles::Long) -> Style| styles.as_ref().map(|s| Esc::new(style(s)));
+
         Self {
             group: ctx.group,
             ino: ctx.ino,
@@ -99,6 +100,7 @@ impl Long {
             nlink_width: widths.max_nlink_width,
             stamp: ctx.time(),
             format: ctx.time_format(),
+            styles,
             ino_esc: esc(|long| long.ino),
             nlink_esc: esc(|long| long.nlink),
             owner_esc: esc(|long| long.owner),
@@ -177,9 +179,9 @@ impl Long {
         }
 
         let cell = if self.octal {
-            style_oct_permissions(mode)
+            style_oct_permissions(mode, self.styles.map(|s| s.octal))
         } else {
-            style_sym_permissions(mode, xattrs)
+            style_sym_permissions(mode, xattrs, self.styles.is_some())
         };
 
         out.extend_from_slice(cell.as_bytes());
