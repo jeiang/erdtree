@@ -89,7 +89,7 @@ impl SizeStats {
             return (0, 0);
         };
         let Some((unit, limits)) = self.human else {
-            return (utils::num_integral(max), 0);
+            return (crate::render::bytes::digits(max), 0);
         };
 
         let format = byte::Metric::new(unit, true);

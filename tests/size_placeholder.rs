@@ -58,3 +58,44 @@ fn placeholder_is_as_wide_as_sizes() {
         );
     }
 }
+
+/// Sizes that are all zero still get a size column, so rows without a size show the
+/// placeholder in it instead of losing the column.
+#[test]
+fn placeholder_shows_when_every_size_is_zero() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    fs::write(dir.path().join("sub").join("empty"), "").unwrap();
+    assert!(
+        Command::new("mkfifo")
+            .arg(dir.path().join("p"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let root = dir.path().file_name().unwrap().to_str().unwrap();
+
+    let cases: [(&[&str], &str); 4] = [
+        (&[], "0 B    ┌─ empty\n  - ┌─ sub\n  - ├─ p\n  - ROOT"),
+        (
+            &["-H"],
+            "0   B    ┌─ empty\n    - ┌─ sub\n    - ├─ p\n    - ROOT",
+        ),
+        (
+            &["--disk-usage", "line"],
+            "0    ┌─ empty\n- ┌─ sub\n- ├─ p\n- ROOT",
+        ),
+        (
+            &["--layout", "flat"],
+            "0 B   sub/empty\n  -   sub\n  -   p\n  -   ROOT",
+        ),
+    ];
+
+    for (args, expected) in cases {
+        let mut all = args.to_vec();
+        all.push(dir.path().to_str().unwrap());
+        let out = utils::run_cmd(&all);
+        let tree = out.split("\n\n").next().unwrap();
+        assert_eq!(tree, expected.replace("ROOT", root), "{args:?}");
+    }
+}
