@@ -2,7 +2,7 @@
 pub mod inode;
 
 /// System calls relative to a directory file descriptor.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 pub mod at;
 
 /// Directory listings with metadata in bulk (`getattrlistbulk`).

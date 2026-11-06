@@ -26,9 +26,9 @@ use std::{
     time::Instant,
 };
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 use crate::fs::at::{self, At};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 use std::os::{
     fd::{AsRawFd, OwnedFd},
     unix::ffi::OsStrExt,
@@ -37,14 +37,14 @@ use std::os::{
 /// Detects workers that wait for the file system.
 mod adaptive;
 /// Bounds the descriptors that queued jobs hold.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 mod fds;
 /// The entries of one directory.
 mod listing;
 /// Ignore rules per directory, adapted from the `ignore` crate.
 pub mod rules;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 use fds::{Budget, DirFd};
 use listing::Listing;
 use rules::{Found, Rules};
@@ -104,7 +104,7 @@ pub struct Record<'a> {
     /// Whether the entry is a symlink (followed or not).
     pub is_symlink: bool,
     /// Where to find the entry relative to its open directory; `None` for the root.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     pub at: Option<At<'a>>,
 }
 
@@ -122,7 +122,7 @@ impl Record<'_> {
 
     /// Whether the target of the entry, which must be a symlink, exists.
     pub fn target_exists(&self) -> bool {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(fd_walk)]
         if let Some(at) = self.at {
             return at::target_exists(at);
         }
@@ -132,7 +132,7 @@ impl Record<'_> {
 
     /// Opens the entry for reading, following a symlink.
     pub fn open(&self) -> std::io::Result<fs::File> {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(fd_walk)]
         if let Some(at) = self.at {
             return at::open_file(at);
         }
@@ -142,7 +142,7 @@ impl Record<'_> {
 
     /// The target of the entry, which must be a symlink.
     pub fn read_link(&self) -> std::io::Result<PathBuf> {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(fd_walk)]
         if let Some(at) = self.at {
             return at::read_link(at);
         }
@@ -254,7 +254,7 @@ enum Me {
     /// Not stored yet: whoever reads the directory stores it, below this parent. Reading the
     /// directory first gives its metadata for free (`statx` or `fstat` of the open directory),
     /// instead of a second lookup of its name.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     Deferred(NodeRef),
 }
 
@@ -283,10 +283,10 @@ struct Job {
     rules: Rules,
     /// The parent directory, which the directory is opened relative to. `None` when the budget
     /// of held descriptors is spent: the directory is then opened by path.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     parent: Option<Arc<DirFd>>,
     /// Whether the directory is a followed symlink, so opening it follows the link.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     follow: bool,
     /// Whether to list the directory with `getattrlistbulk`, which gives the metadata of its
     /// entries, rather than `readdir`, which gives their names and types only.
@@ -321,7 +321,7 @@ struct Run<'a, S, F> {
     /// walk; the others start when work is available for them.
     next: AtomicUsize,
     /// How many directory descriptors queued jobs may hold.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     budget: Arc<Budget>,
 }
 
@@ -354,7 +354,7 @@ fn run_worker<'scope, 'env, S, F>(
         progress: run.progress,
         root_device: None,
         listing: Listing::default(),
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(fd_walk)]
         dirent_buf: Vec::new(),
         #[cfg(target_os = "macos")]
         volumes: crate::fs::bulk::Volumes::default(),
@@ -418,7 +418,7 @@ impl Walker {
         if let Some(root) = root {
             // Parent directories stay open while their subdirectories wait, so allow many
             // files, and hold no more of them than the limit allows.
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(fd_walk)]
             let budget = Budget::new(at::raise_open_file_limit(), self.max_workers());
 
             let run = Run {
@@ -435,7 +435,7 @@ impl Walker {
                 workers: AtomicUsize::new(threads),
                 pool,
                 next: AtomicUsize::new(1),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(fd_walk)]
                 budget,
             };
 
@@ -467,7 +467,7 @@ impl Walker {
             path: &self.root,
             stat: &stat,
             is_symlink: stat.kind.is_symlink(),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(fd_walk)]
             at: None,
         })?;
 
@@ -486,9 +486,9 @@ impl Walker {
             },
             depth: 0,
             rules: self.rules.add_parents(&self.root),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(fd_walk)]
             parent: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(fd_walk)]
             follow: true,
             #[cfg(target_os = "macos")]
             bulk: true,
@@ -530,7 +530,7 @@ enum Kept {
     Dir {
         me: Me,
         /// Whether it is a symlink that was followed.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(fd_walk)]
         follow: bool,
     },
 }
@@ -549,7 +549,7 @@ struct Worker<'scope, 'env, S, F> {
     root_device: Option<u64>,
     /// Buffers reused from directory to directory.
     listing: Listing,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     dirent_buf: Vec<u8>,
     /// Which file systems are APFS, for bulk reads.
     #[cfg(target_os = "macos")]
@@ -735,9 +735,9 @@ where
             return 0;
         };
 
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(fd_walk)]
         let fd = listing.dir.as_ref().map(|dir| dir.as_raw_fd());
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(not(fd_walk))]
         let fd = None;
 
         let rules = job
@@ -851,7 +851,7 @@ where
     /// A directory the parent listed as one but that cannot be looked up (its parent is
     /// readable but not searchable, or it vanished) has no record. It counts as ignored, as an
     /// entry whose metadata cannot be read does.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
         let walker = self.walker;
         let fd = open_dir(job);
@@ -882,7 +882,7 @@ where
 
                 (id, foreign)
             },
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(fd_walk)]
             Me::Deferred(parent) => {
                 let from_fd = fd
                     .as_ref()
@@ -967,7 +967,7 @@ where
     }
 
     /// Opens and lists the directory of `job`.
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(fd_walk))]
     fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
         let Me::Pushed { id, foreign } = job.me;
 
@@ -999,7 +999,7 @@ where
     }
 
     /// Stores the record of the directory of `job`, whose records are stored by its own job.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(fd_walk)]
     fn store_dir(&mut self, job: &Job, parent: NodeRef, stat: &Stat) -> Option<u32> {
         let name = job.path.file_name()?;
         let parent_fd = job.parent.as_deref().map(DirFd::as_raw_fd);
@@ -1063,7 +1063,7 @@ where
             // Every kept entry is recorded but a directory whose own job stores it.
             let Kept::Dir {
                 me,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(fd_walk)]
                 follow,
             } = entry
             else {
@@ -1079,12 +1079,12 @@ where
                 recorded += usize::from(file && matches!(me, Me::Pushed { .. }));
             }
 
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(fd_walk)]
             if let Me::Deferred(_) = me {
                 self.deferred += 1;
             }
 
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(fd_walk)]
             let parent = dir.listing.dir.as_ref().and_then(|parent| {
                 // A path this long cannot be opened by path, so the job needs the descriptor.
                 parent
@@ -1099,9 +1099,9 @@ where
                 me,
                 depth,
                 rules: dir.rules.clone(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(fd_walk)]
                 parent,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(fd_walk)]
                 follow,
                 #[cfg(target_os = "macos")]
                 bulk: dir.bulk,
@@ -1188,7 +1188,7 @@ where
         let readable = true;
         #[cfg(target_os = "macos")]
         let readable = at::fits_path_max(path.as_os_str().len());
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(fd_walk)]
         if reported.is_dir() && may_descend && stat.is_none() && followed.is_none() && readable {
             return Some(Kept::Dir {
                 me: Me::Deferred(dir.id),
@@ -1233,7 +1233,7 @@ where
                 },
                 foreign,
             },
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(fd_walk)]
             follow: is_symlink && walker.follow_links,
         })
     }
@@ -1241,7 +1241,7 @@ where
 
 /// Metadata of the directory of `job` looked up by name in its parent, or by path when the job
 /// holds no descriptor of the parent.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 fn lstat_in_parent(job: &Job, fields: Fields) -> Option<Stat> {
     let Some(parent) = &job.parent else {
         return at::lstat_path(&job.path, fields).ok();
@@ -1255,7 +1255,7 @@ fn lstat_in_parent(job: &Job, fields: Fields) -> Option<Stat> {
 
 /// How often opening a directory is retried when the process or system is out of descriptors,
 /// and the longest wait between tries.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 const OPEN_RETRIES: u32 = 100;
 
 /// How many files a directory must have listed before they tell how to list its subdirectories;
@@ -1272,7 +1272,7 @@ const SHARED_DIR_FACTOR: u64 = 16;
 /// out of descriptors (`EMFILE`, `ENFILE`) is retried for a while, as other workers close theirs;
 /// only then the directory counts as unreadable. The budget (see [`fds`]) keeps the walk from
 /// causing this by itself, except for paths too long to open by path.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 fn open_dir(job: &Job) -> Option<OwnedFd> {
     // The path-based walk could not read a directory whose path does not fit.
     #[cfg(target_os = "macos")]
@@ -1292,7 +1292,7 @@ fn open_dir(job: &Job) -> Option<OwnedFd> {
     None
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 fn open_dir_once(job: &Job) -> std::io::Result<OwnedFd> {
     if let Some(parent) = &job.parent {
         let name = job
@@ -1333,13 +1333,13 @@ fn open_dir_once(job: &Job) -> std::io::Result<OwnedFd> {
 /// Whether the directory `target` (a followed symlink's target) is one of the walked directories
 /// that lead to it. Compares device and inode numbers, so it also works for paths longer than
 /// `PATH_MAX`.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(fd_walk)]
 fn is_loop(rules: &Rules, _path: &Path, target: &Stat) -> bool {
     rules.is_walked((target.dev, target.ino))
 }
 
 /// Whether the directory at `path` is one of the walked directories that lead to it.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(fd_walk))]
 fn is_loop(rules: &Rules, path: &Path, _target: &Stat) -> bool {
     let Ok(child) = same_file::Handle::from_path(path) else {
         // Upstream reports the error, which drops the entry.
