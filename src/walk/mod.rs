@@ -566,7 +566,7 @@ where
 {
     fn run(&mut self) {
         self.root_device = if self.walker.same_file_system {
-            device_num(&self.walker.root)
+            crate::fs::inode::device_num(&self.walker.root)
         } else {
             None
         };
@@ -1220,9 +1220,9 @@ where
             return Some(Kept::Leaf);
         }
 
-        let foreign = self
-            .root_device
-            .is_some_and(|root| device_of(&stat, path).is_some_and(|dev| dev != root));
+        let foreign = self.root_device.is_some_and(|root| {
+            crate::fs::inode::device_of(&stat, path).is_some_and(|dev| dev != root)
+        });
 
         Some(Kept::Dir {
             me: Me::Pushed {
@@ -1348,44 +1348,6 @@ fn is_loop(rules: &Rules, path: &Path, _target: &Stat) -> bool {
     rules
         .walked_dirs()
         .any(|dir| same_file::Handle::from_path(dir).map_or(true, |ancestor| ancestor == child))
-}
-
-/// Device number of the file system `path` is on.
-fn device_num(path: &Path) -> Option<u64> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-
-        fs::metadata(path).ok().map(|md| md.dev())
-    }
-
-    #[cfg(windows)]
-    {
-        crate::fs::inode::volume_serial(path)
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = path;
-        None
-    }
-}
-
-/// Device number of a directory given its stat.
-// Only the Windows lookup can fail or is not `const`.
-#[cfg_attr(unix, allow(clippy::unnecessary_wraps, clippy::missing_const_for_fn))]
-fn device_of(stat: &Stat, path: &Path) -> Option<u64> {
-    #[cfg(unix)]
-    {
-        let _ = path;
-        Some(stat.dev)
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = stat;
-        device_num(path)
-    }
 }
 
 #[cfg(test)]

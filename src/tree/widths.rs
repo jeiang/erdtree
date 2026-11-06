@@ -259,12 +259,14 @@ impl Tree {
             ids.into_iter().map(|id| (id, get(id))).collect()
         }
 
-        self.users = names(owners.iter().map(|o| o.0).collect(), |uid| {
-            crate::fs::ug::try_get_user(uid).ok()
-        });
-        self.groups = names(owners.iter().map(|o| o.1).collect(), |gid| {
-            crate::fs::ug::try_get_group(gid).ok()
-        });
+        self.users = names(
+            owners.iter().map(|o| o.0).collect(),
+            crate::fs::ug::user_name,
+        );
+        self.groups = names(
+            owners.iter().map(|o| o.1).collect(),
+            crate::fs::ug::group_name,
+        );
     }
 }
 

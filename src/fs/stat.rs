@@ -53,30 +53,8 @@ impl Kind {
         matches!(self, Self::Socket)
     }
 
-    /// Whether this is a block device.
-    #[cfg(unix)]
-    #[allow(
-        dead_code,
-        reason = "mirrors `FileType`; only the Linux walk and tests build it"
-    )]
-    pub const fn is_block_device(self) -> bool {
-        matches!(self, Self::BlockDevice)
-    }
-
-    /// Whether this is a character device.
-    #[cfg(unix)]
-    #[allow(
-        dead_code,
-        reason = "mirrors `FileType`; only the Linux walk and tests build it"
-    )]
-    pub const fn is_char_device(self) -> bool {
-        matches!(self, Self::CharDevice)
-    }
-}
-
-#[cfg(fd_walk)]
-impl Kind {
     /// The kind encoded in the `S_IFMT` bits of a Unix mode.
+    #[cfg(unix)]
     pub const fn from_mode(mode: u32) -> Self {
         match mode & 0o170_000 {
             0o100_000 => Self::File,
@@ -92,6 +70,7 @@ impl Kind {
 
     /// The kind given by a `d_type` value of a directory entry, or `None` for `DT_UNKNOWN` and
     /// values this code does not know.
+    #[cfg(fd_walk)]
     pub const fn from_dtype(d_type: u8) -> Option<Self> {
         Some(match d_type {
             1 => Self::Fifo,
@@ -214,13 +193,17 @@ impl Stat {
     }
 }
 
-/// A timestamp as the kernel reports it: seconds since the epoch (negative before it) and
-/// nanoseconds.
+/// A timestamp as the kernel reports it, `secs` since the epoch (negative before it) and
+/// `nanos`, when it is `wanted`; `None` otherwise and when the nanoseconds are out of range.
 #[cfg(fd_walk)]
-pub fn system_time(secs: i64, nanos: u32) -> Option<SystemTime> {
+pub fn time(wanted: bool, secs: i64, nanos: impl TryInto<u32>) -> Option<SystemTime> {
     use std::time::Duration;
 
-    let nanos = Duration::from_nanos(u64::from(nanos));
+    if !wanted {
+        return None;
+    }
+
+    let nanos = Duration::from_nanos(u64::from(nanos.try_into().ok()?));
 
     match u64::try_from(secs) {
         Ok(secs) => SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs) + nanos),

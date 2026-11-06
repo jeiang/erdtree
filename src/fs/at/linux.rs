@@ -3,13 +3,12 @@
 use super::{check, retry};
 use crate::fs::{
     probe::Probed,
-    stat::{Fields, Kind, Stat},
+    stat::{Fields, Kind, Stat, time},
 };
 use std::{
     ffi::{CStr, c_char, c_int, c_long, c_void},
     io,
     os::fd::RawFd,
-    time::SystemTime,
 };
 
 /// `statx`; without it, metadata comes from `fstatat`.
@@ -179,11 +178,6 @@ fn statx(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<St
 
     // SAFETY: zero-initialized, and every field is an integer.
     let s = unsafe { buf.assume_init() };
-    let time = |bit: u32, ts: Timestamp| -> Option<SystemTime> {
-        (s.mask & bit != 0)
-            .then(|| crate::fs::stat::system_time(ts.sec, ts.nsec))
-            .flatten()
-    };
 
     Ok(Stat {
         kind: Kind::from_mode(u32::from(s.mode)),
@@ -195,9 +189,9 @@ fn statx(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<St
         nlink: u64::from(s.nlink),
         uid: s.uid,
         gid: s.gid,
-        modified: time(STATX_MTIME, s.mtime),
-        accessed: time(STATX_ATIME, s.atime),
-        created: time(STATX_BTIME, s.btime),
+        modified: time(s.mask & STATX_MTIME != 0, s.mtime.sec, s.mtime.nsec),
+        accessed: time(s.mask & STATX_ATIME != 0, s.atime.sec, s.atime.nsec),
+        created: time(s.mask & STATX_BTIME != 0, s.btime.sec, s.btime.nsec),
     })
 }
 
@@ -225,24 +219,8 @@ fn fstatat(dir: RawFd, path: &CStr, flags: c_int, fields: Fields) -> io::Result<
         nlink: u64::from(s.st_nlink),
         uid: s.st_uid,
         gid: s.st_gid,
-        modified: fields
-            .modified
-            .then(|| {
-                crate::fs::stat::system_time(
-                    i64::from(s.st_mtime),
-                    u32::try_from(s.st_mtime_nsec).ok()?,
-                )
-            })
-            .flatten(),
-        accessed: fields
-            .accessed
-            .then(|| {
-                crate::fs::stat::system_time(
-                    i64::from(s.st_atime),
-                    u32::try_from(s.st_atime_nsec).ok()?,
-                )
-            })
-            .flatten(),
+        modified: time(fields.modified, i64::from(s.st_mtime), s.st_mtime_nsec),
+        accessed: time(fields.accessed, i64::from(s.st_atime), s.st_atime_nsec),
         created: None,
     })
 }
