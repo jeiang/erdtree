@@ -570,35 +570,15 @@ fn walker(ctx: &Context) -> Result<Walker> {
         )));
     }
 
-    // With `--include`, hidden entries are filtered by `include_predicate` instead, as the
-    // ignore rules cannot make exceptions.
-    let include_hidden = !ctx.hidden && !ctx.include.is_empty();
-
-    let opts = rules::Options::new(!ctx.hidden && !include_hidden, !ctx.no_ignore);
+    // With `--include`, hidden entries are filtered by the entry filter instead, as the ignore
+    // rules cannot make exceptions.
+    let opts = rules::Options::new(!ctx.hidden && !ctx.include_hidden(), !ctx.no_ignore);
     let cwd = std::env::current_dir().ok();
     let rules = rules::Rules::root(opts, ctx.no_git_override()?, cwd);
 
-    let mut filters = vec![];
-
-    if include_hidden {
-        filters.push(ctx.include_predicate()?);
-    }
-
-    if ctx.pattern.is_some() {
-        if ctx.glob || ctx.iglob {
-            filters.push(ctx.glob_predicate()?);
-        } else {
-            filters.push(ctx.regex_predicate()?);
-        }
-    }
-
-    let filter: Option<crate::walk::Filter> = if filters.is_empty() {
-        None
-    } else {
-        Some(Box::new(move |entry| {
-            filters.iter().all(|keep| keep(entry))
-        }))
-    };
+    let filter: Option<crate::walk::Filter> = ctx
+        .entry_filter()?
+        .map(|filter| -> crate::walk::Filter { Box::new(move |entry| filter.keep(entry)) });
 
     let threads = ctx.threads;
 

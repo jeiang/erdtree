@@ -32,6 +32,40 @@ fn regex_file_type_ignores_ancestors_of_root() {
     assert_eq!(paths, ["dreamy", "dreamy/c.txt"]);
 }
 
+/// `--file-type link` keeps symlinks whose name matches, plus the directories leading to them.
+#[cfg(unix)]
+#[test]
+fn regex_file_type_link() {
+    use std::os::unix::fs::symlink;
+
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("root");
+    fs::create_dir_all(root.join("d")).unwrap();
+    fs::create_dir_all(root.join("e")).unwrap();
+    fs::write(root.join("a.txt"), "").unwrap();
+    fs::write(root.join("e/b.txt"), "").unwrap();
+    symlink("a.txt", root.join("l.txt")).unwrap();
+    symlink("../a.txt", root.join("d/m.txt")).unwrap();
+    symlink("a.txt", root.join("n.md")).unwrap();
+
+    let out = utils::run_cmd(&[
+        "--layout",
+        "iflat",
+        "--suppress-size",
+        "--no-report",
+        "--prune",
+        "--pattern",
+        r"\.txt$",
+        "--file-type",
+        "link",
+        root.to_str().unwrap(),
+    ]);
+    let mut paths = out.lines().skip(1).collect::<Vec<_>>();
+    paths.sort_unstable();
+
+    assert_eq!(paths, ["d", "d/m.txt", "l.txt"]);
+}
+
 #[test]
 fn regex() {
     assert_eq!(
