@@ -346,7 +346,7 @@ fn parse<'a>(
             kind,
             mode,
             size: size?,
-            blocks: blocks?.div_ceil(512),
+            blocks: blocks?.div_ceil(Stat::BLOCK_BYTES),
             ino: ino?,
             dev,
             // `st_nlink` is 16 bits wide; `stat` saturates.

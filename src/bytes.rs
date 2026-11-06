@@ -1,4 +1,6 @@
-//! Byte-level building blocks of the row writer: decimal numbers, padding and lossy names.
+//! Byte-level building blocks of the output: decimal numbers, padding, lossy names and prefetch
+//! hints. A leaf module, so the size formats, icons and tree columns use it without depending on
+//! the renderer.
 
 use std::ffi::OsStr;
 
@@ -15,7 +17,7 @@ const PAIRS: [u8; 200] = {
     table
 };
 
-/// Number of decimal digits of `n`; 1 for 0 (unlike [`crate::utils::num_integral`]).
+/// Number of decimal digits of `n`; 1 for 0.
 pub const fn digits(n: u64) -> usize {
     if n == 0 { 1 } else { n.ilog10() as usize + 1 }
 }

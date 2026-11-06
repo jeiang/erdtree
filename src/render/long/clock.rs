@@ -1,6 +1,6 @@
 //! Timestamps of the long view without chrono's per-row time zone conversion.
 
-use super::super::bytes::push_pair;
+use crate::bytes::push_pair;
 use crate::context::time::Format;
 use chrono::{DateTime, Datelike, NaiveDateTime, Timelike};
 #[cfg(not(target_os = "macos"))]

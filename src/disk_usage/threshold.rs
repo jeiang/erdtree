@@ -1,3 +1,4 @@
+use super::units::PrefixKind;
 use std::str::FromStr;
 
 /// Minimum size an entry needs to have in order to be displayed, as given to `--min-size`.
@@ -32,26 +33,29 @@ pub fn parse_min_size(input: &str) -> Result<MinSize, String> {
     }
 
     let number = u64::from_str(digits).map_err(|_| format!("'{digits}' is too large"))?;
-    let suffix = suffix.trim().to_ascii_lowercase();
+    let suffix = suffix.trim();
 
-    let multiplier: u64 = match suffix.as_str() {
-        "" | "b" => 1,
-        "kb" => 1000,
-        "mb" => 1000_u64.pow(2),
-        "gb" => 1000_u64.pow(3),
-        "tb" => 1000_u64.pow(4),
-        "pb" => 1000_u64.pow(5),
-        "kib" => 1024,
-        "mib" => 1024_u64.pow(2),
-        "gib" => 1024_u64.pow(3),
-        "tib" => 1024_u64.pow(4),
-        "pib" => 1024_u64.pow(5),
-        _ => {
-            return Err(format!(
-                "unknown unit '{}' in '{input}'; expected one of B, KB, MB, GB, TB, PB, KiB, MiB, GiB, TiB, PiB",
-                trimmed[digits_end..].trim()
-            ));
-        },
+    let multiplier = if suffix.is_empty() {
+        Some(1)
+    } else {
+        [PrefixKind::Si, PrefixKind::Bin]
+            .into_iter()
+            .find_map(|unit| {
+                let units = unit.units();
+                let index = units.iter().position(|u| u.eq_ignore_ascii_case(suffix))?;
+                Some(unit.base(index))
+            })
+    };
+    let Some(multiplier) = multiplier else {
+        let expected = PrefixKind::Si.units().iter();
+        let expected: Vec<&str> = expected
+            .chain(&PrefixKind::Bin.units()[1..])
+            .copied()
+            .collect();
+        return Err(format!(
+            "unknown unit '{suffix}' in '{input}'; expected one of {}",
+            expected.join(", ")
+        ));
     };
 
     let value = number
@@ -151,5 +155,9 @@ mod test {
     fn error_names_the_unit() {
         let err = parse_min_size("5XB").unwrap_err();
         assert!(err.contains("XB"), "{err}");
+        assert!(
+            err.ends_with("expected one of B, KB, MB, GB, TB, PB, KiB, MiB, GiB, TiB, PiB"),
+            "{err}"
+        );
     }
 }

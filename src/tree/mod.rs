@@ -1,5 +1,5 @@
 use crate::{
-    context::{Context, column},
+    context::Context,
     walk::{Walker, rules},
 };
 use columns::{Collector, Columns, Probe};
@@ -11,7 +11,7 @@ use node::{
 };
 use std::{cmp::Ordering, convert::TryFrom, result::Result as StdResult, sync::atomic::AtomicU64};
 use topo::{Children, NONE, ix};
-use widths::{Scope, Stats};
+use widths::{Scope, Stats, Widths};
 
 /// Struct-of-arrays storage for walked entries.
 pub mod columns;
@@ -69,7 +69,7 @@ pub struct Tree {
     stump: bool,
 
     /// Column widths that fit the shown nodes (all nodes unless `--min-size` hid some).
-    widths: column::Properties,
+    widths: Widths,
 
     /// Owner and group names by id, sorted by id, for the long view.
     #[cfg(unix)]
@@ -174,7 +174,7 @@ impl Tree {
             link,
             shown_depth: cap,
             stump: false,
-            widths: column::Properties::from(ctx),
+            widths: Widths::new(ctx),
             #[cfg(unix)]
             users: vec![],
             #[cfg(unix)]
@@ -423,7 +423,7 @@ impl Tree {
     }
 
     /// Column widths that fit the shown nodes.
-    pub const fn widths(&self) -> &column::Properties {
+    pub const fn widths(&self) -> &Widths {
         &self.widths
     }
 
@@ -554,12 +554,7 @@ fn walker(ctx: &Context) -> Result<Walker> {
         filter,
         count_ignored: ctx.report_ignored,
         fields: crate::fs::stat::Fields::default(),
-        tuning: if ctx.suppress_size
-            || !matches!(
-                ctx.disk_usage,
-                crate::disk_usage::file_size::DiskUsage::Line
-                    | crate::disk_usage::file_size::DiskUsage::Word
-            ) {
+        tuning: if ctx.suppress_size || !ctx.disk_usage.reads_files() {
             crate::walk::Tuning::default()
         } else {
             crate::walk::Tuning::reading_files()

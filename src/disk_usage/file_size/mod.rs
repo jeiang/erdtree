@@ -12,9 +12,6 @@ pub mod word_count;
 /// Streaming UTF-8 validation shared by the line and word count metrics.
 mod utf8_stream;
 
-#[cfg(unix)]
-pub const BLOCK_SIZE_BYTES: u16 = 512;
-
 /// Determines between logical or physical size for display
 #[derive(Copy, Clone, Debug, ValueEnum, Default)]
 pub enum DiskUsage {
@@ -34,4 +31,16 @@ pub enum DiskUsage {
     /// How many blocks are allocated to store the file
     #[cfg(unix)]
     Block,
+}
+
+impl DiskUsage {
+    /// Whether sizes are in bytes, shown with a unit.
+    pub const fn is_bytes(self) -> bool {
+        matches!(self, Self::Logical | Self::Physical)
+    }
+
+    /// Whether sizes come from reading the contents of files.
+    pub const fn reads_files(self) -> bool {
+        matches!(self, Self::Line | Self::Word)
+    }
 }

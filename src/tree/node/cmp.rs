@@ -340,9 +340,9 @@ mod naming {
 mod test {
     use super::{MAX63, Sorter, Ties};
     use crate::{
-        context::{column, dir, sort},
+        context::{dir, sort},
         fs::stat::Kind,
-        tree::{Tree, columns::Columns, count::FileCount, node::Node, topo::ix},
+        tree::{Tree, columns::Columns, count::FileCount, node::Node, topo::ix, widths::Widths},
     };
     use clap::ValueEnum;
     use std::{
@@ -448,7 +448,7 @@ mod test {
             last: vec![],
             shown_depth: u32::MAX,
             stump: false,
-            widths: column::Properties::default(),
+            widths: Widths::default(),
             #[cfg(unix)]
             users: vec![],
             #[cfg(unix)]

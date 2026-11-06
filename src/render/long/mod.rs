@@ -1,11 +1,9 @@
-use super::{
-    bytes::{push_spaces, push_str_padded, push_u64_padded},
-    theme::{self, Esc},
-};
+use super::theme::{self, Esc};
 use crate::{
-    context::{Context, column, time},
+    bytes::{push_spaces, push_str_padded, push_u64_padded},
+    context::{Context, time},
     styles::{self, PLACEHOLDER},
-    tree::node::Node,
+    tree::{node::Node, widths::Widths},
 };
 use chrono::{DateTime, FixedOffset, Utc};
 use nu_ansi_term::Style;
@@ -69,7 +67,7 @@ fn esc(style: impl Fn(&styles::Long) -> Style) -> Option<Esc> {
 
 impl Long {
     /// The long view as selected by `ctx`, with the column widths `widths`.
-    pub fn new(ctx: &Context, widths: &column::Properties) -> Self {
+    pub fn new(ctx: &Context, widths: &Widths) -> Self {
         Self {
             group: ctx.group,
             ino: ctx.ino,
