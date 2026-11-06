@@ -168,9 +168,7 @@ impl<'a> RowFmt<'a> {
         let start = out.len();
         let node = self.tree.node(id);
 
-        #[cfg(unix)]
-        if let Some(long) = &self.long {
-            long.write(&mut scratch.long, node, out);
+        if self.write_long(scratch, node, out) {
             out.push(b' ');
         }
 
@@ -196,10 +194,7 @@ impl<'a> RowFmt<'a> {
         let start = out.len();
         let node = self.tree.node(id);
 
-        #[cfg(unix)]
-        if let Some(long) = &self.long {
-            long.write(&mut scratch.long, node, out);
-
+        if self.write_long(scratch, node, out) {
             if let Some(size) = &self.size {
                 out.extend_from_slice(b"   ");
                 size.write(node, out);
@@ -214,6 +209,24 @@ impl<'a> RowFmt<'a> {
         }
 
         self.finish_flat(paths, id, node, out, start);
+    }
+
+    /// Appends the long view's columns of `node`; false, appending nothing, outside the long
+    /// view.
+    #[cfg(unix)]
+    fn write_long(&self, scratch: &mut Scratch, node: Node<'_>, out: &mut Vec<u8>) -> bool {
+        let Some(long) = &self.long else {
+            return false;
+        };
+        long.write(&mut scratch.long, node, out);
+        true
+    }
+
+    /// The long view exists only on unix.
+    #[cfg(not(unix))]
+    #[expect(clippy::unused_self, reason = "same signature as the unix method")]
+    const fn write_long(&self, _: &mut Scratch, _: Node<'_>, _: &mut Vec<u8>) -> bool {
+        false
     }
 
     /// The path column of a flat row, and the end of the row.
