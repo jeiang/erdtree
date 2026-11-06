@@ -739,9 +739,9 @@ where
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let fd = None;
 
-        let rules =
-            job.rules
-                .add_child(&job.path, Some(&found), self.walker.follow_links, ident, fd);
+        let rules = job
+            .rules
+            .add_child(&job.path, found, self.walker.follow_links, ident, fd);
         let dir = Dir {
             listing,
             path: job.path,
