@@ -28,7 +28,6 @@ pub struct Erd {
     config: Config,
     args: Vec<OsString>,
     envs: Vec<(OsString, OsString)>,
-    cwd: Option<PathBuf>,
 }
 
 enum Config {
@@ -45,7 +44,6 @@ impl Erd {
             config: Config::Off,
             args: vec![],
             envs: vec![],
-            cwd: None,
         }
     }
 
@@ -68,11 +66,6 @@ impl Erd {
     pub fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
         self.envs
             .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
-        self
-    }
-
-    pub fn cwd(mut self, dir: impl AsRef<Path>) -> Self {
-        self.cwd = Some(dir.as_ref().to_owned());
         self
     }
 
@@ -124,9 +117,6 @@ impl Erd {
         }
 
         cmd.args(&self.args).envs(self.envs).stdin(Stdio::null());
-        if let Some(cwd) = self.cwd {
-            cmd.current_dir(cwd);
-        }
         (cmd, self.home)
     }
 
