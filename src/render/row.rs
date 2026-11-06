@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     ansi::Escaped,
-    context::Context,
+    context::{Context, column},
     disk_usage::{
         file_size::{DiskUsage, FileSize},
         units::PrefixKind,
@@ -39,9 +39,9 @@ struct Size {
 }
 
 impl Size {
-    fn new(ctx: &Context, color: bool) -> Self {
-        let placeholder = (!ctx.suppress_size && ctx.max_size_width != 0).then(|| {
-            let padding = ctx.max_size_width + 1;
+    fn new(ctx: &Context, widths: &column::Properties, color: bool) -> Self {
+        let placeholder = (!ctx.suppress_size && widths.max_size_width != 0).then(|| {
+            let padding = widths.max_size_width + 1;
 
             match ctx.disk_usage {
                 DiskUsage::Logical | DiskUsage::Physical => match ctx.unit {
@@ -62,8 +62,8 @@ impl Size {
         });
 
         Self {
-            width: ctx.max_size_width,
-            unit_width: ctx.max_size_unit_width,
+            width: widths.max_size_width,
+            unit_width: widths.max_size_unit_width,
             unit: ctx.unit,
             placeholder,
             placeholder_esc: color
@@ -122,11 +122,11 @@ impl<'a> RowFmt<'a> {
             color,
             icons: ctx.icons,
             classify: ctx.classify,
-            truncate_to: ctx.window_width.filter(|_| ctx.truncate),
-            size: Size::new(ctx, color),
+            truncate_to: ctx.truncate.then(crate::tty::get_window_width).flatten(),
+            size: Size::new(ctx, tree.widths(), color),
             red: Esc::new(nu_ansi_term::Color::Red.normal()),
             #[cfg(unix)]
-            long: ctx.long.then(|| long::Long::new(ctx)),
+            long: ctx.long.then(|| long::Long::new(ctx, tree.widths())),
         }
     }
 

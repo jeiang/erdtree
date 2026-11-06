@@ -337,3 +337,31 @@ fn config_key() {
     );
     assert!(stdout(&out).contains("nemesis.txt"));
 }
+
+/// The hidden entry has the widest size (`1023 B` against `1.0 KiB`), so it must not widen the
+/// size column.
+#[test]
+fn hidden_widest_entry_does_not_widen_sizes() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("t");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("a"), [0; 1024]).unwrap();
+    fs::write(root.join("b"), [0; 1023]).unwrap();
+    let root = root.to_string_lossy().into_owned();
+
+    let all = utils::run_cmd(&["--human", &root]);
+    assert!(all.starts_with("1023   B ┌─ b"), "{all}");
+
+    let out = utils::run_cmd(&["--human", "--min-size", "1024", &root]);
+    assert_eq!(
+        out,
+        indoc!(
+            "
+            1.0 KiB ┌─ a
+            2.0 KiB t
+
+            2 files"
+        )
+        .trim()
+    );
+}

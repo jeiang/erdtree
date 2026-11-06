@@ -4,7 +4,7 @@
 
 use super::{Tree, topo::ix};
 use crate::{
-    context::{Context, column},
+    context::Context,
     disk_usage::{
         file_size::FileSize,
         units::{BinPrefix, PrefixKind, SiPrefix},
@@ -166,8 +166,6 @@ pub struct Stats {
     ino: u64,
     #[cfg(unix)]
     nlink: u64,
-    #[cfg(unix)]
-    blocks: u64,
 
     /// Distinct `(uid, gid)` of nodes whose owner and group were read.
     #[cfg(unix)]
@@ -182,7 +180,6 @@ impl Stats {
         {
             self.ino = self.ino.max(other.ino);
             self.nlink = self.nlink.max(other.nlink);
-            self.blocks = self.blocks.max(other.blocks);
             self.owners.extend_from_slice(&other.owners);
         }
     }
@@ -227,8 +224,6 @@ impl Tree {
             #[cfg(unix)]
             nlink: 0,
             #[cfg(unix)]
-            blocks: 0,
-            #[cfg(unix)]
             owners: vec![],
         };
 
@@ -252,8 +247,6 @@ impl Tree {
                     stats.nlink = stats.nlink.max(inode.nlink);
                 }
 
-                stats.blocks = stats.blocks.max(cols.blocks[i]);
-
                 if let Some(attrs) = cols.long.get(i).filter(|a| a.read)
                     && last_owner != Some((attrs.uid, attrs.gid))
                 {
@@ -266,13 +259,9 @@ impl Tree {
         stats
     }
 
-    /// Widens `props` to fit the nodes `stats` was scanned from, and resolves their owner and
-    /// group names.
-    #[cfg_attr(
-        not(unix),
-        allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)
-    )]
-    pub fn apply_widths(&mut self, ctx: &Context, props: &mut column::Properties, stats: &Stats) {
+    /// Widens the tree's column widths to fit the nodes `stats` was scanned from, and resolves
+    /// their owner and group names.
+    pub fn apply_widths(&mut self, ctx: &Context, stats: &Stats) {
         let (number, unit) = stats.size.widths(|value| {
             let mut size = FileSize::from(ctx);
             if let FileSize::Byte(metric) = &mut size {
@@ -280,6 +269,7 @@ impl Tree {
             }
             size
         });
+        let props = &mut self.widths;
         props.max_size_width = props.max_size_width.max(number);
         props.max_size_unit_width = props.max_size_unit_width.max(unit);
 
@@ -287,12 +277,13 @@ impl Tree {
         if ctx.long {
             props.max_ino_width = props.max_ino_width.max(utils::num_integral(stats.ino));
             props.max_nlink_width = props.max_nlink_width.max(utils::num_integral(stats.nlink));
-            props.max_block_width = props.max_block_width.max(utils::num_integral(stats.blocks));
 
             let mut owners = stats.owners.clone();
             owners.sort_unstable();
             owners.dedup();
             self.resolve_owners(&owners);
+
+            let props = &mut self.widths;
 
             for (uid, gid) in owners {
                 if let (Some(owner), Some(group)) =

@@ -15,9 +15,6 @@ pub struct Properties {
     pub max_ino_width: usize,
 
     #[cfg(unix)]
-    pub max_block_width: usize,
-
-    #[cfg(unix)]
     pub max_owner_width: usize,
 
     #[cfg(unix)]

@@ -96,6 +96,24 @@ fn threads_print_the_same_as_one() {
     }
 }
 
+/// `--threads 0` means one thread per core, in every phase, and prints what one thread prints.
+#[test]
+fn zero_threads_print_the_same_as_one() {
+    let dir = big_tree();
+    let root = dir.path().to_str().unwrap();
+
+    for layout in [&[][..], &["-y", "flat"], &["-y", "iflat"]] {
+        let mut args = layout.to_vec();
+        args.extend(["-C", "none", root]);
+
+        let one = erd(&[&["--threads", "1"], &args[..]].concat());
+        let zero = erd(&[&["--threads", "0"], &args[..]].concat());
+
+        assert!(one.iter().filter(|&&b| b == b'\n').count() > 100);
+        assert!(one == zero, "{layout:?}");
+    }
+}
+
 #[test]
 fn prefixes_equal_those_of_the_sequential_plan() {
     let dir = big_tree();

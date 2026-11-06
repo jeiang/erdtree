@@ -167,6 +167,7 @@ pub struct Run {
     pub parent: u32,
 }
 
+#[cfg(any(test, kani))]
 impl Run {
     /// The run of nodes `i..j` of parent `p`.
     fn new(p: u32, i: usize, j: usize) -> Self {
@@ -178,6 +179,7 @@ impl Run {
     }
 }
 
+#[cfg(any(test, kani))]
 /// Calls `visit(p, i, j)` for each maximal run `parent[i..j]` of equal parents `p` other than [`NONE`].
 fn for_each_run(parent: &[u32], mut visit: impl FnMut(u32, usize, usize)) {
     let len = parent.len();
@@ -216,6 +218,7 @@ pub struct Children {
 }
 
 impl Children {
+    #[cfg(any(test, kani))]
     /// Groups nodes by parent. Nodes whose parent is [`NONE`] are roots and appear in no list.
     pub fn build(parent: &[u32]) -> Self {
         let mut runs = vec![];

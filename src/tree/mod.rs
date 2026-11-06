@@ -10,7 +10,7 @@ use error::Error;
 use node::{Node, cmp::SortKeys};
 use std::{cmp::Ordering, convert::TryFrom, result::Result as StdResult, sync::atomic::AtomicU64};
 use topo::{Children, NONE, ix};
-use widths::Scope;
+use widths::{Scope, Stats};
 
 /// Struct-of-arrays storage for walked entries.
 pub mod columns;
@@ -49,10 +49,6 @@ const PAR_COUNT_MIN: usize = 1 << 18;
 pub struct Tree {
     cols: Columns,
     root: u32,
-    children: Children,
-
-    /// Nodes still shown after `--prune`, `--dirs-only` and `--min-size`.
-    alive: Vec<bool>,
 
     /// Alive nodes in display pre-order (children sorted), down to the display level unless a
     /// filter needs the whole tree.
@@ -74,18 +70,42 @@ pub struct Tree {
     /// Byte-metric display settings, to rebuild [`FileSize`] values.
     size_format: SizeFormat,
 
+    /// Column widths that fit the shown nodes (all nodes unless `--min-size` hid some).
+    widths: column::Properties,
+
     /// Owner and group names by id, sorted by id, for the long view.
     #[cfg(unix)]
     users: Vec<(u32, Option<String>)>,
     #[cfg(unix)]
     groups: Vec<(u32, Option<String>)>,
 
-    /// Counts added to the summary: entries hidden by `--min-size`, and entries skipped by the
-    /// walk (`--report-ignored`).
-    hidden: FileCount,
-
     /// The summary count, see [`Self::file_count`].
     count: FileCount,
+}
+
+/// What hides nodes from the display, derived once from the [`Context`].
+#[derive(Clone, Copy)]
+struct Filters {
+    /// `--prune` or a pattern: directories left without shown entries are hidden.
+    prune: bool,
+    dirs_only: bool,
+    /// The `--min-size` threshold, when it can hide anything.
+    min_size: Option<u64>,
+}
+
+impl Filters {
+    fn new(ctx: &Context) -> Self {
+        Self {
+            prune: ctx.prune || ctx.pattern.is_some(),
+            dirs_only: ctx.dirs_only,
+            min_size: ctx.min_size.map(|m| m.value).filter(|&v| v > 0),
+        }
+    }
+
+    /// Whether any node can be hidden.
+    const fn any(self) -> bool {
+        self.prune || self.dirs_only || self.min_size.is_some()
+    }
 }
 
 /// How sizes are displayed.
@@ -98,51 +118,29 @@ struct SizeFormat {
 
 pub type Result<T> = StdResult<T, Error>;
 
-/// Number of threads for CPU-bound work: `--threads`, or one per core for 0.
-fn thread_count(ctx: &Context) -> usize {
-    if ctx.threads == 0 {
-        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
-    } else {
-        ctx.threads
-    }
-}
-
 impl Tree {
-    /// Walks the root of `ctx` and builds the [Tree]; also computes the column widths that
-    /// rendering needs into the returned [Context]. The tree may be a stump (see
-    /// [`Self::is_stump`]). `progress` counts walked entries.
-    pub fn try_init(mut ctx: Context, progress: Option<&AtomicU64>) -> Result<(Self, Context)> {
-        let mut walker = walker(&ctx)?;
-        let probe = Probe::new(&ctx);
+    /// Walks the root of `ctx` and builds the [Tree] with the column widths that rendering
+    /// needs. The tree may be a stump (see [`Self::is_stump`]). `progress` counts walked
+    /// entries.
+    pub fn try_init(ctx: &Context, progress: Option<&AtomicU64>) -> Result<Self> {
+        let mut walker = walker(ctx)?;
+        let probe = Probe::new(ctx);
         walker.fields = probe.fields();
 
         let sinks = walker.run(|_| Collector::new(probe), progress);
-        let cols = Columns::merge(sinks.into_iter().map(|c| c.columns).collect());
+        let cols = Columns::merge(sinks.into_iter().map(Collector::into_columns).collect());
 
-        let mut col_props = column::Properties::from(&ctx);
-        let tree = Self::assemble(cols, &ctx, &mut col_props)?;
-
-        ctx.update_column_properties(&col_props);
-
-        if ctx.truncate {
-            ctx.set_window_width();
-        }
-
-        Ok((tree, ctx))
+        Self::assemble(cols, ctx)
     }
 
-    /// Builds the topology, sizes, order and filters from the merged columns.
+    /// Builds the topology, sizes, order, filters and column widths from the merged columns.
     ///
     /// The `depth` column must hold each node's distance from the root (parent depth plus
     /// one, root 0), as the walk records it: that gives a parent-first order without a
     /// traversal, and cuts the display order off at `--level`.
-    fn assemble(
-        mut cols: Columns,
-        ctx: &Context,
-        col_props: &mut column::Properties,
-    ) -> Result<Self> {
+    fn assemble(mut cols: Columns, ctx: &Context) -> Result<Self> {
         let n = cols.len();
-        let threads = thread_count(ctx);
+        let threads = ctx.threads;
         let root = cols
             .parent
             .iter()
@@ -168,13 +166,12 @@ impl Tree {
         }
 
         let is_dir: Vec<bool> = cols.file_type.iter().map(|kind| kind.is_dir()).collect();
-        let children = Children::from_runs(n, &std::mem::take(&mut cols.runs));
+        let mut children = Children::from_runs(n, &std::mem::take(&mut cols.runs));
 
         // Nothing is hidden by a filter, so the display order can stop at `--level`. The link
         // theme of `--follow` is stateful and must see the entries below it, too.
-        let min_size = ctx.min_size.map(|m| m.value).filter(|&v| v > 0);
-        let filtered = ctx.prune || ctx.pattern.is_some() || ctx.dirs_only || min_size.is_some();
-        let cap = if filtered || ctx.follow {
+        let filters = Filters::new(ctx);
+        let cap = if filters.any() || ctx.follow {
             u32::MAX
         } else {
             u32::try_from(ctx.level()).unwrap_or(u32::MAX)
@@ -182,8 +179,6 @@ impl Tree {
 
         let mut tree = Self {
             root,
-            children,
-            alive: vec![true; n],
             order: vec![],
             last: vec![],
             link,
@@ -194,11 +189,11 @@ impl Tree {
                 human: ctx.human,
                 unit: ctx.unit,
             },
+            widths: column::Properties::from(ctx),
             #[cfg(unix)]
             users: vec![],
             #[cfg(unix)]
             groups: vec![],
-            hidden: FileCount::default(),
             count: FileCount::default(),
             cols,
         };
@@ -207,7 +202,7 @@ impl Tree {
         // first by path.
         let uncounted = tree.dedupe_hard_links(threads);
         topo::aggregate(
-            &tree.children,
+            &children,
             &tree.cols.parent,
             &tree.cols.depth,
             &is_dir,
@@ -217,8 +212,12 @@ impl Tree {
         );
         drop(uncounted);
 
-        tree.sort_children(ctx, col_props, min_size.is_none());
-        tree.filter_and_order(ctx, col_props, &is_dir);
+        // Entries hidden by `--min-size` must not widen the size columns, so then the widths
+        // wait for the display order.
+        let stats = tree.sort_children(ctx, &mut children, filters.min_size.is_none(), threads);
+        tree.filter_and_order(&children, &is_dir, filters, threads);
+        let stats = stats.unwrap_or_else(|| tree.scan(ctx, Scope::Listed(&tree.order), threads));
+        tree.apply_widths(ctx, &stats);
 
         Ok(tree)
     }
@@ -227,125 +226,109 @@ impl Tree {
     /// order and the summary count.
     fn filter_and_order(
         &mut self,
-        ctx: &Context,
-        col_props: &mut column::Properties,
+        children: &Children,
         is_dir: &[bool],
+        filters: Filters,
+        threads: usize,
     ) {
         let tree = self;
         let (root, cap) = (tree.root, tree.shown_depth);
         let n = tree.cols.len();
-        let threads = thread_count(ctx);
-        let min_size = ctx.min_size.map(|m| m.value).filter(|&v| v > 0);
-        let filtered = ctx.prune || ctx.pattern.is_some() || ctx.dirs_only || min_size.is_some();
+
+        // Nodes still shown after the filters.
+        let mut alive = vec![true; n];
 
         // Any parent-first order serves `prune` and `hide_small`.
-        let parent_first = (ctx.prune || ctx.pattern.is_some() || min_size.is_some()).then(|| {
+        let parent_first = (filters.prune || filters.min_size.is_some()).then(|| {
             topo::by_depth(&tree.cols.depth).unwrap_or_else(|| {
-                topo::preorder(
-                    &tree.children,
-                    root,
-                    &tree.alive,
-                    &tree.cols.depth,
-                    u32::MAX,
-                )
+                topo::preorder(children, root, &alive, &tree.cols.depth, u32::MAX)
             })
         });
         let parent_first = parent_first.as_deref().unwrap_or_default();
 
-        if ctx.prune || ctx.pattern.is_some() {
-            topo::prune(parent_first, &tree.cols.parent, is_dir, &mut tree.alive);
+        if filters.prune {
+            topo::prune(parent_first, &tree.cols.parent, is_dir, &mut alive);
         }
 
-        if ctx.dirs_only {
-            topo::dirs_only(&tree.cols.parent, is_dir, &mut tree.alive);
+        if filters.dirs_only {
+            topo::dirs_only(&tree.cols.parent, is_dir, &mut alive);
         }
 
-        if let Some(min_size) = min_size {
+        // Counts added to the summary: entries hidden by `--min-size`, and entries skipped by
+        // the walk (`--report-ignored`).
+        let mut hidden = FileCount::default();
+
+        if let Some(min_size) = filters.min_size {
             let shown: Vec<u32> = parent_first
                 .iter()
                 .copied()
-                .filter(|&i| tree.alive[ix(i)])
+                .filter(|&i| alive[ix(i)])
                 .collect();
-            let hidden = topo::hide_small(
+            hidden = topo::hide_small(
                 &shown,
                 &tree.cols.parent,
                 &tree.cols.size,
                 min_size,
-                &mut tree.alive,
-            );
-
-            tree.hidden = hidden
-                .into_iter()
-                .fold(FileCount::default(), |acc, i| acc + tree.node(i));
+                &mut alive,
+            )
+            .into_iter()
+            .fold(hidden, |acc, i| acc + tree.node(i));
         }
 
-        tree.order = topo::preorder(&tree.children, root, &tree.alive, &tree.cols.depth, cap);
+        tree.order = topo::preorder(children, root, &alive, &tree.cols.depth, cap);
 
-        if min_size.is_some() {
-            // Hidden entries must not leave the size columns wider than needed.
-            *col_props = column::Properties::from(ctx);
-            let stats = tree.scan(ctx, Scope::Listed(&tree.order), threads);
-            tree.apply_widths(ctx, col_props, &stats);
-        }
-
-        tree.hidden.num_ignored = tree.cols.ignored;
+        hidden.num_ignored = tree.cols.ignored;
 
         // Without filters every node is shown, whatever the level cuts off the display.
-        tree.count = if filtered {
+        tree.count = if filters.any() {
             tree.order
                 .iter()
                 .skip(1)
-                .fold(tree.hidden, |acc, &i| acc + tree.node(i))
+                .fold(hidden, |acc, &i| acc + tree.node(i))
         } else {
             tree.count_all(threads)
         };
-        tree.stump = if filtered {
+        tree.stump = if filters.any() {
             tree.order.len() <= 1
         } else {
             n <= 1
         };
-        tree.last = topo::last_alive_child(&tree.children, &tree.order, &tree.alive, threads);
+        tree.last = topo::last_alive_child(children, &tree.order, &alive, threads);
     }
 
     /// Sorts the child lists of the directories shown (down to the display level), and with
-    /// `scan_now` also widens `col_props` to fit every node. The widths do not depend on the
+    /// `scan` also returns the width facts of every node. The widths do not depend on the
     /// order, so large trees find them while the lists are sorted.
-    fn sort_children(&mut self, ctx: &Context, col_props: &mut column::Properties, scan_now: bool) {
-        let threads = thread_count(ctx);
+    fn sort_children(
+        &self,
+        ctx: &Context,
+        children: &mut Children,
+        scan: bool,
+        threads: usize,
+    ) -> Option<Stats> {
         let cap = self.shown_depth;
         let comparator = node::cmp::comparator(ctx);
-        let mut children = std::mem::replace(&mut self.children, Children::build(&[]));
+        let keys = SortKeys::new(self, ctx, true);
+        let overlap = scan && self.cols.len() >= OVERLAP_MIN && threads > 1;
 
-        let stats = {
-            let view = &*self;
-            let keys = SortKeys::new(view, ctx, true);
-            let overlap = scan_now && self.cols.len() >= OVERLAP_MIN && threads > 1;
+        std::thread::scope(|s| {
+            let job = overlap.then(|| s.spawn(|| self.scan(ctx, Scope::All, 1)));
 
-            std::thread::scope(|s| {
-                let job = overlap.then(|| s.spawn(|| view.scan(ctx, Scope::All, 1)));
+            children.sort_each(
+                threads,
+                |p| self.cols.depth[ix(p)] < cap,
+                |i| keys.key(i),
+                |a, b| {
+                    let (a, b) = (self.node(a), self.node(b));
+                    comparator(a, b).then_with(|| a.file_name().cmp(b.file_name()))
+                },
+            );
 
-                children.sort_each(
-                    threads,
-                    |p| view.cols.depth[ix(p)] < cap,
-                    |i| keys.key(i),
-                    |a, b| {
-                        let (a, b) = (view.node(a), view.node(b));
-                        comparator(a, b).then_with(|| a.file_name().cmp(b.file_name()))
-                    },
-                );
-
-                job.map_or_else(
-                    || scan_now.then(|| view.scan(ctx, Scope::All, threads)),
-                    |job| Some(job.join().unwrap_or_else(|e| std::panic::resume_unwind(e))),
-                )
-            })
-        };
-
-        self.children = children;
-
-        if let Some(stats) = stats {
-            self.apply_widths(ctx, col_props, &stats);
-        }
+            job.map_or_else(
+                || scan.then(|| self.scan(ctx, Scope::All, threads)),
+                |job| Some(job.join().unwrap_or_else(|e| std::panic::resume_unwind(e))),
+            )
+        })
     }
 
     /// The summary count of an unfiltered tree: every node below the root, plus those skipped
@@ -458,6 +441,11 @@ impl Tree {
         self.root
     }
 
+    /// Column widths that fit the shown nodes.
+    pub const fn widths(&self) -> &column::Properties {
+        &self.widths
+    }
+
     /// Shown nodes in display pre-order, root first. Stops at the display level (`--level`)
     /// unless a filter is active; layouts show nothing deeper either way.
     pub fn order(&self) -> &[u32] {
@@ -492,13 +480,6 @@ impl Tree {
     #[inline]
     pub fn parent(&self, i: u32) -> u32 {
         self.cols.parent[ix(i)]
-    }
-
-    /// Whether `i` has a shown child: one in [`Self::order`].
-    #[inline]
-    pub fn has_children(&self, i: u32) -> bool {
-        self.cols.depth[ix(i)] < self.shown_depth
-            && self.children.of(i).iter().any(|&c| self.alive[ix(c)])
     }
 
     /// Nodes in the order the inverted flat layout (`iflat`) displays them, down to the display
@@ -541,7 +522,7 @@ impl Tree {
 
         topo::sort_keyed(
             &mut positions,
-            thread_count(ctx),
+            ctx.threads,
             &|k| keys.key(rest[ix(k)]),
             // Names are not in the keys: unless a key was clamped, equal keys are ties.
             &|a, b| {
@@ -619,7 +600,7 @@ fn walker(ctx: &Context) -> Result<Walker> {
         }))
     };
 
-    let threads = thread_count(ctx);
+    let threads = ctx.threads;
 
     Ok(Walker {
         root,
