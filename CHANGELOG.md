@@ -31,6 +31,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - With `--unit si` and without `--human`, the `-` shown for entries without a size (FIFOs, sockets, devices) was one column narrower than the sizes, misaligning the tree.
 - `--pattern` with `--file-type dir` matched directories above the root too, so a root inside a matching directory (e.g. `erd -p 'dream.*' -t dir dreamroot/foo`) showed every entry. Only directories below the root are matched now.
 - The long view (`--long`) panicked on an entry whose file type it did not know; it now shows `?` as the type, as `ls` does.
+- Error messages for invalid config values and for terminal I/O errors of the progress indicator no longer start with a stray `#` (e.g. `'#level' is required to be…` is now `'level' is required to be…`).
 
 ### Verification
 - The tree algorithms (child lists, pre-order, size totals, hard-link deduplication, `--prune`, `--dirs-only`, `--min-size`) have written specifications that `cargo test` checks for every tree of up to 6 entries at every root position, and that Kani proofs check symbolically, for all sizes, thresholds and traversal orders, for every tree of up to 3 entries (the pre-order and last-child checks only up to 1 entry under Kani); CI runs the tests, and the Kani proofs are run locally (`cargo kani -j 4`). The walk is tested against the `ignore` crate's walker on handcrafted and randomly generated trees with ignore files.

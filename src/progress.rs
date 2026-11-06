@@ -46,7 +46,7 @@ pub struct IndicatorHandle {
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 pub enum Error {
-    #[error("#{0}")]
+    #[error("{0}")]
     Io(#[from] io::Error),
 
     #[error("Failed to set interrupt handler: {0}")]
