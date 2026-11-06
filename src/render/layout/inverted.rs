@@ -13,7 +13,7 @@ impl Layout for Inverted {
         } else {
             Rows::Tree {
                 reverse: false,
-                glyphs: theme::GlyphCache::new().prefix_glyphs(true),
+                glyphs: theme::prefix_glyphs(true),
             }
         }
     }
@@ -28,8 +28,8 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
 
     plan.push_with_prefix(tree.root(), [""]);
 
-    let glyphs = theme::GlyphCache::new();
-    let mut get_theme = theme::link_theme_getter();
+    let branches = styles::theme();
+    let mut links = theme::LinkTracker::new();
 
     // Box-drawing segments of the ancestors below the root, outermost first.
     let mut base: Vec<&str> = vec![];
@@ -38,10 +38,14 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
         let node = tree.node(id);
         let depth = node.depth();
         let last_sibling = tree.is_last(id);
-        let theme = glyphs.get(get_theme(node));
+        let glyphs = branches.glyphs(links.is_link(node));
 
         if depth <= level {
-            let part = if last_sibling { theme.uprt } else { theme.vtrt };
+            let part: &str = if last_sibling {
+                &glyphs.uprt
+            } else {
+                &glyphs.vtrt
+            };
 
             plan.push_with_prefix(id, base.iter().copied().chain([part]));
         }
@@ -53,7 +57,7 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
                 if last_sibling {
                     base.push(styles::SEP);
                 } else {
-                    base.push(theme.vt);
+                    base.push(&glyphs.vt);
                 }
             } else if next_depth < depth {
                 base.truncate(base.len() - (depth - next_depth));

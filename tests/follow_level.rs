@@ -122,3 +122,39 @@ fn follow_with_min_size_hiding_middle_children() -> Result<(), Box<dyn std::erro
     );
     Ok(())
 }
+
+/// The inverted layout paints the branches of a followed link and everything after it in the link
+/// theme, byte for byte.
+#[cfg(unix)]
+#[test]
+fn follow_link_theme_inverted_golden() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new()?;
+    let root = tmp.path().join("t");
+    std::fs::create_dir_all(root.join("a/b"))?;
+    std::fs::create_dir_all(root.join("c"))?;
+    std::fs::create_dir_all(root.join("z"))?;
+    std::fs::write(root.join("c/x"), "x")?;
+    symlink("../../c", root.join("a/b/sd"))?;
+
+    let root = root.to_string_lossy().into_owned();
+    let out = utils::run_cmd_raw(&["--follow", "-y", "inverted", "-C", "force", &root], &[]);
+    let out = String::from_utf8(out)?;
+
+    let expected = concat!(
+        "\x1b[1;36m1 B\x1b[0m \x1b[1;34mt\x1b[0m\n",
+        "\x1b[35m  -\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;34ma\x1b[0m\n",
+        "\x1b[35m  -\x1b[0m \x1b[35m│  \x1b[0m\x1b[35m└─ \x1b[0m\x1b[1;34mb\x1b[0m\n",
+        "\x1b[1;36m1 B\x1b[0m \x1b[35m│  \x1b[0m   \x1b[31m└─ \x1b[0m\x1b[1;34msd\x1b[0m \x1b[31m→ ../../c\x1b[0m\n",
+        "\x1b[1;36m1 B\x1b[0m \x1b[35m│  \x1b[0m      \x1b[31m└─ \x1b[0mx\n",
+        "\x1b[1;36m1 B\x1b[0m \x1b[31m├─ \x1b[0m\x1b[1;34mc\x1b[0m\n",
+        "\x1b[1;36m1 B\x1b[0m \x1b[31m│  \x1b[0m\x1b[31m└─ \x1b[0mx\n",
+        "\x1b[35m  -\x1b[0m \x1b[31m└─ \x1b[0m\x1b[1;34mz\x1b[0m\n",
+        "\n",
+        "5 directories, 2 files\n",
+    );
+    assert_eq!(out, expected);
+    Ok(())
+}

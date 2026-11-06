@@ -1,96 +1,49 @@
-use crate::{
-    styles::{self, ThemesMap},
-    tree::node::Node,
-};
+use crate::{styles, tree::node::Node};
 use nu_ansi_term::Style;
 
-#[cfg(unix)]
-use crate::fs::permissions::FileMode;
-
-type Theme = Box<dyn FnMut(Node<'_>) -> &'static ThemesMap>;
-
-/// Box-drawing pieces of a theme, looked up once instead of per row.
-pub struct Glyphs {
-    pub vt: &'static str,
-    pub vtrt: &'static str,
-    pub uprt: &'static str,
-    pub drt: &'static str,
+/// Tracks whether a node lies below a followed symlink, whose branches use the link theme.
+pub struct LinkTracker {
+    depth: Option<usize>,
 }
 
-impl Glyphs {
-    fn of(theme: &'static ThemesMap) -> Self {
-        let get = |key| theme.get(key).map_or("", String::as_str);
-        Self {
-            vt: get("vt"),
-            vtrt: get("vtrt"),
-            uprt: get("uprt"),
-            drt: get("drt"),
-        }
+/// The pieces of the prefixes of the tree theme; `inverted` selects the glyph of a last sibling
+/// of the layout with the root on top.
+pub fn prefix_glyphs(inverted: bool) -> super::prefix::Glyphs {
+    let glyphs = &styles::theme().tree;
+    let bytes = |s: &str| s.as_bytes().into();
+
+    super::prefix::Glyphs {
+        vt: bytes(&glyphs.vt),
+        vtrt: bytes(&glyphs.vtrt),
+        last: bytes(if inverted { &glyphs.uprt } else { &glyphs.drt }),
     }
 }
 
-/// [`Glyphs`] of the regular and the link theme.
-pub struct GlyphCache {
-    tree: (&'static ThemesMap, Glyphs),
-    link: Option<(&'static ThemesMap, Glyphs)>,
-}
-
-impl GlyphCache {
-    pub fn new() -> Self {
-        let tree = styles::get_tree_theme().unwrap();
-        let link = styles::get_link_theme().ok();
-        Self {
-            tree: (tree, Glyphs::of(tree)),
-            link: link.map(|link| (link, Glyphs::of(link))),
-        }
+impl LinkTracker {
+    pub const fn new() -> Self {
+        Self { depth: None }
     }
 
-    /// The pieces of the prefixes of the regular theme; `inverted` selects the glyph of a last
-    /// sibling of the layout with the root on top.
-    pub fn prefix_glyphs(&self, inverted: bool) -> super::prefix::Glyphs {
-        let glyphs = &self.tree.1;
-        let bytes = |s: &str| s.as_bytes().into();
-
-        super::prefix::Glyphs {
-            vt: bytes(glyphs.vt),
-            vtrt: bytes(glyphs.vtrt),
-            last: bytes(if inverted { glyphs.uprt } else { glyphs.drt }),
-        }
-    }
-
-    /// Glyphs of `theme`, which must come from a theme getter of this module.
-    pub fn get(&self, theme: &'static ThemesMap) -> &Glyphs {
-        match &self.link {
-            Some((link, glyphs)) if std::ptr::eq(theme, *link) => glyphs,
-            _ => &self.tree.1,
-        }
-    }
-}
-
-/// Returns a closure that can smartly determine when a symlink is being followed and when it is
-/// not being followed. When a symlink is being followed, all of its descendents should have tree
-/// branches that are colored differently.
-pub fn link_theme_getter() -> Theme {
-    let mut link_depth = None;
-
-    Box::new(move |node| {
+    /// Whether `node` gets the link theme: it is a symlink or lies below a followed symlinked
+    /// directory. Nodes must arrive in render order.
+    pub fn is_link(&mut self, node: Node<'_>) -> bool {
         let current_depth = node.depth();
 
-        if let Some(ldepth) = link_depth
+        if let Some(ldepth) = self.depth
             && current_depth == ldepth
         {
-            link_depth = None;
+            self.depth = None;
         }
 
-        if link_depth.is_some() || node.is_symlink() {
-            if node.is_dir() && link_depth.is_none() {
-                link_depth = Some(current_depth);
+        if self.depth.is_some() || node.is_symlink() {
+            if node.is_dir() && self.depth.is_none() {
+                self.depth = Some(current_depth);
             }
-            styles::get_link_theme().unwrap()
+            true
         } else {
-            styles::get_tree_theme().unwrap()
+            false
         }
-    })
+    }
 }
 
 /// The escape sequences that open and close `style`, built once so that painting a string is
@@ -156,24 +109,18 @@ impl StyleCache {
 
 /// Styles the symbolic notation of file permissions.
 #[cfg(unix)]
-pub fn style_sym_permissions(perms: &FileMode, has_xattrs: bool) -> String {
-    use crate::fs::permissions::FileModeXAttrs;
+pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
+    // A trailing space aligns entries without extended attributes with those with them.
+    let symb: String = crate::fs::permissions::symbolic(mode)
+        .iter()
+        .map(|&b| char::from(b))
+        .chain([if has_xattrs { '@' } else { ' ' }])
+        .collect();
 
-    let symb = if has_xattrs {
-        let perm_xattr = FileModeXAttrs(perms);
-        format!("{perm_xattr}")
-    } else {
-        // extra whitespace to align with permissions with extended attrs
-        format!("{perms} ")
-    };
-
-    if let Ok(theme) = styles::get_permissions_theme() {
+    if styles::colors().is_some() {
         symb.chars()
             .filter_map(|ch| {
-                theme.get(&ch).map(|color| {
-                    let chstr = ch.to_string();
-                    color.paint(chstr).to_string()
-                })
+                styles::Long::permission(ch).map(|color| color.paint(ch.to_string()).to_string())
             })
             .collect()
     } else {
@@ -183,11 +130,11 @@ pub fn style_sym_permissions(perms: &FileMode, has_xattrs: bool) -> String {
 
 /// Styles the octal notation of file permissions.
 #[cfg(unix)]
-pub fn style_oct_permissions(perms: &FileMode) -> String {
-    let oct = format!("{perms:04o}");
+pub fn style_oct_permissions(mode: u32) -> String {
+    let oct = crate::fs::permissions::octal(mode);
 
-    if let Ok(style) = styles::get_octal_permissions_style() {
-        style.paint(oct).to_string()
+    if let Some(colors) = styles::colors() {
+        colors.long.octal.paint(oct).to_string()
     } else {
         oct
     }

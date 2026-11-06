@@ -7,12 +7,7 @@ use nu_ansi_term::Style;
 use std::{ffi::OsStr, path::Path, time::SystemTime};
 
 #[cfg(unix)]
-use crate::{
-    disk_usage::file_size::block,
-    fs::permissions::{FileMode, SymbolicNotation},
-    tree::error::Error,
-    tree::widths::lookup,
-};
+use crate::{disk_usage::file_size::block, tree::widths::lookup};
 
 /// Ordering and sorting rules for [Node].
 pub mod cmp;
@@ -170,15 +165,6 @@ impl<'a> Node<'a> {
             #[cfg(unix)]
             DiskUsage::Block => FileSize::Block(block::Metric { value }),
         })
-    }
-
-    /// Permissions for the long view.
-    #[cfg(unix)]
-    pub fn mode(self) -> Result<FileMode, Error> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let permissions = std::fs::Permissions::from_mode(self.tree.cols.mode[ix(self.i)]);
-        Ok(permissions.try_mode_symbolic_notation()?)
     }
 
     /// Raw `st_mode` of the entry (long view).

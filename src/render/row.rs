@@ -39,15 +39,9 @@ struct Size {
 }
 
 impl Size {
-    fn new(ctx: &Context, widths: &column::Properties, color: bool) -> Self {
+    fn new(ctx: &Context, widths: &column::Properties) -> Self {
         let placeholder = !ctx.suppress_size && widths.max_size_width != 0;
-
-        let du = color.then(|| {
-            let theme = styles::get_du_theme().unwrap();
-            ctx.unit
-                .names()
-                .map(|name| Esc::new(*theme.get(name).unwrap()))
-        });
+        let colors = styles::colors();
 
         Self {
             width: widths.max_size_width,
@@ -56,10 +50,8 @@ impl Size {
             unit: ctx.unit,
             disk_usage: ctx.disk_usage,
             placeholder,
-            placeholder_esc: color
-                .then(|| styles::get_placeholder_style().ok().map(|s| Esc::new(*s)))
-                .flatten(),
-            du,
+            placeholder_esc: colors.map(|colors| Esc::new(colors.placeholder)),
+            du: colors.map(|colors| colors.du.map(Esc::new)),
         }
     }
 
@@ -102,7 +94,7 @@ pub struct RowFmt<'a> {
 impl<'a> RowFmt<'a> {
     /// The row format `ctx` selects for `tree`.
     pub fn new(tree: &'a Tree, ctx: &Context) -> Self {
-        let color = !ctx.no_color();
+        let color = styles::colors().is_some();
 
         Self {
             tree,
@@ -110,7 +102,7 @@ impl<'a> RowFmt<'a> {
             icons: ctx.icons,
             classify: ctx.classify,
             truncate_to: ctx.truncate.then(crate::tty::get_window_width).flatten(),
-            size: Size::new(ctx, tree.widths(), color),
+            size: Size::new(ctx, tree.widths()),
             red: Esc::new(nu_ansi_term::Color::Red.normal()),
             #[cfg(unix)]
             long: ctx.long.then(|| long::Long::new(ctx, tree.widths())),

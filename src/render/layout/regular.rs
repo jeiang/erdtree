@@ -13,7 +13,7 @@ impl Layout for Regular {
         } else {
             Rows::Tree {
                 reverse: true,
-                glyphs: theme::GlyphCache::new().prefix_glyphs(false),
+                glyphs: theme::prefix_glyphs(false),
             }
         }
     }
@@ -29,8 +29,8 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
     let order = tree.order();
     let mut plan = Plan::with_capacity(order.len());
 
-    let glyphs = theme::GlyphCache::new();
-    let mut get_theme = theme::link_theme_getter();
+    let branches = styles::theme();
+    let mut links = theme::LinkTracker::new();
 
     let mut base: Vec<&str> = vec![];
     let mut closing = vec![];
@@ -62,26 +62,26 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
                     continue;
                 }
 
-                let theme = glyphs.get(get_theme(node));
+                let glyphs = branches.glyphs(links.is_link(node));
 
                 if tree.is_last(dir) {
                     base.push(styles::SEP);
                 } else {
-                    base.push(theme.vt);
+                    base.push(&glyphs.vt);
                 }
             }
         }
 
-        let theme = glyphs.get(get_theme(node));
+        let glyphs = branches.glyphs(links.is_link(node));
 
         if depth <= max_depth {
             if depth == 0 {
                 plan.push_with_prefix(id, [""]);
             } else {
-                let part = if tree.is_last(id) {
-                    theme.drt
+                let part: &str = if tree.is_last(id) {
+                    &glyphs.drt
                 } else {
-                    theme.vtrt
+                    &glyphs.vtrt
                 };
 
                 plan.push_with_prefix(id, base.iter().copied().chain([part]));
