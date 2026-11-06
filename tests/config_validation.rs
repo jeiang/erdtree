@@ -65,7 +65,11 @@ fn config_unknown_key_usage_names_erd() {
         .arg("tests/data")
         .fails(1);
     assert!(err.contains("unexpected argument '--bogus'"), "{err}");
-    assert!(err.contains("Usage: erd [OPTIONS] [DIR]..."), "{err}");
+    let usage = format!(
+        "Usage: erd{} [OPTIONS] [DIR]...",
+        std::env::consts::EXE_SUFFIX
+    );
+    assert!(err.contains(&usage), "{err}");
 }
 
 #[test]
