@@ -2,12 +2,12 @@
 //! decided before the first row (colors, widths, which columns exist) is decided there.
 
 use super::{
+    ansi,
     paths::DirPaths,
     prefix,
     theme::{Esc, StyleCache},
 };
 use crate::{
-    ansi::Escaped,
     bytes::{push_fixed, push_lossy, push_spaces, push_str_padded, push_u64_padded},
     context::Context,
     disk_usage::{
@@ -151,7 +151,12 @@ impl<'a> RowFmt<'a> {
             color,
             icons: ctx.icons,
             classify: ctx.classify,
-            truncate_to: ctx.truncate.then(crate::tty::get_window_width).flatten(),
+            // The width of the terminal on stdout; `None` if stdout is not one.
+            truncate_to: ctx
+                .truncate
+                .then(terminal_size::terminal_size)
+                .flatten()
+                .map(|(width, _)| usize::from(width.0)),
             size: Size::new(ctx, tree.widths()),
             red: Esc::new(nu_ansi_term::Color::Red.normal()),
             #[cfg(unix)]
@@ -255,7 +260,7 @@ impl<'a> RowFmt<'a> {
     fn end_row(&self, out: &mut Vec<u8>, start: usize) {
         if let Some(width) = self.truncate_to {
             let row = String::from_utf8_lossy(&out[start..]);
-            let cut = <str as Escaped>::truncate(&row, width);
+            let cut = ansi::truncate(&row, width);
             out.truncate(start);
             out.extend_from_slice(cut.as_bytes());
         }
