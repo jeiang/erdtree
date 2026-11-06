@@ -1,4 +1,4 @@
-use crate::context::error::Error as CtxError;
+use crate::walk::filter::Error as FilterError;
 
 /// Errors that may occur while traversing or construction of [`Tree`].
 ///
@@ -6,7 +6,7 @@ use crate::context::error::Error as CtxError;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("{0}")]
-    Context(#[from] CtxError),
+    Filter(#[from] FilterError),
 
     #[error("{0}")]
     DirNotFound(String),

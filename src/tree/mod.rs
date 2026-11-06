@@ -1,6 +1,10 @@
 use crate::{
     context::Context,
-    walk::{Walker, rules},
+    walk::{
+        Walker,
+        filter::{self, EntryFilter, Hidden, Pattern},
+        rules,
+    },
 };
 use columns::{Collector, Columns, Probe};
 use count::FileCount;
@@ -10,7 +14,10 @@ use node::{
     Node,
     cmp::{Sorter, Ties},
 };
-use std::{cmp::Ordering, convert::TryFrom, result::Result as StdResult, sync::atomic::AtomicU64};
+use std::{
+    cmp::Ordering, convert::TryFrom, path::Path, result::Result as StdResult,
+    sync::atomic::AtomicU64,
+};
 use topo::Children;
 use widths::{Scope, Stats, Widths};
 
@@ -104,11 +111,11 @@ impl Filters {
 pub type Result<T> = StdResult<T, Error>;
 
 impl Tree {
-    /// Walks the root of `ctx` and builds the [Tree] with the column widths that rendering
-    /// needs. The tree may be a stump (see [`Self::is_stump`]). `progress` counts walked
-    /// entries.
-    pub fn try_init(ctx: &Context, progress: Option<&AtomicU64>) -> Result<Self> {
-        let mut walker = walker(ctx)?;
+    /// Walks `root` with the options of `ctx` and builds the [Tree] with the column widths that
+    /// rendering needs. The tree may be a stump (see [`Self::is_stump`]). `progress` counts
+    /// walked entries.
+    pub fn try_init(ctx: &Context, root: &Path, progress: Option<&AtomicU64>) -> Result<Self> {
+        let mut walker = walker(ctx, root)?;
         let probe = Probe::new(ctx);
         walker.fields = probe.fields();
 
@@ -467,34 +474,35 @@ impl Tree {
     }
 }
 
-/// Configures the walk from `ctx`.
-fn walker(ctx: &Context) -> Result<Walker> {
-    let root = ctx
-        .try_dir_canonical()
-        .map_err(|e| Error::DirNotFound(format!("{}: {e}", ctx.dir().display())))?
-        .to_path_buf();
+/// Configures the walk of `root` from `ctx`.
+fn walker(ctx: &Context, root: &Path) -> Result<Walker> {
+    let canonical = std::fs::canonicalize(root)
+        .map_err(|e| Error::DirNotFound(format!("{}: {e}", root.display())))?;
 
-    if !root.is_dir() {
+    if !canonical.is_dir() {
         return Err(Error::DirNotFound(format!(
             "{}: Not a directory",
-            ctx.dir().display()
+            root.display()
         )));
     }
 
-    // With `--include`, hidden entries are filtered by the entry filter instead, as the ignore
-    // rules cannot make exceptions.
-    let opts = rules::Options::new(!ctx.hidden && !ctx.include_hidden(), !ctx.no_ignore);
-    let cwd = std::env::current_dir().ok();
-    let rules = rules::Rules::root(opts, ctx.no_git_override()?, cwd);
+    let exclusions = filter::exclusions(&canonical, ctx.no_git, &ctx.exclude)?;
+    let hidden = Hidden::new(&canonical, ctx.hidden, &ctx.include)?;
+    let pattern = ctx
+        .pattern
+        .as_deref()
+        .map(|pattern| Pattern::new(&canonical, pattern, ctx.glob, ctx.iglob))
+        .transpose()?;
 
-    let filter: Option<crate::walk::Filter> = ctx
-        .entry_filter()?
-        .map(|filter| -> crate::walk::Filter { Box::new(move |entry| filter.keep(entry)) });
+    let opts = rules::Options::new(hidden.hidden_by_rules(), !ctx.no_ignore);
+    let cwd = std::env::current_dir().ok();
+    let rules = rules::Rules::root(opts, exclusions, cwd);
+    let filter = EntryFilter::new(hidden, pattern.map(|pattern| (pattern, ctx.file_type())));
 
     let threads = ctx.threads;
 
     Ok(Walker {
-        root,
+        root: canonical,
         rules,
         follow_links: ctx.follow,
         same_file_system: ctx.same_fs,

@@ -42,6 +42,8 @@ mod adaptive;
 /// Bounds the descriptors that queued jobs hold.
 #[cfg(fd_walk)]
 mod fds;
+/// Hidden entries, `--exclude`, `--no-git` and the entry filter.
+pub mod filter;
 /// The entries of one directory.
 mod listing;
 /// Ignore rules per directory, adapted from the `ignore` crate.
@@ -49,6 +51,7 @@ pub mod rules;
 
 #[cfg(fd_walk)]
 use fds::{Budget, DirFd};
+use filter::EntryFilter;
 use listing::Listing;
 use rules::{Found, Rules};
 
@@ -163,9 +166,6 @@ pub trait Sink: Send {
     fn add_ignored(&mut self, count: usize);
 }
 
-/// Predicate deciding whether an entry is kept (and, for a directory, descended into).
-pub type Filter = Box<dyn Fn(&Entry<'_>) -> bool + Send + Sync>;
-
 /// Walk configuration.
 pub struct Walker {
     pub root: PathBuf,
@@ -179,7 +179,7 @@ pub struct Walker {
     /// for the file system (a cold cache, a network file system). `threads` or less keeps the
     /// number fixed.
     pub max_threads: usize,
-    pub filter: Option<Filter>,
+    pub filter: Option<EntryFilter>,
     /// Count ignored entries per directory (`--report-ignored`).
     pub count_ignored: bool,
     /// Optional metadata fields to read for every entry.
@@ -1157,7 +1157,7 @@ where
                 hidden: listing.is_hidden(i),
             };
 
-            if !filter(&candidate) {
+            if !filter.keep(&candidate) {
                 return None;
             }
         }
