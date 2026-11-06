@@ -262,6 +262,10 @@ pub struct Context {
     #[clap(skip)]
     pub threads_explicit: bool,
 
+    /// Whether `NO_COLOR` is set to a non-empty value (<https://no-color.org>).
+    #[clap(skip)]
+    pub no_color_env: bool,
+
     /// Canonical form of the root, computed on first use by [`Context::dir_canonical`].
     #[clap(skip)]
     canonical_dir: OnceLock<PathBuf>,
@@ -272,10 +276,11 @@ impl Context {
     /// Arguments provided will take precedence over config.
     pub fn try_init() -> Result<Self, Error> {
         Self::compute_args().and_then(|mut args| {
-            color::no_color_env();
+            let no_color_env = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
             let threads_explicit = args.value_source("threads") == Some(ValueSource::CommandLine);
             let mut ctx = Self::from_arg_matches_mut(&mut args).map_err(Error::Config)?;
             ctx.threads_explicit = threads_explicit;
+            ctx.no_color_env = no_color_env;
 
             // `--threads 0` means one thread per core.
             if ctx.threads == 0 {
@@ -310,13 +315,11 @@ impl Context {
         Ok(())
     }
 
-    /// Determines whether or not it's appropriate to display color in output based on
-    /// the Coloring, and whether or not stdout is connected to a tty.
-    ///
-    /// If Coloring is Force then this will always evaluate to `false`.
-    pub fn no_color(&self) -> bool {
-        if let Some(Some(var)) = color::NO_COLOR.get() {
-            return !var.is_empty();
+    /// Whether output is plain: always when `NO_COLOR` is set to a non-empty value, even with
+    /// `--color force`; otherwise with `--color none`, or `--color auto` when stdout is not a tty.
+    pub const fn no_color(&self) -> bool {
+        if self.no_color_env {
+            return true;
         }
 
         match self.color {
