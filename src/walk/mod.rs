@@ -315,7 +315,7 @@ fn run_worker<'scope, 'env, S, F>(
     let guard = QuitOnPanic(&run.shared);
     let mut worker = Worker {
         walker: run.walker,
-        sink_index: crate::tree::id::id(index),
+        sink_index: u32::try_from(index).unwrap_or(u32::MAX),
         shared: &run.shared,
         run,
         scope,
