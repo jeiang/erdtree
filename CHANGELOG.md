@@ -29,6 +29,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - With `--follow`, a directory reached again through a symlink was counted twice in the totals on file systems where directories have a link count of 1, such as btrfs.
 - Ctrl-C now stops `erd` at once with exit status 130, clearing the progress indicator and showing the cursor again. Before, once the progress indicator was shown, the walk ran to the end and `erd` then exited with status 1 and "Terminated erdtree...".
 - With `--unit si` and without `--human`, the `-` shown for entries without a size (FIFOs, sockets, devices) was one column narrower than the sizes, misaligning the tree.
+- `--pattern` with `--file-type dir` matched directories above the root too, so a root inside a matching directory (e.g. `erd -p 'dream.*' -t dir dreamroot/foo`) showed every entry. Only directories below the root are matched now.
 
 ### Verification
 - The tree algorithms (child lists, pre-order, size totals, hard-link deduplication, `--prune`, `--dirs-only`, `--min-size`) have written specifications that `cargo test` checks for every tree of up to 6 entries at every root position, and that Kani proofs check symbolically, for all sizes, thresholds and traversal orders, for every tree of up to 3 entries (the pre-order and last-child checks only up to 1 entry under Kani); CI runs the tests, and the Kani proofs are run locally (`cargo kani -j 4`). The walk is tested against the `ignore` crate's walker on handcrafted and randomly generated trees with ignore files.

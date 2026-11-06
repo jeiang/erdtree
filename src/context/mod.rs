@@ -409,12 +409,8 @@ impl Context {
 
         Ok(match file_type {
             file::Type::Dir => Box::new(move |dir_entry| {
-                let is_dir = dir_entry.file_type().is_dir();
-                if is_dir {
-                    return Self::ancestor_regex_match(dir_entry.path(), &re, 0);
-                }
-
-                Self::ancestor_regex_match(dir_entry.path(), &re, 1)
+                let skip = usize::from(!dir_entry.file_type().is_dir());
+                Self::ancestor_regex_match(dir_entry, &re, skip)
             }),
 
             _ => Box::new(move |dir_entry| {
@@ -469,15 +465,8 @@ impl Context {
 
         match file_type {
             file::Type::Dir => Ok(Box::new(move |dir_entry| {
-                let is_dir = dir_entry.file_type().is_dir();
-
-                if is_dir {
-                    if negated_glob {
-                        return !Self::ancestor_glob_match(dir_entry.path(), &overrides, 0);
-                    }
-                    return Self::ancestor_glob_match(dir_entry.path(), &overrides, 0);
-                }
-                let matched = Self::ancestor_glob_match(dir_entry.path(), &overrides, 1);
+                let skip = usize::from(!dir_entry.file_type().is_dir());
+                let matched = Self::ancestor_glob_match(dir_entry, &overrides, skip);
 
                 if negated_glob { !matched } else { matched }
             })),
@@ -539,11 +528,10 @@ impl Context {
         let include = builder.build()?;
 
         Ok(Box::new(move |dir_entry: &Entry<'_>| {
-            let is_dir = dir_entry.file_type().is_dir();
-
-            dir_entry.depth() == 0
-                || !dir_entry.is_hidden()
-                || include.matched(dir_entry.path(), is_dir).is_whitelist()
+            !dir_entry.is_hidden()
+                || include
+                    .matched(dir_entry.path(), dir_entry.file_type().is_dir())
+                    .is_whitelist()
         }))
     }
 
@@ -552,21 +540,29 @@ impl Context {
         matches!(self.disk_usage, DiskUsage::Logical | DiskUsage::Physical)
     }
 
-    /// Do any of the components of a path match the provided glob? This is used for ensuring that
-    /// all children of a directory that a glob targets gets captured.
+    /// Do any of the components of the entry's path below the root, after dropping the last
+    /// `skip`, match the provided glob? This is used for ensuring that all children of a
+    /// directory that a glob targets gets captured. An entry at depth `d` has `d` components
+    /// below the root.
     #[inline]
-    fn ancestor_glob_match(path: &Path, ovr: &Override, skip: usize) -> bool {
-        path.components()
+    fn ancestor_glob_match(entry: &Entry<'_>, ovr: &Override, skip: usize) -> bool {
+        entry
+            .path()
+            .components()
             .rev()
+            .take(entry.depth())
             .skip(skip)
             .any(|c| ovr.matched(c, false).is_whitelist())
     }
 
     /// Like [`Self::ancestor_glob_match`] except uses [Regex] rather than [Override].
     #[inline]
-    fn ancestor_regex_match(path: &Path, re: &Regex, skip: usize) -> bool {
-        path.components()
+    fn ancestor_regex_match(entry: &Entry<'_>, re: &Regex, skip: usize) -> bool {
+        entry
+            .path()
+            .components()
             .rev()
+            .take(entry.depth())
             .skip(skip)
             .any(|comp| re.is_match(comp.as_os_str().to_string_lossy().borrow()))
     }
