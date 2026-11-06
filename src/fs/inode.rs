@@ -64,12 +64,6 @@ impl Inode {
             u64::from(info.nNumberOfLinks),
         ))
     }
-
-    /// Platforms without a notion of inodes.
-    #[cfg(not(any(unix, windows)))]
-    pub const fn try_new(_path: &Path, _stat: &Stat, _followed_link: bool) -> Option<Self> {
-        None
-    }
 }
 
 /// `GetFileInformationByHandle` for the file or directory at `path`, opened with `flags`.
@@ -124,12 +118,6 @@ pub fn device_num(path: &Path) -> Option<u64> {
 
         file_information(path, FILE_FLAG_BACKUP_SEMANTICS)
             .map(|info| u64::from(info.dwVolumeSerialNumber))
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = path;
-        None
     }
 }
 
