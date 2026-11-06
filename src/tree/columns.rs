@@ -17,7 +17,7 @@ use crate::{
         inode::Inode,
         stat::{Fields, Kind, Stat},
     },
-    styles::{self, entry::Resolver},
+    styles::{Colors, entry::Resolver},
     walk::{NodeRef, Record, Sink},
 };
 use lscolors::Style as LsStyle;
@@ -71,6 +71,11 @@ impl Probe {
             accessed: self.accessed,
             created: self.created,
         }
+    }
+
+    /// Whether sizes come from reading every file (`--disk-usage line` and `word`).
+    pub const fn reads_files(self) -> bool {
+        !self.suppress_size && self.disk_usage.reads_files()
     }
 
     pub fn new(ctx: &Context) -> Self {
@@ -179,7 +184,9 @@ pub struct Collector {
 }
 
 impl Collector {
-    pub fn new(probe: Probe) -> Self {
+    /// A sink collecting what `probe` asks for, with the `LS_COLORS` styles of `colors` when
+    /// output is colored.
+    pub fn new(probe: Probe, colors: Option<&'static Colors>) -> Self {
         Self {
             cols: Columns {
                 style_table: vec![Style::default()],
@@ -188,7 +195,7 @@ impl Collector {
             probe,
             parent_runs: vec![],
             scratch: vec![],
-            resolver: styles::colors().map(|colors| Resolver::new(&colors.ls)),
+            resolver: colors.map(|colors| Resolver::new(&colors.ls)),
             style_index: HashMap::new(),
             last_style: (0, StyleIndex::default()),
         }

@@ -177,7 +177,7 @@ pub struct Walker {
     pub threads: usize,
     /// Most workers the walk may have. It starts with `threads` and adds workers while they wait
     /// for the file system (a cold cache, a network file system). `threads` or less keeps the
-    /// number fixed.
+    /// number fixed. See [`max_threads`].
     pub max_threads: usize,
     pub filter: Option<EntryFilter>,
     /// Count ignored entries per directory (`--report-ignored`).
@@ -186,6 +186,23 @@ pub struct Walker {
     pub fields: Fields,
     /// How large directories are shared between workers.
     pub tuning: Tuning,
+}
+
+/// Factor by which the walk may add workers when it waits for the file system.
+const GROWTH: usize = 8;
+
+/// Most workers when the walk adds workers.
+const GROWN_MAX: usize = 64;
+
+/// The [`Walker::max_threads`] of a walk that starts with `threads` workers. With `grow` the walk
+/// adds workers that wait for the file system, where it can tell that they do
+/// ([`adaptive::MEASURES`]); otherwise it keeps `threads`.
+pub fn max_threads(threads: usize, grow: bool) -> usize {
+    if grow && adaptive::MEASURES {
+        (threads * GROWTH).min(GROWN_MAX).max(threads)
+    } else {
+        threads
+    }
 }
 
 /// Directories with at least this many entries can be split between workers.
@@ -1646,5 +1663,23 @@ mod test {
             }
         }
         assert!(reached, "the walk grew to 16 workers");
+    }
+
+    #[test]
+    fn workers_grow_only_where_waits_are_measured() {
+        assert_eq!(max_threads(4, false), 4);
+        assert_eq!(
+            max_threads(4, true),
+            if adaptive::MEASURES { 32 } else { 4 }
+        );
+        assert_eq!(
+            max_threads(16, true),
+            if adaptive::MEASURES { 64 } else { 16 }
+        );
+        assert_eq!(
+            max_threads(100, true),
+            100,
+            "never fewer than the threads given"
+        );
     }
 }
