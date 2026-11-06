@@ -52,6 +52,18 @@ fn icon_from_file_name(name: &OsStr) -> Option<&'static str> {
     FILE_NAME_ICON_MAP.get(name).copied()
 }
 
+/// The icon and 8-bit color code of a whole file name with an icon of its own color. It comes
+/// before the extension, since `test.js` would otherwise get the icon of `js`; a match on the
+/// bytes compares lengths first, so most names cost one comparison.
+fn icon_from_colored_name(name: &OsStr) -> Option<(u8, &'static str)> {
+    Some(match name.as_encoded_bytes() {
+        b"config.ru" => (52, "\u{e791}"),
+        b"GNUmakefile" | b"Makefile" | b"makefile" => (66, "\u{e779}"),
+        b"test.js" => (173, "\u{e60c}"),
+        _ => return None,
+    })
+}
+
 /// Default fallback icon: its 8-bit color code and glyph.
 const DEFAULT_ICON: (u8, &str) = (66, "\u{f15b}");
 
@@ -99,7 +111,6 @@ static FILE_NAME_ICON_MAP: LazyLock<Map<OsString, &str>> = LazyLock::new(|| {
         OsString::from("licence")            => "\u{e60a}",   // 
         OsString::from("LICENCE")            => "\u{e60a}",   // 
         OsString::from("localized")          => "\u{f179}", // 
-        OsString::from("Makefile")           => "\u{f489}", // 
         OsString::from("node_modules")       => "\u{e718}", // 
         OsString::from("npmignore")          => "\u{e71e}", // 
         OsString::from("PKGBUILD")           => "\u{f303}", // 
@@ -135,7 +146,6 @@ static EXT_ICON_MAP: LazyLock<Map<OsString, (u8, &str)>> = LazyLock::new(|| {
         OsString::from("cobol")         => (25, "\u{2699}"),    // ⚙
         OsString::from("coffee")        => (185, "\u{e61b}"),   // 
         OsString::from("conf")          => (66, "\u{e615}"),    // 
-        OsString::from("config.ru")     => (52, "\u{e791}"),    // 
         OsString::from("cp")            => (67, "\u{e61d}"),    // 
         OsString::from("cpp")           => (67, "\u{e61d}"),    // 
         OsString::from("cpy")           => (25, "\u{2699}"),    // ⚙
@@ -171,7 +181,6 @@ static EXT_ICON_MAP: LazyLock<Map<OsString, (u8, &str)>> = LazyLock::new(|| {
         OsString::from("fsi")           => (67, "\u{e7a7}"),    // 
         OsString::from("fsscript")      => (67, "\u{e7a7}"),    // 
         OsString::from("fsx")           => (67, "\u{e7a7}"),    // 
-        OsString::from("GNUmakefile")   => (66, "\u{e779}"),    // 
         OsString::from("gd")            => (66, "\u{e615}"),    // 
         OsString::from("gemspec")       => (52, "\u{e791}"),    // 
         OsString::from("gif")           => (140, "\u{e60d}"),   // 
@@ -215,9 +224,7 @@ static EXT_ICON_MAP: LazyLock<Map<OsString, (u8, &str)>> = LazyLock::new(|| {
         OsString::from("log")           => (255, "\u{f0331}"),  // 󰮩
         OsString::from("lua")           => (74, "\u{e620}"),    // 
         OsString::from("luau")          => (74, "\u{e620}"),    // 
-        OsString::from("makefile")      => (66, "\u{e779}"),    // 
         OsString::from("markdown")      => (67, "\u{e609}"),    // 
-        OsString::from("Makefile")      => (66, "\u{e779}"),    // 
         OsString::from("material")      => (132, "\u{f0509}"),  // 󰔉
         OsString::from("md")            => (255, "\u{f48a}"),   // 
         OsString::from("mdx")           => (67, "\u{f48a}"),    // 
@@ -286,7 +293,6 @@ static EXT_ICON_MAP: LazyLock<Map<OsString, (u8, &str)>> = LazyLock::new(|| {
         OsString::from("t")             => (67, "\u{e769}"),    // 
         OsString::from("tcl")           => (67, "\u{f06d3}"),   // 󰛓
         OsString::from("terminal")      => (71, "\u{f489}"),    // 
-        OsString::from("test.js")       => (173, "\u{e60c}"),   // 
         OsString::from("tex")           => (58, "\u{f0669}"),   // 󰙩
         OsString::from("tf")            => (57, "\u{e2a6}"),    // 
         OsString::from("tfvars")        => (57, "\u{f15b}"),    // 

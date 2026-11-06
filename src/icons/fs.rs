@@ -13,8 +13,9 @@ pub enum Paint {
 /// Looks up the icon glyph and how to paint it.
 ///
 /// The precedent from highest to lowest in terms of which parameters determine the icon used
-/// is as followed: file-type, file-extension, and then file-name. If an icon cannot be
-/// computed the fall-back default icon is used. Without color the [`Paint`] does not apply.
+/// is as followed: file-type, file-name with its own color, file-extension, and then
+/// file-name. If an icon cannot be computed the fall-back default icon is used. Without color
+/// the [`Paint`] does not apply.
 ///
 /// `target` is the path of a symlink's target, whose extension is used for a symlink; otherwise the
 /// extension of the entry's name is.
@@ -26,6 +27,10 @@ pub fn lookup(
 ) -> (&'static str, Paint) {
     if let Some(icon) = super::icon_from_file_type(is_dir, is_symlink) {
         return (icon, Paint::FileStyle);
+    }
+
+    if let Some((code, icon)) = super::icon_from_colored_name(file_name) {
+        return (icon, Paint::Fixed(code));
     }
 
     let ext = target.map_or_else(|| name_extension(file_name), Path::extension);
@@ -135,5 +140,20 @@ mod test {
             lookup(false, false, None, OsStr::new("nothing")),
             ("\u{f15b}", Paint::Fixed(66))
         );
+    }
+
+    /// Whole names in the colored table win over their extension and over the plain name table.
+    #[test]
+    fn colored_names() {
+        for (name, icon) in [
+            ("config.ru", ("\u{e791}", Paint::Fixed(52))),
+            ("test.js", ("\u{e60c}", Paint::Fixed(173))),
+            ("Makefile", ("\u{e779}", Paint::Fixed(66))),
+            ("GNUmakefile", ("\u{e779}", Paint::Fixed(66))),
+            ("makefile", ("\u{e779}", Paint::Fixed(66))),
+            ("other.js", ("\u{e60c}", Paint::Fixed(185))),
+        ] {
+            assert_eq!(lookup(false, false, None, OsStr::new(name)), icon, "{name}");
+        }
     }
 }
