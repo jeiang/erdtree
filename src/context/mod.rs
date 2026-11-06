@@ -267,8 +267,6 @@ pub struct Context {
     canonical_dir: OnceLock<PathBuf>,
 }
 
-type Predicate = Result<Box<dyn Fn(&Entry<'_>) -> bool + Send + Sync + 'static>, Error>;
-
 impl Context {
     /// Initializes [Context], optionally reading in the configuration file to override defaults.
     /// Arguments provided will take precedence over config.
@@ -393,122 +391,57 @@ impl Context {
         self.file_type.unwrap_or_default()
     }
 
-    /// Predicate used for filtering via regular expressions and file-type. When matching regular
-    /// files, directories will always be included since matched files will need to be bridged back
-    /// to the root node somehow. Empty sets not producing an output is handled by [`Tree`].
-    ///
-    /// [`Tree`]: crate::tree::Tree
-    pub fn regex_predicate(&self) -> Predicate {
-        let Some(pattern) = self.pattern.as_ref() else {
-            return Err(Error::PatternNotProvided);
-        };
-
-        let re = Regex::new(pattern)?;
-
-        let file_type = self.file_type();
-
-        Ok(match file_type {
-            file::Type::Dir => Box::new(move |dir_entry| {
-                let is_dir = dir_entry.file_type().is_dir();
-                if is_dir {
-                    return Self::ancestor_regex_match(dir_entry.path(), &re, 0);
-                }
-
-                Self::ancestor_regex_match(dir_entry.path(), &re, 1)
-            }),
-
-            _ => Box::new(move |dir_entry| {
-                let entry_type = dir_entry.file_type();
-                let is_dir = entry_type.is_dir();
-
-                if is_dir {
-                    return true;
-                }
-
-                match file_type {
-                    file::Type::File if !entry_type.is_file() => {
-                        return false;
-                    },
-                    file::Type::Link if !entry_type.is_symlink() => {
-                        return false;
-                    },
-                    _ => {},
-                }
-                let file_name = dir_entry.file_name().to_string_lossy();
-                re.is_match(&file_name)
-            }),
-        })
+    /// Whether `--include` is given without `--hidden`. Hidden entries are then filtered by the
+    /// [`EntryFilter`] instead of the walker's own hidden-entry filter, which cannot make
+    /// exceptions.
+    pub const fn include_hidden(&self) -> bool {
+        !self.hidden && !self.include.is_empty()
     }
 
-    /// Predicate used for filtering via globs and file-types.
-    pub fn glob_predicate(&self) -> Predicate {
-        let mut builder = OverrideBuilder::new(self.dir_canonical());
+    /// The filter applied to each walked entry for `--include` (see [`Self::include_hidden`]),
+    /// `--pattern` and `--file-type`; `None` when there is nothing to filter.
+    pub fn entry_filter(&self) -> Result<Option<EntryFilter>, Error> {
+        let include = if self.include_hidden() {
+            let mut builder = OverrideBuilder::new(self.dir_canonical());
 
-        let mut negated_glob = false;
-
-        let overrides = {
-            if self.iglob {
-                builder.case_insensitive(true)?;
+            for glob in &self.include {
+                builder.add(glob.trim_start_matches('!'))?;
             }
 
-            if let Some(ref glob) = self.pattern {
-                let trim = glob.trim_start();
-                negated_glob = trim.starts_with('!');
-
-                if negated_glob {
-                    builder.add(trim.trim_start_matches('!'))?;
-                } else {
-                    builder.add(trim)?;
-                }
-            }
-
-            builder.build()?
+            Some(builder.build()?)
+        } else {
+            None
         };
 
-        let file_type = self.file_type();
+        let pattern = match self.pattern.as_deref() {
+            None => None,
+            Some(glob) if self.glob || self.iglob => {
+                let mut builder = OverrideBuilder::new(self.dir_canonical());
 
-        match file_type {
-            file::Type::Dir => Ok(Box::new(move |dir_entry| {
-                let is_dir = dir_entry.file_type().is_dir();
-
-                if is_dir {
-                    if negated_glob {
-                        return !Self::ancestor_glob_match(dir_entry.path(), &overrides, 0);
-                    }
-                    return Self::ancestor_glob_match(dir_entry.path(), &overrides, 0);
-                }
-                let matched = Self::ancestor_glob_match(dir_entry.path(), &overrides, 1);
-
-                if negated_glob { !matched } else { matched }
-            })),
-
-            _ => Ok(Box::new(move |dir_entry| {
-                let entry_type = dir_entry.file_type();
-                let is_dir = entry_type.is_dir();
-
-                if is_dir {
-                    return true;
+                if self.iglob {
+                    builder.case_insensitive(true)?;
                 }
 
-                match file_type {
-                    file::Type::File if !entry_type.is_file() => {
-                        return false;
-                    },
-                    file::Type::Link if !entry_type.is_symlink() => {
-                        return false;
-                    },
-                    _ => {},
-                }
+                let trim = glob.trim_start();
+                let negated = trim.starts_with('!');
+                builder.add(trim.trim_start_matches('!'))?;
 
-                let matched = overrides.matched(dir_entry.path(), false);
+                Some(Pattern::Glob {
+                    ovr: builder.build()?,
+                    negated,
+                })
+            },
+            Some(re) => Some(Pattern::Regex(Regex::new(re)?)),
+        };
 
-                if negated_glob {
-                    !matched.is_whitelist()
-                } else {
-                    matched.is_whitelist()
-                }
-            })),
+        if include.is_none() && pattern.is_none() {
+            return Ok(None);
         }
+
+        Ok(Some(EntryFilter {
+            include,
+            pattern: pattern.map(|pattern| (pattern, self.file_type())),
+        }))
     }
 
     /// Special override to toggle the visibility of the git directory and to apply `--exclude`.
@@ -526,49 +459,9 @@ impl Context {
         Ok(builder.build()?)
     }
 
-    /// Hides hidden entries except those matching `--include`. Used instead of the walker's own
-    /// hidden-entry filter, which cannot make exceptions, when `--include` is given without
-    /// `--hidden`.
-    pub fn include_predicate(&self) -> Predicate {
-        let mut builder = OverrideBuilder::new(self.dir_canonical());
-
-        for glob in &self.include {
-            builder.add(glob.trim_start_matches('!'))?;
-        }
-
-        let include = builder.build()?;
-
-        Ok(Box::new(move |dir_entry: &Entry<'_>| {
-            let is_dir = dir_entry.file_type().is_dir();
-
-            dir_entry.depth() == 0
-                || !dir_entry.is_hidden()
-                || include.matched(dir_entry.path(), is_dir).is_whitelist()
-        }))
-    }
-
     /// Answers whether disk usage is asked to be reported in bytes.
     pub const fn byte_metric(&self) -> bool {
         matches!(self.disk_usage, DiskUsage::Logical | DiskUsage::Physical)
-    }
-
-    /// Do any of the components of a path match the provided glob? This is used for ensuring that
-    /// all children of a directory that a glob targets gets captured.
-    #[inline]
-    fn ancestor_glob_match(path: &Path, ovr: &Override, skip: usize) -> bool {
-        path.components()
-            .rev()
-            .skip(skip)
-            .any(|c| ovr.matched(c, false).is_whitelist())
-    }
-
-    /// Like [`Self::ancestor_glob_match`] except uses [Regex] rather than [Override].
-    #[inline]
-    fn ancestor_regex_match(path: &Path, re: &Regex, skip: usize) -> bool {
-        path.components()
-            .rev()
-            .skip(skip)
-            .any(|comp| re.is_match(comp.as_os_str().to_string_lossy().borrow()))
     }
 
     /// The default number of threads to use for disk-reads and parallel processing. The answer is
@@ -610,5 +503,84 @@ impl Context {
     #[cfg(not(target_os = "macos"))]
     const fn performance_cores() -> Option<usize> {
         None
+    }
+}
+
+/// What `--pattern` matches: a regular expression against entry names, or a glob (rooted at
+/// the root, optionally negated with a leading `!`) against entry paths.
+enum Pattern {
+    Regex(Regex),
+    Glob { ovr: Override, negated: bool },
+}
+
+impl Pattern {
+    /// Does the entry itself match: its name for a regex, its path for a glob?
+    fn leaf(&self, entry: &Entry<'_>) -> bool {
+        match self {
+            Self::Regex(re) => re.is_match(&entry.file_name().to_string_lossy()),
+            Self::Glob { ovr, negated } => {
+                ovr.matched(entry.path(), false).is_whitelist() != *negated
+            },
+        }
+    }
+
+    /// Does any component of the entry's path below the root, after dropping the last `skip`,
+    /// match? A negated glob holds when none does. An entry at depth `d` has `d` components
+    /// below the root.
+    fn ancestors(&self, entry: &Entry<'_>, skip: usize) -> bool {
+        let mut below_root = entry
+            .path()
+            .components()
+            .rev()
+            .take(entry.depth())
+            .skip(skip);
+
+        match self {
+            Self::Regex(re) => {
+                below_root.any(|c| re.is_match(c.as_os_str().to_string_lossy().borrow()))
+            },
+            Self::Glob { ovr, negated } => {
+                below_root.any(|c| ovr.matched(c, false).is_whitelist()) != *negated
+            },
+        }
+    }
+}
+
+/// Decides which walked entries are kept; built by [`Context::entry_filter`].
+pub struct EntryFilter {
+    /// With [`Context::include_hidden`]: the `--include` globs, which hidden entries must match.
+    include: Option<Override>,
+    /// `--pattern` and `--file-type`.
+    pattern: Option<(Pattern, file::Type)>,
+}
+
+impl EntryFilter {
+    /// Whether `entry` is kept (and, for a directory, descended into). With `--file-type dir`, an
+    /// entry is kept when it or a directory above it (below the root) matches. Otherwise
+    /// directories are always kept, since matched files are bridged back to the root through
+    /// them; empty directories are pruned later by [`Tree`].
+    ///
+    /// [`Tree`]: crate::tree::Tree
+    pub fn keep(&self, entry: &Entry<'_>) -> bool {
+        let kind = entry.file_type();
+
+        if let Some(include) = &self.include
+            && entry.is_hidden()
+            && !include.matched(entry.path(), kind.is_dir()).is_whitelist()
+        {
+            return false;
+        }
+
+        let Some((pattern, file_type)) = &self.pattern else {
+            return true;
+        };
+
+        match file_type {
+            file::Type::Dir => pattern.ancestors(entry, usize::from(!kind.is_dir())),
+            _ if kind.is_dir() => true,
+            file::Type::File if !kind.is_file() => false,
+            file::Type::Link if !kind.is_symlink() => false,
+            _ => pattern.leaf(entry),
+        }
     }
 }

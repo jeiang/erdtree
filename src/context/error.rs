@@ -17,9 +17,6 @@ pub enum Error {
     #[error("{0}")]
     InvalidRegularExpression(#[from] RegexError),
 
-    #[error("Missing '--pattern' argument")]
-    PatternNotProvided,
-
     #[error("{0}")]
     Toml(#[from] TomlError),
 

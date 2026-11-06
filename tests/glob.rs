@@ -1,6 +1,53 @@
 use indoc::indoc;
+use std::fs;
+use tempfile::TempDir;
 
 mod utils;
+
+/// A root `dreamroot/foo` whose parent matches `dream*`, holding `dreamy/c.txt`, `other/b.txt`
+/// and `sub/a.txt`.
+fn dream_parent() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("dreamroot/foo");
+    for file in ["dreamy/c.txt", "other/b.txt", "sub/a.txt"] {
+        let path = root.join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "").unwrap();
+    }
+    dir
+}
+
+/// Paths of the shown entries below `dreamroot/foo`, root excluded, sorted.
+fn shown_below_dream_parent(dir: &TempDir, args: &[&str]) -> Vec<String> {
+    let root = dir.path().join("dreamroot/foo");
+    let mut all = vec!["--layout", "iflat", "--suppress-size", "--no-report"];
+    all.extend_from_slice(args);
+    all.push(root.to_str().unwrap());
+
+    let mut paths = utils::run_cmd(&all)
+        .lines()
+        .skip(1)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+/// `--file-type dir` matches directories below the root only, not the root's ancestors.
+#[test]
+fn glob_with_filetype_ignores_ancestors_of_root() {
+    let dir = dream_parent();
+    let args = ["--glob", "--file-type", "dir", "--pattern"];
+
+    assert_eq!(
+        shown_below_dream_parent(&dir, &[&args[..], &["dream*"]].concat()),
+        ["dreamy", "dreamy/c.txt"]
+    );
+    assert_eq!(
+        shown_below_dream_parent(&dir, &[&args[..], &["!dream*"]].concat()),
+        ["other", "other/b.txt", "sub", "sub/a.txt"]
+    );
+}
 
 #[test]
 fn glob() {
