@@ -48,30 +48,26 @@ impl StyleIndex {
 /// What to collect per entry, derived once from [`Context`].
 #[derive(Clone, Copy)]
 pub struct Probe {
-    pub disk_usage: DiskUsage,
-    pub suppress_size: bool,
-    pub follow: bool,
-    pub modified: bool,
-    pub accessed: bool,
-    pub created: bool,
+    disk_usage: DiskUsage,
+    suppress_size: bool,
+    follow: bool,
+    /// The timestamps read and collected.
+    fields: Fields,
     /// Depth up to which long-view owner, group and xattrs are read, if any.
     #[cfg(unix)]
-    pub long_level: Option<usize>,
+    long_level: Option<usize>,
     /// Collect `ino` and `nlink` of every entry (long view).
-    pub inodes: bool,
+    #[cfg(unix)]
+    inodes: bool,
     /// Collect the mode of every entry: the long view shows it and `--classify` marks
     /// executables.
     #[cfg(unix)]
-    pub mode: bool,
+    mode: bool,
 }
 
 impl Probe {
     pub const fn fields(self) -> Fields {
-        Fields {
-            modified: self.modified,
-            accessed: self.accessed,
-            created: self.created,
-        }
+        self.fields
     }
 
     /// Whether sizes come from reading every file (`--disk-usage line` and `word`).
@@ -97,15 +93,15 @@ impl Probe {
             disk_usage: ctx.disk_usage,
             suppress_size: ctx.suppress_size,
             follow: ctx.follow,
-            modified: long_mod || by == sort::By::Modified,
-            accessed: long_access || by == sort::By::Accessed,
-            created: long_create || by == sort::By::Created,
+            fields: Fields {
+                modified: long_mod || by == sort::By::Modified,
+                accessed: long_access || by == sort::By::Accessed,
+                created: long_create || by == sort::By::Created,
+            },
             #[cfg(unix)]
             long_level: ctx.long.then(|| ctx.level()),
             #[cfg(unix)]
             inodes: ctx.long,
-            #[cfg(not(unix))]
-            inodes: false,
             #[cfg(unix)]
             mode: ctx.long || ctx.classify,
         }
@@ -149,6 +145,7 @@ pub struct Columns {
     /// Identities ([`Inode::id`]) of inodes with more than one link, for hard-link deduplication.
     pub multi_linked: Vec<(u32, (u64, u64))>,
     /// Inode of every entry; only with [`Probe::inodes`].
+    #[cfg(unix)]
     pub inode: Vec<Option<Inode>>,
     /// Symlink targets by entry index, in ascending order for [`Self::link_target`]'s binary
     /// search.
@@ -264,6 +261,7 @@ impl Sink for Collector {
             self.cols.multi_linked.push((index, inode.id()));
         }
 
+        #[cfg(unix)]
         if probe.inodes {
             self.cols.inode.push(inode);
         }
@@ -276,13 +274,13 @@ impl Sink for Collector {
 
         let cols = &mut self.cols;
 
-        if probe.modified {
+        if probe.fields.modified {
             cols.modified.push(stat.modified);
         }
-        if probe.accessed {
+        if probe.fields.accessed {
             cols.accessed.push(stat.accessed);
         }
-        if probe.created {
+        if probe.fields.created {
             cols.created.push(stat.created);
         }
 
@@ -506,26 +504,17 @@ impl Columns {
         }
 
         // Columns only some options collect (the long view, time sorts) are empty otherwise.
-        if rest.iter().any(|s| {
-            !s.inode.is_empty()
-                || !s.modified.is_empty()
-                || !s.accessed.is_empty()
-                || !s.created.is_empty()
-        }) {
-            let (inode, modified, accessed, created) = (
-                &mut merged.inode,
+        if rest
+            .iter()
+            .any(|s| !s.modified.is_empty() || !s.accessed.is_empty() || !s.created.is_empty())
+        {
+            let (modified, accessed, created) = (
                 &mut merged.modified,
                 &mut merged.accessed,
                 &mut merged.created,
             );
-            let (i, m, a, c) = (
-                others!(inode),
-                others!(modified),
-                others!(accessed),
-                others!(created),
-            );
+            let (m, a, c) = (others!(modified), others!(accessed), others!(created));
             jobs.push(Box::new(move || {
-                append_all(inode, i);
                 append_all(modified, m);
                 append_all(accessed, a);
                 append_all(created, c);
@@ -534,11 +523,12 @@ impl Columns {
         #[cfg(unix)]
         if rest
             .iter()
-            .any(|s| !s.mode.is_empty() || !s.long.is_empty())
+            .any(|s| !s.inode.is_empty() || !s.mode.is_empty() || !s.long.is_empty())
         {
-            let (mode, long) = (&mut merged.mode, &mut merged.long);
-            let (m, l) = (others!(mode), others!(long));
+            let (inode, mode, long) = (&mut merged.inode, &mut merged.mode, &mut merged.long);
+            let (i, m, l) = (others!(inode), others!(mode), others!(long));
             jobs.push(Box::new(move || {
+                append_all(inode, i);
                 append_all(mode, m);
                 append_all(long, l);
             }));
@@ -656,10 +646,9 @@ fn size(probe: Probe, record: &Record<'_>, file_type: Kind, scratch: &mut Vec<u8
 #[cfg(test)]
 mod test {
     use super::{Columns, ParentRun, StyleIndex};
-    use crate::{
-        fs::{inode::Inode, stat::Kind},
-        walk::NodeRef,
-    };
+    #[cfg(unix)]
+    use crate::fs::inode::Inode;
+    use crate::{fs::stat::Kind, walk::NodeRef};
     use nu_ansi_term::{Color, Style};
     use std::{
         path::PathBuf,
@@ -725,6 +714,7 @@ mod test {
                 .step_by(3)
                 .map(|k| (u32::try_from(k).unwrap(), (tag(id, k), 1)))
                 .collect(),
+            #[cfg(unix)]
             inode: (0..len)
                 .map(|k| Some(Inode::new(tag(id, k), 2, 1)))
                 .collect(),
@@ -840,8 +830,8 @@ mod test {
                                 u32::try_from(k).unwrap()
                             )
                         );
+                        assert_eq!(merged.inode[at].map(Inode::id), Some((2, tag(id, k))));
                     }
-                    assert_eq!(merged.inode[at].map(Inode::id), Some((2, tag(id, k))));
                     assert_eq!(merged.modified[at], Some(stamp(id, k, 0)));
                     assert_eq!(merged.accessed[at], Some(stamp(id, k, 1)));
                     assert_eq!(merged.created[at], Some(stamp(id, k, 2)));

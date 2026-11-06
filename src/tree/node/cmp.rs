@@ -49,7 +49,7 @@ pub struct Sorter<'a> {
     ties: Ties<'a>,
 
     /// Compares by the sort type and `--dir-order`, built once.
-    cmp: Box<NodeComparator>,
+    comparator: Box<NodeComparator>,
 
     /// Set when a key had to clamp its value, so that unequal nodes may share a key.
     clamped: AtomicBool,
@@ -66,7 +66,7 @@ impl<'a> Sorter<'a> {
             direction,
             dir_order,
             ties,
-            cmp: comparator(by, direction, dir_order),
+            comparator: comparator(by, direction, dir_order),
             clamped: AtomicBool::new(false),
         }
     }
@@ -124,7 +124,7 @@ impl<'a> Sorter<'a> {
         let by_sort = if exact {
             Ordering::Equal
         } else {
-            (self.cmp)(node_a, node_b)
+            (self.comparator)(node_a, node_b)
         };
 
         match self.ties {
@@ -471,7 +471,7 @@ mod test {
                         };
                         let expected = |a: u32, b: u32| {
                             let (node_a, node_b) = (node(a), node(b));
-                            (sorter.cmp)(node_a, node_b).then_with(|| match ties {
+                            (sorter.comparator)(node_a, node_b).then_with(|| match ties {
                                 Ties::Name => node_a.file_name().cmp(node_b.file_name()),
                                 Ties::Position(_) => a.cmp(&b),
                             })

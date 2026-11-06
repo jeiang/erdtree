@@ -5,13 +5,13 @@
 
 use super::{
     id::{NONE, id, ix},
-    psort::{self, Key, PAR_SORT_MIN, sort_keyed_par, sort_keyed_seq},
+    psort::{self, Key, sort_keyed_seq},
 };
 use crate::par::{run_parts, split};
 use std::cmp::Ordering;
 
-/// Lists with more entries than this are sorted by all threads together; shorter ones by one
-/// thread each.
+/// Lists with more entries than this are sorted by [`psort::sort_keyed`] with all threads;
+/// shorter ones by one thread each.
 const BIG_RUN: usize = 1 << 15;
 
 /// Child lists totalling at most this many entries are sorted on the calling thread.
@@ -79,7 +79,7 @@ pub struct Children {
     list: Vec<u32>,
 
     /// Parents with at least two children, in increasing order of start.
-    runs: Vec<u32>,
+    multi: Vec<u32>,
 }
 
 impl Children {
@@ -128,11 +128,7 @@ impl Children {
 
         list.truncate(ix(sum));
 
-        Self {
-            end,
-            list,
-            runs: multi,
-        }
+        Self { end, list, multi }
     }
 
     #[inline]
@@ -174,7 +170,8 @@ impl Children {
     }
 
     /// [`Self::sort_each`] with the size thresholds as parameters: totals up to `inline_max`
-    /// entries are sorted on the calling thread, lists longer than `big_run` by all threads.
+    /// entries are sorted on the calling thread, lists longer than `big_run` one at a time by
+    /// [`psort::sort_keyed`] with all threads.
     fn sort_each_with(
         &mut self,
         threads: usize,
@@ -187,7 +184,7 @@ impl Children {
         let end = &self.end;
         let range = |p: u32| range_of(end, p);
         let len = |p: u32| range(p).len();
-        let work: Vec<u32> = self.runs.iter().copied().filter(|&p| wanted(p)).collect();
+        let work: Vec<u32> = self.multi.iter().copied().filter(|&p| wanted(p)).collect();
         let total: usize = work.iter().map(|&p| len(p)).sum();
         let threads = threads.max(1);
         let (key, cmp) = (&key, &cmp);
@@ -243,7 +240,7 @@ impl Children {
         });
 
         for &p in &big {
-            sort_keyed_par(&mut self.list[range(p)], threads, 0, key, cmp);
+            psort::sort_keyed(&mut self.list[range(p)], threads, key, cmp);
         }
     }
 }
@@ -355,7 +352,7 @@ pub fn dedupe<K: Ord + Copy + Send + Sync>(
     let mut uncounted = vec![];
 
     // By key, then node: a total order, so the unstable sort has one result.
-    psort::sort_by(linked, threads, PAR_SORT_MIN, |(a, ka), (b, kb)| {
+    psort::sort_by(linked, threads, |(a, ka), (b, kb)| {
         ka.cmp(kb).then_with(|| a.cmp(b))
     });
 
@@ -752,7 +749,7 @@ mod spec {
     /// `sort_each` sorts every wanted child list by the comparator and keeps its members, and
     /// leaves the other lists alone, for any number of threads, whichever way the lists are
     /// split between threads: `inline_max` and `big_run` choose the sequential, grouped and
-    /// whole-list parallel paths. The comparator is descending order and the key a coarse
+    /// whole-list paths. The comparator is descending order and the key a coarse
     /// version of it, so equal keys need the comparator to decide.
     #[cfg(test)]
     pub fn sort_each_sorts_every_list(
