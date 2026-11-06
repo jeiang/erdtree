@@ -6,11 +6,26 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const ERDTREE_CONFIG_TOML: &str = ".erdtree.toml";
+const ERDTREE_TOML_PATH: &str = "ERDTREE_TOML_PATH";
+
+const ERDTREE_DIR: &str = "erdtree";
+
+#[cfg(unix)]
+const CONFIG_DIR: &str = ".config";
+
+#[cfg(unix)]
+const HOME: &str = "HOME";
+
+#[cfg(unix)]
+const XDG_CONFIG_HOME: &str = "XDG_CONFIG_HOME";
+
 /// Errors associated with loading and parsing the toml config file.
 pub mod error;
 
 /// Testing related to `.erdtree.toml`.
-pub mod test;
+#[cfg(test)]
+mod test;
 
 /// Represents an instruction on how to handle a single key-value pair, which makes up a single
 /// command-line argument, when constructing the arguments vector.
@@ -103,9 +118,7 @@ pub fn load() -> Result<Option<Config>, Error> {
 /// - `$HOME/.erdtree.toml`
 #[cfg(unix)]
 fn candidates() -> Vec<PathBuf> {
-    use super::{CONFIG_DIR, ERDTREE_CONFIG_TOML, ERDTREE_DIR, HOME, XDG_CONFIG_HOME};
-
-    let mut paths: Vec<PathBuf> = env::var_os(super::ERDTREE_TOML_PATH)
+    let mut paths: Vec<PathBuf> = env::var_os(ERDTREE_TOML_PATH)
         .map(PathBuf::from)
         .into_iter()
         .collect();
@@ -129,9 +142,7 @@ fn candidates() -> Vec<PathBuf> {
 /// - `%APPDATA%\erdtree\{.erdtree.toml,erdtree.toml,config.toml}`
 #[cfg(windows)]
 fn candidates() -> Vec<PathBuf> {
-    use super::ERDTREE_DIR;
-
-    env::var_os(super::ERDTREE_TOML_PATH)
+    env::var_os(ERDTREE_TOML_PATH)
         .map(PathBuf::from)
         .into_iter()
         .chain(
@@ -144,7 +155,7 @@ fn candidates() -> Vec<PathBuf> {
 
 /// Config file names accepted inside an `erdtree` config directory, in lookup order.
 fn in_erdtree_dir(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
-    [super::ERDTREE_CONFIG_TOML, "erdtree.toml", "config.toml"]
+    [ERDTREE_CONFIG_TOML, "erdtree.toml", "config.toml"]
         .map(|name| dir.join(name))
         .into_iter()
 }

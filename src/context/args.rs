@@ -187,10 +187,10 @@ fn validate(
 /// Loads an [`ArgMatches`] from `.erdtree.toml`, or `None` if there is no such file.
 #[inline]
 fn load_toml_config_args(named_table: Option<&str>) -> Result<Option<ArgMatches>, Error> {
-    let Some(toml_config) = config::toml::load()? else {
+    let Some(toml_config) = config::load()? else {
         return Ok(None);
     };
-    let parsed_args = config::toml::parse(toml_config, named_table)?;
+    let parsed_args = config::parse(toml_config, named_table)?;
     let config_args = Context::command()
         .try_get_matches_from(parsed_args)
         .map_err(Error::Config)?;

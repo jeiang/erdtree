@@ -1,4 +1,4 @@
-use super::config::toml::error::Error as TomlError;
+use super::config::error::Error as TomlError;
 use clap::{Error as ClapError, parser::MatchesError};
 use ignore::Error as IgnoreError;
 use regex::Error as RegexError;
