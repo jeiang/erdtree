@@ -1,3 +1,5 @@
+use super::{DEFAULT_ICON, EXT_ICON_MAP, NAME_ICON_MAP, Rank};
+use crate::fs::stat::Kind;
 use std::{ffi::OsStr, path::Path};
 
 /// How a colored icon is painted.
@@ -12,37 +14,34 @@ pub enum Paint {
 
 /// Looks up the icon glyph and how to paint it.
 ///
-/// The precedent from highest to lowest in terms of which parameters determine the icon used
-/// is as followed: file-type, file-name with its own color, file-extension, and then
-/// file-name. If an icon cannot be computed the fall-back default icon is used. Without color
-/// the [`Paint`] does not apply.
+/// Directories and symlinks have icons of their own kind; other entries take the icon of their
+/// name ranked before the extension, of their extension, of their name ranked after the
+/// extension, or the default icon, in that order. Without color the [`Paint`] does not apply.
 ///
-/// `target` is the path of a symlink's target, whose extension is used for a symlink; otherwise the
+/// `target` is the path of a symlink's target, whose extension is used if given; otherwise the
 /// extension of the entry's name is.
-pub fn lookup(
-    is_dir: bool,
-    is_symlink: bool,
-    target: Option<&Path>,
-    file_name: &OsStr,
-) -> (&'static str, Paint) {
-    if let Some(icon) = super::icon_from_file_type(is_dir, is_symlink) {
-        return (icon, Paint::FileStyle);
+pub fn lookup(kind: Kind, target: Option<&Path>, file_name: &OsStr) -> (&'static str, Paint) {
+    match kind {
+        Kind::Dir => return ("\u{f413}", Paint::FileStyle),
+        Kind::Symlink => return ("\u{f482}", Paint::FileStyle),
+        _ => {},
     }
 
-    if let Some((code, icon)) = super::icon_from_colored_name(file_name) {
+    let name = NAME_ICON_MAP.get(file_name).copied();
+    if let Some((Rank::BeforeExt(code), icon)) = name {
         return (icon, Paint::Fixed(code));
     }
 
     let ext = target.map_or_else(|| name_extension(file_name), Path::extension);
-    if let Some((code, icon)) = ext.and_then(super::icon_from_ext) {
+    if let Some(&(code, icon)) = ext.and_then(|ext| EXT_ICON_MAP.get(ext)) {
         return (icon, Paint::Fixed(code));
     }
 
-    if let Some(icon) = super::icon_from_file_name(file_name) {
+    if let Some((Rank::AfterExt, icon)) = name {
         return (icon, Paint::FileStyle);
     }
 
-    let (code, icon) = super::DEFAULT_ICON;
+    let (code, icon) = DEFAULT_ICON;
     (icon, Paint::Fixed(code))
 }
 
@@ -59,32 +58,9 @@ pub fn name_extension(name: &OsStr) -> Option<&OsStr> {
     Some(unsafe { OsStr::from_encoded_bytes_unchecked(&bytes[dot + 1..]) })
 }
 
-/// Appends `icon` painted with the 8-bit color `code`, as `Color::Fixed(code).paint(icon)` shows
-/// it.
-pub fn push_fixed(out: &mut Vec<u8>, code: u8, icon: &str) {
-    out.extend_from_slice(b"\x1b[38;5;");
-    crate::render::bytes::push_u64(out, u64::from(code));
-    out.push(b'm');
-    out.extend_from_slice(icon.as_bytes());
-    out.extend_from_slice(b"\x1b[0m");
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
-    use nu_ansi_term::Color;
-
-    #[test]
-    fn fixed_paint_matches_nu_ansi_term() {
-        for code in [0, 5, 66, 99, 100, 255] {
-            let mut out = vec![];
-            push_fixed(&mut out, code, "\u{e7a8}");
-            assert_eq!(
-                String::from_utf8(out).unwrap(),
-                Color::Fixed(code).paint("\u{e7a8}").to_string()
-            );
-        }
-    }
 
     #[test]
     fn extensions_match_path() {
@@ -118,33 +94,34 @@ mod test {
 
     #[test]
     fn precedence() {
-        let name = OsStr::new("Cargo.lock");
+        let rs = Some(Path::new("x.rs"));
 
         assert_eq!(
-            lookup(true, false, Some(Path::new("x.rs")), name).1,
-            Paint::FileStyle
+            lookup(Kind::Dir, rs, OsStr::new("x.rs")),
+            ("\u{f413}", Paint::FileStyle)
         );
         assert_eq!(
-            lookup(false, false, Some(Path::new("x.rs")), name),
+            lookup(Kind::Symlink, rs, OsStr::new("x.rs")),
+            ("\u{f482}", Paint::FileStyle)
+        );
+        // The extension of the target wins over a name ranked after it.
+        assert_eq!(
+            lookup(Kind::File, rs, OsStr::new("Dockerfile")),
             ("\u{e7a8}", Paint::Fixed(180))
         );
         assert_eq!(
-            lookup(false, false, None, name),
-            ("\u{f13e}", Paint::Fixed(250))
-        );
-        assert_eq!(
-            lookup(false, false, None, OsStr::new("Dockerfile")),
+            lookup(Kind::File, None, OsStr::new("Dockerfile")),
             ("\u{f308}", Paint::FileStyle)
         );
         assert_eq!(
-            lookup(false, false, None, OsStr::new("nothing")),
+            lookup(Kind::File, None, OsStr::new("nothing")),
             ("\u{f15b}", Paint::Fixed(66))
         );
     }
 
-    /// Whole names in the colored table win over their extension and over the plain name table.
+    /// Names ranked before the extension win over it.
     #[test]
-    fn colored_names() {
+    fn names_before_ext() {
         for (name, icon) in [
             ("config.ru", ("\u{e791}", Paint::Fixed(52))),
             ("test.js", ("\u{e60c}", Paint::Fixed(173))),
@@ -153,7 +130,21 @@ mod test {
             ("makefile", ("\u{e779}", Paint::Fixed(66))),
             ("other.js", ("\u{e60c}", Paint::Fixed(185))),
         ] {
-            assert_eq!(lookup(false, false, None, OsStr::new(name)), icon, "{name}");
+            assert_eq!(lookup(Kind::File, None, OsStr::new(name)), icon, "{name}");
+        }
+    }
+
+    /// A name ranked after the extension whose own extension has an icon could never match.
+    #[test]
+    fn names_after_ext_are_reachable() {
+        for (name, rank, _) in super::super::NAME_ICONS {
+            let name = OsStr::new(name);
+            if matches!(rank, Rank::AfterExt) {
+                assert!(
+                    name_extension(name).is_none_or(|ext| !EXT_ICON_MAP.contains_key(ext)),
+                    "{name:?}"
+                );
+            }
         }
     }
 }

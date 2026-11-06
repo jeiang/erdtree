@@ -84,6 +84,16 @@ pub fn push_str_padded(out: &mut Vec<u8>, s: &str, width: usize) {
     out.extend_from_slice(s.as_bytes());
 }
 
+/// Appends `icon` painted with the 8-bit color `code`, as `Color::Fixed(code).paint(icon)` shows
+/// it.
+pub fn push_fixed(out: &mut Vec<u8>, code: u8, icon: &str) {
+    out.extend_from_slice(b"\x1b[38;5;");
+    push_u64(out, u64::from(code));
+    out.push(b'm');
+    out.extend_from_slice(icon.as_bytes());
+    out.extend_from_slice(b"\x1b[0m");
+}
+
 /// Hints the CPU to load the cache line of `item`, if there is one. Rows of the flat layouts are
 /// in the order of a sort, so their data is scattered and each load waits for memory unless it is
 /// requested early.
@@ -118,6 +128,20 @@ pub fn push_lossy(out: &mut Vec<u8>, name: &OsStr) {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn fixed_paint_matches_nu_ansi_term() {
+        for code in [0, 5, 66, 99, 100, 255] {
+            let mut out = vec![];
+            push_fixed(&mut out, code, "\u{e7a8}");
+            assert_eq!(
+                String::from_utf8(out).unwrap(),
+                nu_ansi_term::Color::Fixed(code)
+                    .paint("\u{e7a8}")
+                    .to_string()
+            );
+        }
+    }
 
     #[test]
     fn numbers_match_display() {

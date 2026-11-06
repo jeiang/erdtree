@@ -2,7 +2,7 @@
 //! decided before the first row (colors, widths, which columns exist) is decided there.
 
 use super::{
-    bytes::{push_lossy, push_spaces, push_str_padded, push_u64_padded},
+    bytes::{push_fixed, push_lossy, push_spaces, push_str_padded, push_u64_padded},
     paths::DirPaths,
     prefix,
     theme::{Esc, StyleCache},
@@ -234,13 +234,10 @@ impl<'a> RowFmt<'a> {
 
     /// The icon of `node` in its colors.
     fn write_icon(&self, scratch: &mut Scratch, node: Node<'_>, out: &mut Vec<u8>) {
-        let name = node.file_name();
-        let file_type = node.file_type();
         let (glyph, paint) = icons::fs::lookup(
-            file_type.is_dir(),
-            file_type.is_symlink(),
+            node.file_type(),
             node.symlink_target_path(),
-            name,
+            node.file_name(),
         );
 
         if !self.color {
@@ -249,7 +246,7 @@ impl<'a> RowFmt<'a> {
         }
 
         match paint {
-            Paint::Fixed(code) => icons::fs::push_fixed(out, code, glyph),
+            Paint::Fixed(code) => push_fixed(out, code, glyph),
             Paint::FileStyle => match node.style().filter(|style| !style.is_plain()) {
                 Some(style) => {
                     let painter = scratch.styles.get(style);
