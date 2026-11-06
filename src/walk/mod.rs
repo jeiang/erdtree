@@ -13,13 +13,16 @@
 //! entries with their names (see [`crate::fs::at`], [`crate::fs::bulk`]). Elsewhere the walk
 //! uses `std::fs::read_dir`.
 
-use crate::fs::stat::{Fields, Kind, Stat};
+use crate::{
+    fs::stat::{Fields, Kind, Stat},
+    sync::unpoisoned,
+};
 use std::{
     ffi::{OsStr, OsString},
     fs, mem,
     path::{MAIN_SEPARATOR, Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex, PoisonError,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread,
@@ -336,7 +339,7 @@ fn run_worker<'scope, 'env, S, F>(
     F: Fn(u32) -> S + Sync + 'env,
 {
     let slot = &run.pool[sink_index];
-    let Some(sink) = slot.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+    let Some(sink) = unpoisoned(slot.lock()).take() else {
         return;
     };
 
@@ -362,7 +365,7 @@ fn run_worker<'scope, 'env, S, F>(
     };
     worker.run();
     mem::forget(guard);
-    *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(worker.sink);
+    *unpoisoned(slot.lock()) = Some(worker.sink);
 }
 
 /// Starts a thread for the worker with sink index `sink_index`, whose sink is in `run.pool`. A
@@ -408,9 +411,7 @@ impl Walker {
             .collect();
 
         let root_sink_index = u32::try_from(threads).unwrap_or(u32::MAX);
-        let root = pool[threads]
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
+        let root = unpoisoned(pool[threads].get_mut())
             .as_mut()
             .and_then(|sink| self.root_job(sink, root_sink_index));
 
@@ -446,7 +447,7 @@ impl Walker {
 
         // Every worker the walk had, and the root, put a sink in the first slots.
         pool.into_iter()
-            .filter_map(|slot| slot.into_inner().unwrap_or_else(PoisonError::into_inner))
+            .filter_map(|slot| unpoisoned(slot.into_inner()))
             .collect()
     }
 
@@ -624,9 +625,7 @@ where
         // exists before any worker starts, so a refused thread leaves no gap in the numbering.
         for index in have + 1..=want {
             let sink = (run.make_sink)(u32::try_from(index).unwrap_or(u32::MAX));
-            *run.pool[index]
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(sink);
+            *unpoisoned(run.pool[index].lock()) = Some(sink);
         }
 
         for index in have + 1..=want {
@@ -679,11 +678,7 @@ where
         let half = self.local.len() / 2;
         let given = self.local.drain(..half);
 
-        let mut queue = self
-            .shared
-            .queue
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut queue = unpoisoned(self.shared.queue.lock());
         queue.extend(given);
         drop(queue);
         self.shared.wake.notify_all();
@@ -697,11 +692,7 @@ where
             return Some(job);
         }
 
-        let mut queue = self
-            .shared
-            .queue
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut queue = unpoisoned(self.shared.queue.lock());
 
         loop {
             if self.shared.quit.load(Ordering::SeqCst) {
@@ -718,11 +709,7 @@ where
 
             self.shared.idle.fetch_add(1, Ordering::Relaxed);
             self.meter.waited();
-            queue = self
-                .shared
-                .wake
-                .wait(queue)
-                .unwrap_or_else(PoisonError::into_inner);
+            queue = unpoisoned(self.shared.wake.wait(queue));
             self.shared.idle.fetch_sub(1, Ordering::Relaxed);
         }
     }
@@ -835,11 +822,7 @@ where
     /// Queues `task` for an idle worker.
     fn give(&self, task: Task) {
         self.shared.pending.fetch_add(1, Ordering::AcqRel);
-        self.shared
-            .queue
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(task);
+        unpoisoned(self.shared.queue.lock()).push(task);
         self.shared.wake.notify_one();
     }
 

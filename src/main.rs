@@ -52,6 +52,9 @@ mod render;
 /// Global used throughout the program to paint the output.
 mod styles;
 
+/// Lock helpers shared by the threads of the walk, render and progress indicator.
+mod sync;
+
 /// Houses the primary data structures that are used to virtualize the filesystem, containing also
 /// information on how the tree output should be ultimately rendered.
 mod tree;
