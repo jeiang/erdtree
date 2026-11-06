@@ -1,7 +1,7 @@
 //! Paths of directories for the flat layouts, built once so that a row is a copy of its parent's
 //! path and its own name.
 
-use super::bytes::push_lossy;
+use crate::bytes::{prefetch, push_lossy};
 use crate::tree::{Tree, topo::ix};
 use std::path::MAIN_SEPARATOR;
 
@@ -82,14 +82,14 @@ impl DirPaths {
     /// Hints that the span of directory `id` is needed soon.
     #[inline]
     pub fn prefetch_span(&self, id: u32) {
-        super::bytes::prefetch(self.spans.get(2 * ix(id)));
+        prefetch(self.spans.get(2 * ix(id)));
     }
 
     /// Hints that the prefix of directory `id` is needed soon; after [`Self::prefetch_span`].
     #[inline]
     pub fn prefetch_prefix(&self, id: u32) {
         if let Some(&start) = self.spans.get(2 * ix(id)) {
-            super::bytes::prefetch(self.arena.get(start));
+            prefetch(self.arena.get(start));
         }
     }
 

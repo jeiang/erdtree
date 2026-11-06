@@ -1,5 +1,27 @@
 use clap::ValueEnum;
 
+/// Number of prefixes sizes are shown with, from none (bytes) up to tera.
+pub const PREFIXES: usize = 5;
+
+/// Unit names from bytes up: the shown ones and peta, which only `--min-size` takes.
+const BIN_UNITS: [&str; PREFIXES + 1] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+const SI_UNITS: [&str; PREFIXES + 1] = ["B", "KB", "MB", "GB", "TB", "PB"];
+
+/// The values of one unit of each prefix in [`BIN_UNITS`] or [`SI_UNITS`].
+const BIN_BASES: [u64; PREFIXES + 1] = powers(1024);
+const SI_BASES: [u64; PREFIXES + 1] = powers(1000);
+
+/// The powers of `step` from 1 up.
+const fn powers(step: u64) -> [u64; PREFIXES + 1] {
+    let mut table = [1; PREFIXES + 1];
+    let mut k = 1;
+    while k < table.len() {
+        table[k] = table[k - 1] * step;
+        k += 1;
+    }
+    table
+}
+
 /// Determines whether to use SI prefixes or binary prefixes.
 #[derive(Copy, Clone, Debug, ValueEnum, Default)]
 pub enum PrefixKind {
@@ -12,39 +34,48 @@ pub enum PrefixKind {
 }
 
 impl PrefixKind {
-    /// Position of the closest human-readable prefix of `value`, from 0 (bytes) to 4: the number
-    /// of times it reaches another power of 1024 (or 1000). Exact on integers, unlike a float
-    /// logarithm.
+    /// Position of the closest shown prefix of `value`, from 0 (bytes) to `PREFIXES - 1`: the
+    /// number of times it reaches another power of 1024 (or 1000). Exact on integers, unlike a
+    /// float logarithm.
     pub const fn index_of(self, value: u64) -> usize {
-        match self {
+        let index = match self {
             Self::Bin => match value.checked_ilog2() {
-                Some(bits) if bits >= 40 => 4,
                 Some(bits) => (bits / 10) as usize,
                 None => 0,
             },
             Self::Si => match value.checked_ilog10() {
-                Some(exp) if exp >= 12 => 4,
                 Some(exp) => (exp / 3) as usize,
                 None => 0,
             },
+        };
+        if index < PREFIXES {
+            index
+        } else {
+            PREFIXES - 1
         }
     }
 
-    /// The value of one unit of prefix `index` (at most 4), which is also the least value whose
-    /// [`Self::index_of`] is `index`.
+    /// The value of one unit of prefix `index` (at most [`PREFIXES`]), which is also the least
+    /// value whose [`Self::index_of`] is `index` for shown prefixes.
     pub const fn base(self, index: usize) -> u64 {
         match self {
-            Self::Bin => [1, 1 << 10, 1 << 20, 1 << 30, 1 << 40][index],
-            Self::Si => [1, 1_000, 1_000_000, 1_000_000_000, 1_000_000_000_000][index],
+            Self::Bin => BIN_BASES[index],
+            Self::Si => SI_BASES[index],
         }
     }
 
-    /// Unit names from bytes up, in the order of [`Self::index_of`].
-    pub const fn names(self) -> [&'static str; 5] {
+    /// Unit names from bytes up, in the order of [`Self::index_of`], and one more (peta) for
+    /// parsing.
+    pub const fn units(self) -> &'static [&'static str; PREFIXES + 1] {
         match self {
-            Self::Bin => ["B", "KiB", "MiB", "GiB", "TiB"],
-            Self::Si => ["B", "KB", "MB", "GB", "TB"],
+            Self::Bin => &BIN_UNITS,
+            Self::Si => &SI_UNITS,
         }
+    }
+
+    /// The shown unit names from bytes up, in the order of [`Self::index_of`].
+    pub fn names(self) -> &'static [&'static str] {
+        &self.units()[..PREFIXES]
     }
 }
 
@@ -95,10 +126,11 @@ mod test {
             assert_eq!(unit.base(0), 1);
             assert_eq!(unit.index_of(0), 0);
 
-            for i in 1..=4 {
+            for i in 1..PREFIXES {
                 assert_eq!(unit.index_of(unit.base(i)), i, "{unit:?} {i}");
                 assert_eq!(unit.index_of(unit.base(i) - 1), i - 1, "{unit:?} {i}");
             }
+            assert_eq!(unit.index_of(unit.base(PREFIXES)), PREFIXES - 1);
         }
     }
 

@@ -1,3 +1,4 @@
+use crate::disk_usage::units::PREFIXES;
 use lscolors::LsColors;
 use nu_ansi_term::{Color, Style};
 use std::{
@@ -60,7 +61,7 @@ pub struct Colors {
     pub ls: LsColors,
 
     /// Size colors by unit, from bytes up to tera.
-    pub du: [Style; 5],
+    pub du: [Style; PREFIXES],
 
     /// Style of the general use placeholder [`PLACEHOLDER`].
     pub placeholder: Style,

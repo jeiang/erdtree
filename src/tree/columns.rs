@@ -315,7 +315,7 @@ impl Columns {
     /// Hints that the columns that a row of entry `i` reads are needed soon.
     #[inline]
     pub fn prefetch_cols(&self, i: usize) {
-        use crate::render::bytes::prefetch;
+        use crate::bytes::prefetch;
 
         prefetch(self.name_end.get(i));
         prefetch(self.parent.get(i));
@@ -326,7 +326,7 @@ impl Columns {
     #[inline]
     pub fn prefetch_name(&self, i: usize) {
         if let Some(&end) = self.name_end.get(i) {
-            crate::render::bytes::prefetch(self.names.get(end - 1));
+            crate::bytes::prefetch(self.names.get(end - 1));
         }
     }
 
@@ -633,7 +633,7 @@ fn size(probe: Probe, record: &Record<'_>, file_type: Kind, scratch: &mut Vec<u8
         DiskUsage::Logical => Some(stat.size),
         // Unix: allocated blocks, which is what `filesize` reports for a Unix entry.
         #[cfg(unix)]
-        DiskUsage::Physical => Some(stat.blocks * 512),
+        DiskUsage::Physical => Some(stat.blocks * Stat::BLOCK_BYTES),
         #[cfg(not(unix))]
         DiskUsage::Physical => Some(filesize::file_real_size(record.path).unwrap_or(stat.size)),
         DiskUsage::Line => line_count::from_file(record.open().ok()?, hint, scratch),

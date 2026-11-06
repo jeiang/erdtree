@@ -142,7 +142,7 @@ pub struct Stat {
     pub mode: u32,
     /// Length in bytes.
     pub size: u64,
-    /// Number of 512-byte blocks allocated.
+    /// Number of [`Self::BLOCK_BYTES`]-byte blocks allocated.
     #[cfg(unix)]
     pub blocks: u64,
     #[cfg(unix)]
@@ -160,6 +160,10 @@ pub struct Stat {
 }
 
 impl Stat {
+    /// Size of the blocks that [`Self::blocks`] counts, whatever the file system's block size.
+    #[cfg(unix)]
+    pub const BLOCK_BYTES: u64 = 512;
+
     /// Reads `md`; only the timestamps in `fields` are converted.
     pub fn from_metadata(md: &Metadata, fields: Fields) -> Self {
         #[cfg(unix)]

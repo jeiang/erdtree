@@ -31,6 +31,9 @@ use tree::{Tree, count::FileCount};
 /// Operations to wrangle ANSI escaped strings.
 mod ansi;
 
+/// Decimal numbers, padding, lossy names and prefetch hints, written as bytes.
+mod bytes;
+
 /// CLI rules and definitions as well as context to be injected throughout the entire program.
 mod context;
 
@@ -58,9 +61,6 @@ mod tree;
 
 /// Utilities relating to interacting with tty properties.
 mod tty;
-
-/// Common utilities across all modules.
-mod utils;
 
 /// Parallel filesystem walk.
 mod walk;

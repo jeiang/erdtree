@@ -8,9 +8,6 @@ use std::{
     sync::{Condvar, Mutex, MutexGuard, PoisonError},
 };
 
-/// Byte-level building blocks of the row writer.
-pub mod bytes;
-
 /// Module containing all of the layout variants.
 pub mod layout;
 

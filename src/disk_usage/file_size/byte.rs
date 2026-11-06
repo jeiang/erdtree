@@ -1,5 +1,5 @@
 use super::super::units::PrefixKind;
-use crate::render::bytes::u64_into;
+use crate::bytes::u64_into;
 use std::io::{Cursor, Write};
 
 /// Formats sizes in bytes, in binary or SI units as `prefix_kind` says, human-readable or as
@@ -43,11 +43,10 @@ impl Metric {
         )
     }
 
-    /// Widths of the number and the unit of `value` bytes as displayed.
-    pub fn widths(self, value: u64) -> (usize, usize) {
+    /// Width of the number of `value` bytes as displayed.
+    pub fn width(self, value: u64) -> usize {
         let mut buf = [0; 32];
-        let (number, unit, _) = self.parts(value, &mut buf);
-        (number.len(), unit.len())
+        self.parts(value, &mut buf).0.len()
     }
 }
 

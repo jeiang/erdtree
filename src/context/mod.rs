@@ -45,9 +45,6 @@ pub mod file;
 /// For determining the output layout.
 pub mod layout;
 
-/// Utilities to print output.
-pub mod column;
-
 /// Printing order kinds.
 pub mod sort;
 
@@ -303,7 +300,7 @@ impl Context {
     /// A unit suffix on `--min-size` is meaningless for line, word, and block counts. This needs
     /// the merged `--disk-usage`, so it cannot be a [`clap`] value parser.
     fn validate_min_size(&self) -> Result<(), Error> {
-        if self.min_size.is_some_and(|min| min.has_unit) && !self.byte_metric() {
+        if self.min_size.is_some_and(|min| min.has_unit) && !self.disk_usage.is_bytes() {
             return Err(Error::ArgParse(Self::command().error(
                 ErrorKind::ValueValidation,
                 format!(
@@ -461,11 +458,6 @@ impl Context {
         }
 
         Ok(builder.build()?)
-    }
-
-    /// Answers whether disk usage is asked to be reported in bytes.
-    pub const fn byte_metric(&self) -> bool {
-        matches!(self.disk_usage, DiskUsage::Logical | DiskUsage::Physical)
     }
 
     /// The number of threads used by default and for `--threads 0`: the available parallelism,

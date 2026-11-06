@@ -2,29 +2,29 @@
 //! decided before the first row (colors, widths, which columns exist) is decided there.
 
 use super::{
-    bytes::{push_fixed, push_lossy, push_spaces, push_str_padded, push_u64_padded},
     paths::DirPaths,
     prefix,
     theme::{Esc, StyleCache},
 };
 use crate::{
     ansi::Escaped,
-    context::{Context, column},
+    bytes::{push_fixed, push_lossy, push_spaces, push_str_padded, push_u64_padded},
+    context::Context,
     disk_usage::{
         file_size::{DiskUsage, byte},
-        units::PrefixKind,
+        units::{PREFIXES, PrefixKind},
     },
     icons::{self, fs::Paint},
     styles,
-    tree::{Tree, node::Node},
+    tree::{Tree, node::Node, widths::Widths},
 };
 
 #[cfg(unix)]
 use super::long;
 #[cfg(unix)]
-use crate::disk_usage::file_size::BLOCK_SIZE_BYTES;
+use crate::fs::stat::Stat;
 
-/// How the size column is written.
+/// How the size column is written. Rows without a size show the placeholder in it.
 struct Size {
     width: usize,
     unit_width: usize,
@@ -34,37 +34,82 @@ struct Size {
     /// size in bytes.
     unit: PrefixKind,
 
-    /// Whether rows without a size still get a size column, holding the placeholder.
-    placeholder: bool,
     placeholder_esc: Option<Esc>,
 
     /// Sequences of the unit colors from bytes up; `None` without color.
-    du: Option<[Esc; 5]>,
+    du: Option<[Esc; PREFIXES]>,
 }
 
 impl Size {
-    fn new(ctx: &Context, widths: &column::Properties) -> Self {
-        let placeholder = !ctx.suppress_size && widths.max_size_width != 0;
+    /// The size column of `ctx` with `widths`, if there is one: only if some row has a size.
+    fn new(ctx: &Context, widths: &Widths) -> Option<Self> {
+        if !widths.sized {
+            return None;
+        }
         let colors = styles::colors();
 
-        Self {
+        Some(Self {
             width: widths.max_size_width,
             unit_width: widths.max_size_unit_width,
             disk_usage: ctx.disk_usage,
             human: ctx.human,
             unit: ctx.unit,
-            placeholder,
             placeholder_esc: colors.map(|colors| Esc::new(colors.placeholder)),
             du: colors.map(|colors| colors.du.map(Esc::new)),
-        }
+        })
     }
 
     /// Width of the size column: the number, then a space and the unit for byte metrics.
     const fn column_width(&self) -> usize {
-        match self.disk_usage {
-            DiskUsage::Logical | DiskUsage::Physical => self.width + 1 + self.unit_width,
-            _ => self.width,
+        if self.disk_usage.is_bytes() {
+            self.width + 1 + self.unit_width
+        } else {
+            self.width
         }
+    }
+
+    /// The size of `node`, or the placeholder if it has none.
+    fn write(&self, node: Node<'_>, out: &mut Vec<u8>) {
+        let Some(value) = node.size_value() else {
+            let esc = self.placeholder_esc.as_ref();
+            out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
+            push_spaces(out, self.column_width() - 1);
+            out.extend_from_slice(styles::PLACEHOLDER.as_bytes());
+            out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
+            return;
+        };
+
+        // The unit colors are present exactly with color.
+        let paint = |index: usize| self.du.as_ref().map(|du| &du[index]);
+
+        if self.disk_usage.is_bytes() {
+            let mut buf = [0; 32];
+            let (number, unit, index) =
+                byte::Metric::new(self.unit, self.human).parts(value, &mut buf);
+            let esc = paint(index);
+
+            out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
+            push_str_padded(out, number, self.width);
+            out.push(b' ');
+            push_str_padded(out, unit, self.unit_width);
+            out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
+            return;
+        }
+
+        // Counts take the color of bytes, except blocks, which take that of their size in bytes.
+        #[cfg(unix)]
+        let index = if matches!(self.disk_usage, DiskUsage::Block) {
+            self.unit.index_of(value * Stat::BLOCK_BYTES)
+        } else {
+            0
+        };
+        #[cfg(not(unix))]
+        let index = 0;
+
+        let esc = paint(index);
+        out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
+        push_u64_padded(out, value, self.width);
+        out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
     }
 }
 
@@ -88,7 +133,8 @@ pub struct RowFmt<'a> {
 
     /// The width to cut rows at, if they are cut.
     truncate_to: Option<usize>,
-    size: Size,
+    /// The size column; `None` if there is none.
+    size: Option<Size>,
     red: Esc,
 
     #[cfg(unix)]
@@ -131,7 +177,9 @@ impl<'a> RowFmt<'a> {
             out.push(b' ');
         }
 
-        self.write_size(node, out);
+        if let Some(size) = &self.size {
+            size.write(node, out);
+        }
         out.push(b' ');
         prefix(&mut scratch.cursor, out);
 
@@ -153,21 +201,16 @@ impl<'a> RowFmt<'a> {
         if let Some(long) = &self.long {
             long.write(&mut scratch.long, node, out);
 
-            // Three spaces, unless there is no size column.
-            let mark = out.len();
-            out.extend_from_slice(b"   ");
-            let sized = out.len();
-            self.write_size(node, out);
-            if out.len() == sized {
-                out.truncate(mark);
+            if let Some(size) = &self.size {
+                out.extend_from_slice(b"   ");
+                size.write(node, out);
             }
             out.push(b' ');
             return self.finish_flat(scratch, paths, id, node, out, start);
         }
 
-        let sized = out.len();
-        self.write_size(node, out);
-        if out.len() != sized {
+        if let Some(size) = &self.size {
+            size.write(node, out);
             out.extend_from_slice(b"   ");
         }
 
@@ -300,55 +343,5 @@ impl<'a> RowFmt<'a> {
             out.extend_from_slice(" \u{2192} ".as_bytes());
             push_lossy(out, target);
         }
-    }
-
-    /// The size column of `node`; nothing at all if rows without sizes have no column.
-    fn write_size(&self, node: Node<'_>, out: &mut Vec<u8>) {
-        let size = &self.size;
-
-        let Some(value) = node.size_value() else {
-            if size.placeholder {
-                let esc = size.placeholder_esc.as_ref();
-                out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
-                push_spaces(out, size.column_width() - 1);
-                out.extend_from_slice(styles::PLACEHOLDER.as_bytes());
-                out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
-            }
-            return;
-        };
-
-        // The unit colors are present exactly with color.
-        let paint = |index: usize| size.du.as_ref().map(|du| &du[index]);
-
-        match size.disk_usage {
-            DiskUsage::Logical | DiskUsage::Physical => {
-                let mut buf = [0; 32];
-                let (number, unit, index) =
-                    byte::Metric::new(size.unit, size.human).parts(value, &mut buf);
-                let esc = paint(index);
-
-                out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
-                push_str_padded(out, number, size.width);
-                out.push(b' ');
-                push_str_padded(out, unit, size.unit_width);
-                out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
-            },
-            DiskUsage::Line | DiskUsage::Word => {
-                self.write_unitless(value, paint(0), out);
-            },
-
-            #[cfg(unix)]
-            DiskUsage::Block => {
-                let bytes = value * u64::from(BLOCK_SIZE_BYTES);
-                self.write_unitless(value, paint(size.unit.index_of(bytes)), out);
-            },
-        }
-    }
-
-    /// A count right-aligned to the size column.
-    fn write_unitless(&self, value: u64, esc: Option<&Esc>, out: &mut Vec<u8>) {
-        out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
-        push_u64_padded(out, value, self.size.width);
-        out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
     }
 }
