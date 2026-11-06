@@ -8,6 +8,9 @@ use std::{
     sync::{Condvar, Mutex, MutexGuard, PoisonError},
 };
 
+/// Truncation of ANSI escaped rows.
+mod ansi;
+
 /// Module containing all of the layout variants.
 pub mod layout;
 

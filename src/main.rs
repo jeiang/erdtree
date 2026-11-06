@@ -28,9 +28,6 @@ use std::{
 };
 use tree::{Tree, count::FileCount};
 
-/// Operations to wrangle ANSI escaped strings.
-mod ansi;
-
 /// Decimal numbers, padding, lossy names and prefetch hints, written as bytes.
 mod bytes;
 
@@ -58,9 +55,6 @@ mod styles;
 /// Houses the primary data structures that are used to virtualize the filesystem, containing also
 /// information on how the tree output should be ultimately rendered.
 mod tree;
-
-/// Utilities relating to interacting with tty properties.
-mod tty;
 
 /// Parallel filesystem walk.
 mod walk;
