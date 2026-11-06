@@ -37,7 +37,7 @@ enum Rows<'a> {
     /// row's ancestors.
     Tree {
         inverted: bool,
-        glyphs: prefix::Glyphs<'a>,
+        themes: prefix::Themes<'a>,
     },
 
     /// Flat rows of the nodes `ids`, each the path of its parent directory in `paths` and its
@@ -56,7 +56,7 @@ impl<'a> Rows<'a> {
         };
         let tree_rows = |inverted| Self::Tree {
             inverted,
-            glyphs: prefix::Glyphs::new(theme, ctx.follow),
+            themes: prefix::Themes::new(theme, ctx.follow),
         };
 
         match ctx.layout {
@@ -88,13 +88,13 @@ impl<'a> Rows<'a> {
         out: &mut Vec<u8>,
     ) {
         match self {
-            Self::Tree { inverted, glyphs } => {
+            Self::Tree { inverted, themes } => {
                 let order = tree.order();
                 let last = order.len().saturating_sub(1);
 
                 for k in positions {
                     let id = order[if *inverted { k } else { last - k }];
-                    fmt.tree_row(scratch, id, glyphs, *inverted, out);
+                    fmt.tree_row(scratch, id, themes, *inverted, out);
                 }
             },
             Self::Flat { ids, paths } => {

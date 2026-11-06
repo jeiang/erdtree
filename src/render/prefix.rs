@@ -3,14 +3,14 @@
 
 use crate::{styles, tree::Tree};
 
-/// The glyphs of the prefixes: [`styles::Theme::tree`], and with `--follow`
+/// The glyph sets of the prefixes: that of [`styles::Theme::tree`], and with `--follow` that of
 /// [`styles::Theme::link`] for symlinks and everything below a symlink.
-pub struct Glyphs<'a> {
+pub struct Themes<'a> {
     tree: &'a styles::Glyphs,
     link: Option<&'a styles::Glyphs>,
 }
 
-impl<'a> Glyphs<'a> {
+impl<'a> Themes<'a> {
     pub fn new(theme: &'a styles::Theme, follow: bool) -> Self {
         Self {
             tree: &theme.tree,
@@ -61,7 +61,7 @@ impl Cursor {
         tree: &Tree,
         id: u32,
         depth: usize,
-        glyphs: &Glyphs<'_>,
+        themes: &Themes<'_>,
         inverted: bool,
         out: &mut Vec<u8>,
     ) {
@@ -92,11 +92,11 @@ impl Cursor {
         let mut inside = self.inside.last().copied().unwrap_or(false);
 
         for &ancestor in self.fresh.iter().rev() {
-            inside = glyphs.inside(tree, ancestor, inside);
+            inside = themes.inside(tree, ancestor, inside);
             let segment = if tree.is_last(ancestor) {
                 styles::SEP.as_bytes()
             } else {
-                &glyphs.get(inside).vt
+                &themes.get(inside).vt
             };
             self.chain.push(ancestor);
             self.inside.push(inside);
@@ -108,7 +108,7 @@ impl Cursor {
         let parent = depth - 1;
         let upto = parent.checked_sub(1).map_or(0, |k| self.ends[k]);
         let parent_inside = parent.checked_sub(1).is_some_and(|k| self.inside[k]);
-        let set = glyphs.get(glyphs.inside(tree, id, parent_inside));
+        let set = themes.get(themes.inside(tree, id, parent_inside));
 
         out.extend_from_slice(&self.bytes[..upto]);
         out.extend_from_slice(if !tree.is_last(id) {

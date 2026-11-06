@@ -91,8 +91,8 @@ pub fn push_str_padded(out: &mut Vec<u8>, s: &str, width: usize) {
 #[inline]
 pub fn prefetch<T>(item: Option<&T>) {
     if let Some(item) = item {
-        // SAFETY: a prefetch never faults and has no effect on memory.
-        #[allow(unused_unsafe)] // The intrinsic is safe to call from Rust 1.86 on.
+        // SAFETY: a prefetch never faults and has no effect on memory. The intrinsic is an
+        // unsafe `#[target_feature]` function on 1.88 (the MSRV) and still on 1.99.
         unsafe {
             std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(
                 std::ptr::from_ref(item).cast(),
