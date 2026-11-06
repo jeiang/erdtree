@@ -18,7 +18,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - An inode reached more than once (hard links, or a directory reached again through `--follow`) now always counts towards the directory of the entry not reached through a symlink, then of the entry with the least path. Before, the directory that got the size depended on the order in which directories were read. Totals are unchanged.
 - Entries that tie in a size or time sort are ordered by name; before, their order depended on the order in which directories were read.
 - The progress indicator no longer shows "Preparing output..."; output is streamed as soon as the walk finishes.
-- `--threads 0` (one thread per core) now applies to output too; before, output was formatted on one thread.
+- `--threads 0` now means the default thread count (the available CPU cores, at most the performance cores on macOS) and applies to output too; before, it meant every available core and output was formatted on one thread.
 
 ### Removed
 - The legacy `.erdtreerc` config file (deprecated since 3.x) and `$ERDTREE_CONFIG_PATH` are no longer read; an existing `.erdtreerc` is silently ignored. Move its options to `.erdtree.toml`.

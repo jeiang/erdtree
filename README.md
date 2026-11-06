@@ -209,7 +209,7 @@ Options:
           [default: none]
 
   -T, --threads <THREADS>
-          Number of threads to use; defaults to the number of available CPU cores, and the walk then adds threads while it waits on the file system
+          Number of threads to use; defaults to the number of available CPU cores (performance cores on macOS), as does 0; without this option the walk adds threads while it waits on the file system
 
   -u, --unit <UNIT>
           Report disk usage in binary or SI units
@@ -880,7 +880,7 @@ If, however, the default behavior doesn't suit your needs you have control over 
 The amount of threads used by `erdtree` can be adjusted with the following:
 
 ```
--T, --threads <THREADS>          Number of threads to use; defaults to the number of available CPU cores, and the walk then adds threads while it waits on the file system
+-T, --threads <THREADS>          Number of threads to use; defaults to the number of available CPU cores (performance cores on macOS), as does 0; without this option the walk adds threads while it waits on the file system
 ```
 
 #### Why parallelism

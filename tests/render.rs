@@ -96,7 +96,8 @@ fn threads_print_the_same_as_one() {
     }
 }
 
-/// `--threads 0` means one thread per core, in every phase, and prints what one thread prints.
+/// `--threads 0` means the default thread count, in every phase, and prints what one thread
+/// prints.
 #[test]
 fn zero_threads_print_the_same_as_one() {
     let dir = big_tree();
