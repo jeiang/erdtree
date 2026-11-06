@@ -9,7 +9,7 @@ impl Layout for Inverted {
     /// The tree with the root at the top, nodes in pre-order.
     fn rows(tree: &Tree, ctx: &Context) -> Rows {
         if ctx.follow {
-            Rows::Plan(plan(tree, ctx))
+            Rows::Prefixed(plan(tree, ctx))
         } else {
             Rows::Tree {
                 reverse: false,
@@ -24,7 +24,7 @@ impl Layout for Inverted {
 fn plan(tree: &Tree, ctx: &Context) -> Plan {
     let level = ctx.level();
     let order = tree.order();
-    let mut plan = Plan::with_capacity(order.len(), true);
+    let mut plan = Plan::with_capacity(order.len());
 
     plan.push_with_prefix(tree.root(), [""]);
 

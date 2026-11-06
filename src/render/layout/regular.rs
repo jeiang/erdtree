@@ -9,7 +9,7 @@ impl Layout for Regular {
     /// The tree upside down: nodes in reverse pre-order, root last.
     fn rows(tree: &Tree, ctx: &Context) -> Rows {
         if ctx.follow {
-            Rows::Plan(plan(tree, ctx))
+            Rows::Prefixed(plan(tree, ctx))
         } else {
             Rows::Tree {
                 reverse: true,
@@ -27,7 +27,7 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
     let root = tree.root();
     let max_depth = ctx.level();
     let order = tree.order();
-    let mut plan = Plan::with_capacity(order.len(), true);
+    let mut plan = Plan::with_capacity(order.len());
 
     let glyphs = theme::GlyphCache::new();
     let mut get_theme = theme::link_theme_getter();

@@ -162,13 +162,7 @@ impl<'a> RowFmt<'a> {
     }
 
     /// Appends the row of node `id` of a flat layout.
-    pub fn flat_row(
-        &self,
-        scratch: &mut Scratch,
-        paths: Option<&DirPaths>,
-        id: u32,
-        out: &mut Vec<u8>,
-    ) {
+    pub fn flat_row(&self, scratch: &mut Scratch, paths: &DirPaths, id: u32, out: &mut Vec<u8>) {
         let start = out.len();
         let node = self.tree.node(id);
 
@@ -201,7 +195,7 @@ impl<'a> RowFmt<'a> {
     fn finish_flat(
         &self,
         scratch: &mut Scratch,
-        paths: Option<&DirPaths>,
+        paths: &DirPaths,
         id: u32,
         node: Node<'_>,
         out: &mut Vec<u8>,
@@ -244,11 +238,11 @@ impl<'a> RowFmt<'a> {
     }
 
     /// The path of `node` below the root, or the name of the root for the root: the path of its
-    /// parent directory and its name. Without `paths` only the name is written.
-    fn write_relative_path(&self, paths: Option<&DirPaths>, id: u32, out: &mut Vec<u8>) {
+    /// parent directory and its name.
+    fn write_relative_path(&self, paths: &DirPaths, id: u32, out: &mut Vec<u8>) {
         let tree = self.tree;
 
-        if let Some(paths) = paths.filter(|_| id != tree.root()) {
+        if id != tree.root() {
             out.extend_from_slice(paths.prefix(tree.parent(id)));
         }
 
