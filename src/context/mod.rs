@@ -177,7 +177,7 @@ pub struct Context {
     #[arg(long, value_enum, default_value_t)]
     pub dir_order: dir::Order,
 
-    /// Number of threads to use; defaults to the number of available CPU cores, and the walk then adds threads while it waits on the file system
+    /// Number of threads to use; defaults to the number of available CPU cores (performance cores on macOS), as does 0; without this option the walk adds threads while it waits on the file system
     #[arg(short = 'T', long, default_value_t = Context::num_threads(), hide_default_value = true)]
     pub threads: usize,
 
@@ -275,28 +275,29 @@ impl Context {
     /// Initializes [Context], optionally reading in the configuration file to override defaults.
     /// Arguments provided will take precedence over config.
     pub fn try_init() -> Result<Self, Error> {
-        Self::compute_args().and_then(|mut args| {
-            let no_color_env = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
-            let threads_explicit = args.value_source("threads") == Some(ValueSource::CommandLine);
-            let mut ctx = Self::from_arg_matches_mut(&mut args).map_err(Error::Config)?;
-            ctx.threads_explicit = threads_explicit;
-            ctx.no_color_env = no_color_env;
+        let no_color_env = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+        Self::compute_args().and_then(|args| Self::from_merged(args, no_color_env))
+    }
 
-            // `--threads 0` means one thread per core.
-            if ctx.threads == 0 {
-                ctx.threads =
-                    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-            }
+    /// Builds [Context] from the merged command-line and config matches.
+    fn from_merged(mut args: clap::ArgMatches, no_color_env: bool) -> Result<Self, Error> {
+        let threads_explicit = args.value_source("threads") == Some(ValueSource::CommandLine);
+        let mut ctx = Self::from_arg_matches_mut(&mut args).map_err(Error::Config)?;
+        ctx.threads_explicit = threads_explicit;
+        ctx.no_color_env = no_color_env;
 
-            ctx.validate_min_size()?;
+        if ctx.threads == 0 {
+            ctx.threads = Self::num_threads();
+        }
 
-            if ctx.summarize {
-                ctx.level = Some(0);
-                ctx.no_report = true;
-            }
+        ctx.validate_min_size()?;
 
-            Ok(ctx)
-        })
+        if ctx.summarize {
+            ctx.level = Some(0);
+            ctx.no_report = true;
+        }
+
+        Ok(ctx)
     }
 
     /// A unit suffix on `--min-size` is meaningless for line, word, and block counts. This needs
@@ -467,9 +468,10 @@ impl Context {
         matches!(self.disk_usage, DiskUsage::Logical | DiskUsage::Physical)
     }
 
-    /// The default number of threads to use for disk-reads and parallel processing. The answer is
-    /// cached because `available_parallelism` costs about ten syscalls on Linux (cgroup files) and
-    /// clap evaluates the default at every command build.
+    /// The number of threads used by default and for `--threads 0`: the available parallelism,
+    /// capped at the performance cores. The answer is cached because `available_parallelism`
+    /// costs about ten syscalls on Linux (cgroup files) and clap evaluates the default at every
+    /// command build.
     pub fn num_threads() -> usize {
         static THREADS: OnceLock<usize> = OnceLock::new();
         *THREADS.get_or_init(|| {

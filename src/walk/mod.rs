@@ -171,6 +171,7 @@ pub struct Walker {
     pub follow_links: bool,
     pub same_file_system: bool,
     pub max_depth: Option<usize>,
+    /// Workers the walk starts with; at least 1 (`Context::try_init` resolves `--threads 0`).
     pub threads: usize,
     /// Most workers the walk may have. It starts with `threads` and adds workers while they wait
     /// for the file system (a cold cache, a network file system). `threads` or less keeps the
@@ -386,7 +387,7 @@ where
 impl Walker {
     /// Most workers a walk may have.
     fn max_workers(&self) -> usize {
-        self.threads.max(1).max(self.max_threads)
+        self.threads.max(self.max_threads)
     }
 
     /// Walks the tree. `make_sink(i)` creates the sink with index `i`; the root record goes to
@@ -398,7 +399,7 @@ impl Walker {
         make_sink: F,
         progress: Option<&AtomicU64>,
     ) -> Vec<S> {
-        let threads = self.threads.max(1);
+        let threads = self.threads;
 
         // The pool has room for the sinks of extra workers too.
         let mut pool: Vec<Mutex<Option<S>>> = (0..=self.max_workers())
@@ -643,7 +644,7 @@ where
     /// Starts the next worker that has not started yet, if there is one. Returns whether it did.
     fn start_helper(&self) -> bool {
         let run = self.run;
-        let threads = self.walker.threads.max(1);
+        let threads = self.walker.threads;
 
         if run.next.load(Ordering::Relaxed) >= threads {
             return false;
@@ -1496,7 +1497,7 @@ mod test {
         let grown = walker.tuning.grown.load(Ordering::Relaxed);
         assert_eq!(
             sinks.len(),
-            threads.max(1) + 1 + grown,
+            threads + 1 + grown,
             "a sink per worker and the root's"
         );
 

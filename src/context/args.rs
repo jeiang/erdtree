@@ -67,6 +67,18 @@ fn reconcile(
         return cli_only(&mut cmd, user_args, validated);
     };
 
+    let final_args = merge(&cmd, &user_args, &config_args)?;
+    validate(&mut cmd, final_args.into_iter().skip(1))
+}
+
+/// The arguments that `validate` parses: per argument, the command-line value if one was given,
+/// else the config value. A value that is a default on both sides is left out, so it stays a
+/// default in the merged matches.
+fn merge(
+    cmd: &Command,
+    user_args: &ArgMatches,
+    config_args: &ArgMatches,
+) -> Result<Vec<OsString>, Error> {
     let mut final_args = init_empty_args();
 
     for arg in cmd.get_arguments() {
@@ -80,20 +92,15 @@ fn reconcile(
             continue;
         }
 
-        let argument_source = user_args
-            .value_source(id_str)
-            .map_or(&config_args, |source| {
-                if source == ValueSource::CommandLine {
-                    &user_args
-                } else {
-                    &config_args
-                }
-            });
+        let argument_source = if user_args.value_source(id_str) == Some(ValueSource::CommandLine) {
+            user_args
+        } else {
+            config_args
+        };
 
-        // A default stays a default, so that the merged matches can tell that it was not given.
-        if id_str == "threads"
-            && argument_source.value_source(id_str) == Some(ValueSource::DefaultValue)
-        {
+        // A default stays a default, so that the merged matches can tell that it was not given
+        // (`Context::threads_explicit`).
+        if argument_source.value_source(id_str) == Some(ValueSource::DefaultValue) {
             continue;
         }
 
@@ -131,7 +138,7 @@ fn reconcile(
         }
     }
 
-    validate(&mut cmd, final_args.into_iter().skip(1))
+    Ok(final_args)
 }
 
 /// The matches when no config applies: `user_args` as is when `cmd` parsed it already, else the
@@ -202,4 +209,53 @@ fn load_toml_config_args(named_table: Option<&str>) -> Result<Option<ArgMatches>
         .map_err(Error::Config)?;
 
     Ok(Some(config_args))
+}
+
+#[cfg(test)]
+mod test {
+    use super::{Command, CommandFactory, Context, merge, validate, with_relations};
+    use crate::context::sort;
+
+    fn command() -> Command {
+        Context::command().args_override_self(true)
+    }
+
+    /// The [`Context`] that `cli` on the command-line and `config` from a config file give.
+    fn context(cli: &[&str], config: &[&str]) -> Context {
+        let parse = |args: &[&str]| {
+            command()
+                .try_get_matches_from(std::iter::once(&"erd").chain(args))
+                .unwrap()
+        };
+        let mut cmd = with_relations(command());
+        let args = merge(&cmd, &parse(cli), &parse(config)).unwrap();
+        let merged = validate(&mut cmd, args.into_iter().skip(1)).unwrap();
+        Context::from_merged(merged, false).unwrap()
+    }
+
+    #[test]
+    fn threads_given_anywhere_are_explicit() {
+        let neither = context(&[], &["--sort", "name"]);
+        assert!(!neither.threads_explicit);
+        assert_eq!(neither.threads, Context::num_threads());
+        assert_eq!(neither.sort, sort::Type::Name, "the config applies");
+
+        let config = context(&[], &["--threads", "2"]);
+        assert!(config.threads_explicit);
+        assert_eq!(config.threads, 2);
+
+        let cli = context(&["--threads", "3"], &["--threads", "2"]);
+        assert!(cli.threads_explicit);
+        assert_eq!(cli.threads, 3, "the command-line wins");
+    }
+
+    #[test]
+    fn zero_threads_are_the_default_count() {
+        let zero = context(&["--threads", "0"], &[]);
+        assert!(zero.threads_explicit);
+        assert_eq!(zero.threads, Context::num_threads());
+
+        let config_zero = context(&[], &["--threads", "0"]);
+        assert_eq!(config_zero.threads, Context::num_threads());
+    }
 }
