@@ -7,13 +7,15 @@ use std::{
 };
 use tempfile::TempDir;
 
-/// Runs `erd tests/data` with `HOME`/`XDG_CONFIG_HOME` pointed at `home` and `home/xdg`.
+/// Runs `erd tests/data` with `HOME`/`XDG_CONFIG_HOME`/`APPDATA` pointed at `home`, `home/xdg`
+/// and `home/appdata`.
 fn run_in_home(home: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_erd"))
         .env_remove("ERDTREE_TOML_PATH")
         .env_remove("ERDTREE_CONFIG_PATH")
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("xdg"))
+        .env("APPDATA", home.join("appdata"))
         .args(["--threads", "1", "--color", "none", "tests/data"])
         .output()
         .unwrap()

@@ -69,6 +69,7 @@ fn traversal_depth_from_config() {
             .env_remove("ERDTREE_CONFIG_PATH")
             .env("HOME", dir.path())
             .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
+            .env("APPDATA", dir.path().join("appdata"))
             .env("ERDTREE_TOML_PATH", &path)
             .args(["--threads", "1", "--color", "none", "tests/data"])
             .output()
