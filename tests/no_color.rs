@@ -1,4 +1,5 @@
-//! `NO_COLOR` (<https://no-color.org>): only a non-empty value disables colour.
+//! `NO_COLOR` (<https://no-color.org>): only a non-empty value disables colour, and
+//! `--color force` overrides it.
 
 mod utils;
 
@@ -22,6 +23,11 @@ fn empty_no_color_is_ignored() {
 }
 
 #[test]
-fn non_empty_no_color_wins_over_force() {
-    assert!(!has_escapes("force", "1"));
+fn force_wins_over_non_empty_no_color() {
+    assert!(has_escapes("force", "1"));
+}
+
+#[test]
+fn non_empty_no_color_keeps_color_none_plain() {
+    assert!(!has_escapes("none", "1"));
 }

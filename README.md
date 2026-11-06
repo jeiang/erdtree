@@ -837,7 +837,7 @@ If, however, the default behavior doesn't suit your needs you have control over 
       - force: Turn on colorization always
 ```
 
-`erdtree` also supports [NO_COLOR](https://no-color.org/).
+`erdtree` also supports [NO_COLOR](https://no-color.org/): a non-empty `NO_COLOR` turns color off in the default `auto` mode. `--color force` (on the command line or in `.erdtree.toml`) still colors, since arguments and configuration override `NO_COLOR`.
 
 <p align="center">
   <img src="https://github.com/solidiquis/erdtree/blob/master/assets/colorization.png?raw=true" alt="failed to load picture" />
