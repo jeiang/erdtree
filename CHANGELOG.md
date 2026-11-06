@@ -19,6 +19,9 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Entries that tie in a size or time sort are ordered by name; before, their order depended on the order in which directories were read.
 - The progress indicator no longer shows "Preparing output..."; output is streamed as soon as the walk finishes.
 
+### Removed
+- The legacy `.erdtreerc` config file (deprecated since 3.x) and `$ERDTREE_CONFIG_PATH` are no longer read; an existing `.erdtreerc` is silently ignored. Move its options to `.erdtree.toml`.
+
 ### Bug Fixes
 - Directories whose path is longer than `PATH_MAX` are now walked (on Linux), including their ignore files and `--follow` loop checks; before, they were silently left out.
 - Checking for extended attributes in the long view (`--long`) passed the path to `listxattr` without a terminating NUL byte, which could read past the path.

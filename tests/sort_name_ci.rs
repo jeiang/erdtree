@@ -22,7 +22,6 @@ fn fixture() -> TempDir {
 fn names(root: &Path, config: Option<&str>, args: &[&str]) -> Vec<String> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_erd"));
     cmd.env_remove("ERDTREE_TOML_PATH")
-        .env_remove("ERDTREE_CONFIG_PATH")
         .env("HOME", root)
         .env("XDG_CONFIG_HOME", root.join("xdg"))
         .env("APPDATA", root.join("appdata"))

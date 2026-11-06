@@ -31,8 +31,6 @@ You can think of `erdtree` as a little bit of `du`, `tree`, `find`, `wc` and `ls
 * [Installation](#installation)
 * [Documentation](#documentation)
   - [Configuration file](#configuration-file)
-      - [Toml file](#toml-file)
-      - [.erdtreerc](#erdtreerc)
   - [Multiple directories](#multiple-directories)
   - [Hardlinks](#hardlinks)
   - [Symlinks](#symlinks)
@@ -346,13 +344,8 @@ $ cargo install --locked --git https://github.com/jeiang/erdtree --branch master
 
 ### Configuration file
 
-If `erdtree`'s out-of-the-box defaults don't meet your specific requirements, you can set your own defaults using a configuration file.
-
-The configuration file currently comes in two flavors: `.erdtreerc` (to be deprecated) and `.erdtree.toml`. If you have both,
-`.erdtreerc` will take precedent and `.erdtree.toml` will be disregarded, but please **note that `.erdtreerc` will be deprecated in the near future.** There is
-no reason to have both.
-
-#### TOML file
+If `erdtree`'s out-of-the-box defaults don't meet your specific requirements, you can set your own defaults in a `.erdtree.toml`
+configuration file. Arguments passed on the command-line override those found in the config.
 
 `erdtree` reads the first TOML config it finds, in this order. Inside an `erdtree` directory the file can be named
 `.erdtree.toml`, `erdtree.toml` or `config.toml` (checked in that order).
@@ -429,29 +422,6 @@ As far as the arguments go there are only three rules you need to be aware of:
 1. `.erdtree.toml` only accepts long-named arguments without the preceding "--".
 2. Types are enforced, so numbers are expected to be numbers, booleans are expected to be booleans, strings are expected to be strings, and so on and so forth.
 3. `snake_case` and `kebap-case` works.
-
-#### .erdtreerc
-
-`erdtree` will look for a configuration file in any of the following locations:
-
-On Linux/Mac/Unix-like:
-- `$ERDTREE_CONFIG_PATH`
-- `$XDG_CONFIG_HOME/erdtree/.erdtreerc`
-- `$XDG_CONFIG_HOME/.erdtreerc`
-- `$HOME/.config/erdtree/.erdtreerc`
-- `$HOME/.erdtreerc`
-
-On Windows:
-- `$ERDTREE_CONFIG_PATH`
-- `%APPDATA%\erdtree\.erdtreerc`
-
-The format of a config file is as follows:
-- Every line is an `erdtree` option/argument.
-- Lines starting with `#` are considered comments and are thus ignored.
-
-Arguments passed to `erdtree` on the command-line will override those found in `.erdtreerc`.
-
-[Click here](example/.erdtreerc) for an example `.erdtreerc`.
 
 **If you have a config that you would like to ignore without deleting you can use `--no-config`.**
 

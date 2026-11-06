@@ -7,23 +7,17 @@ use std::{
 };
 use tempfile::TempDir;
 
-/// Runs `erd` with `config` as `.erdtree.toml` (and no legacy rc config) and `args` appended.
+/// Runs `erd` with `config` as `.erdtree.toml` and `args` appended.
 fn run_with_toml(config: &str, args: &[&str]) -> Output {
-    run_with_config(".erdtree.toml", "ERDTREE_TOML_PATH", config, args)
-}
-
-fn run_with_config(file: &str, env_var: &str, config: &str, args: &[&str]) -> Output {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join(file);
+    let path = dir.path().join(".erdtree.toml");
     fs::write(&path, config).unwrap();
 
     Command::new(env!("CARGO_BIN_EXE_erd"))
-        .env_remove("ERDTREE_TOML_PATH")
-        .env_remove("ERDTREE_CONFIG_PATH")
         .env("HOME", dir.path())
         .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
         .env("APPDATA", dir.path().join("appdata"))
-        .env(env_var, &path)
+        .env("ERDTREE_TOML_PATH", &path)
         .args(["--threads", "1", "--color", "none"])
         .args(args)
         .output()
@@ -125,18 +119,6 @@ fn named_table_glob_with_cli_pattern() {
     let out = run_with_toml(
         "[g]\nglob = true\n",
         &["-c", "g", "--pattern", "*.txt", "tests/data"],
-    );
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(!stdout(&out).contains("cassildas_song.md"));
-}
-
-#[test]
-fn rc_glob_with_cli_pattern() {
-    let out = run_with_config(
-        ".erdtreerc",
-        "ERDTREE_CONFIG_PATH",
-        "--glob\n",
-        &["--pattern", "*.txt", "tests/data"],
     );
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(!stdout(&out).contains("cassildas_song.md"));

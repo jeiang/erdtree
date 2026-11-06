@@ -12,7 +12,6 @@ use tempfile::TempDir;
 fn run_in_home(home: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_erd"))
         .env_remove("ERDTREE_TOML_PATH")
-        .env_remove("ERDTREE_CONFIG_PATH")
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("xdg"))
         .env("APPDATA", home.join("appdata"))

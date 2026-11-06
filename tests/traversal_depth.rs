@@ -66,7 +66,6 @@ fn traversal_depth_from_config() {
     for key in ["traversal-depth", "traversal_depth"] {
         fs::write(&path, format!("{key} = 1\n")).unwrap();
         let out = Command::new(env!("CARGO_BIN_EXE_erd"))
-            .env_remove("ERDTREE_CONFIG_PATH")
             .env("HOME", dir.path())
             .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
             .env("APPDATA", dir.path().join("appdata"))

@@ -28,7 +28,4 @@ pub enum Error {
 
     #[error("'--config' was specified but a `.erdtree.toml` file could not be found")]
     NoToml,
-
-    #[error("Please migrate from `erdtreerc` to `.erdtree.toml` to make use of `--config`")]
-    Rc,
 }
