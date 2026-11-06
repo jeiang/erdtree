@@ -2,8 +2,7 @@
 //! `--exclude` and `--no-git` globs, and the entry filter of `--include`, `--pattern` and
 //! `--file-type`. All globs are rooted at the canonical root.
 
-use super::Entry;
-use crate::context::file;
+use crate::{context::file, fs::stat::Kind};
 use ignore::overrides::{Override, OverrideBuilder};
 use regex::Regex;
 use std::{borrow::Borrow, path::Path};
@@ -16,6 +15,19 @@ pub enum Error {
 
     #[error("{0}")]
     Regex(#[from] regex::Error),
+}
+
+/// A walked entry offered to the [`EntryFilter`].
+pub(super) struct Entry<'a> {
+    /// Full path of the entry, below the canonical root.
+    pub path: &'a Path,
+    /// Type of the entry; of the link target when symlinks are followed.
+    pub kind: Kind,
+    /// Depth below the root, which is depth 0.
+    pub depth: usize,
+    /// Whether the hidden-file filter applies: the name starts with `.` or, on Windows, the
+    /// entry has the hidden attribute.
+    pub hidden: bool,
 }
 
 /// What happens to hidden entries.
@@ -104,9 +116,12 @@ impl Pattern {
     /// Does the entry itself match: its name for a regex, its path for a glob?
     fn leaf(&self, entry: &Entry<'_>) -> bool {
         match self {
-            Self::Regex(re) => re.is_match(&entry.file_name().to_string_lossy()),
+            Self::Regex(re) => {
+                let name = entry.path.file_name().unwrap_or(entry.path.as_os_str());
+                re.is_match(&name.to_string_lossy())
+            },
             Self::Glob { ovr, negated } => {
-                ovr.matched(entry.path(), false).is_whitelist() != *negated
+                ovr.matched(entry.path, false).is_whitelist() != *negated
             },
         }
     }
@@ -115,12 +130,7 @@ impl Pattern {
     /// match? A negated glob holds when none does. An entry at depth `d` has `d` components
     /// below the root.
     fn ancestors(&self, entry: &Entry<'_>, skip: usize) -> bool {
-        let mut below_root = entry
-            .path()
-            .components()
-            .rev()
-            .take(entry.depth())
-            .skip(skip);
+        let mut below_root = entry.path.components().rev().take(entry.depth).skip(skip);
 
         match self {
             Self::Regex(re) => {
@@ -163,12 +173,12 @@ impl EntryFilter {
     /// them; empty directories are pruned later by [`Tree`].
     ///
     /// [`Tree`]: crate::tree::Tree
-    pub fn keep(&self, entry: &Entry<'_>) -> bool {
-        let kind = entry.file_type();
+    pub(super) fn keep(&self, entry: &Entry<'_>) -> bool {
+        let kind = entry.kind;
 
         if let Some(include) = &self.include
-            && entry.is_hidden()
-            && !include.matched(entry.path(), kind.is_dir()).is_whitelist()
+            && entry.hidden
+            && !include.matched(entry.path, kind.is_dir()).is_whitelist()
         {
             return false;
         }

@@ -12,7 +12,7 @@
 //! `std::fs::read_dir` (see [`listing`]).
 
 use crate::{
-    fs::stat::{Fields, Kind, Stat},
+    fs::stat::{Fields, Stat},
     sync::unpoisoned,
 };
 use std::{
@@ -53,41 +53,6 @@ use rules::{Found, Rules};
 pub struct NodeRef {
     pub sink: u32,
     pub index: u32,
-}
-
-/// A directory entry offered to the entry filter (`--pattern`, `--include`).
-pub struct Entry<'a> {
-    path: &'a Path,
-    file_type: Kind,
-    depth: usize,
-    hidden: bool,
-}
-
-impl Entry<'_> {
-    /// Full path of the entry, below the canonical root.
-    pub const fn path(&self) -> &Path {
-        self.path
-    }
-
-    /// Type of the entry; of the link target when symlinks are followed.
-    pub const fn file_type(&self) -> Kind {
-        self.file_type
-    }
-
-    pub fn file_name(&self) -> &OsStr {
-        self.path.file_name().unwrap_or(self.path.as_os_str())
-    }
-
-    /// Depth below the root, which is depth 0.
-    pub const fn depth(&self) -> usize {
-        self.depth
-    }
-
-    /// Whether the hidden-file filter applies: the name starts with `.` or, on Windows, the
-    /// entry has the hidden attribute.
-    pub const fn is_hidden(&self) -> bool {
-        self.hidden
-    }
 }
 
 /// An entry kept by the walk.
@@ -166,9 +131,9 @@ pub struct Walker {
     pub max_depth: Option<usize>,
     /// Workers the walk starts with; at least 1 (`Context::try_init` resolves `--threads 0`).
     pub threads: usize,
-    /// Most workers the walk may have. It starts with `threads` and adds workers while they wait
-    /// for the file system (a cold cache, a network file system). `threads` or less keeps the
-    /// number fixed. See [`max_threads`].
+    /// Most workers the walk may have; at least `threads` (see [`max_threads`]). It starts with
+    /// `threads` and adds workers while they wait for the file system (a cold cache, a network
+    /// file system); `threads` keeps the number fixed.
     pub max_threads: usize,
     pub filter: Option<EntryFilter>,
     /// Count ignored entries per directory (`--report-ignored`).
@@ -354,7 +319,8 @@ fn run_worker<'scope, 'env, S, F>(
         shared: &run.shared,
         run,
         scope,
-        meter: adaptive::Meter::new(run.walker.tuning.policy),
+        meter: (run.walker.max_threads > run.walker.threads)
+            .then(|| adaptive::Meter::new(run.walker.tuning.policy)),
         sink,
         local,
         progress: run.progress,
@@ -386,10 +352,6 @@ where
 }
 
 impl Walker {
-    fn max_workers(&self) -> usize {
-        self.threads.max(self.max_threads)
-    }
-
     /// Walks the tree, with a sink from `make_sink` per worker. Returns every sink, by worker
     /// index (the index [`NodeRef::sink`] refers to): the root is the first record of the first
     /// sink. `progress` counts kept entries below the root.
@@ -399,9 +361,13 @@ impl Walker {
         progress: Option<&AtomicU64>,
     ) -> Vec<S> {
         let threads = self.threads;
+        debug_assert!(
+            self.max_threads >= threads,
+            "max_threads is at least threads"
+        );
 
         // The pool has room for the sinks of extra workers too.
-        let mut pool: Vec<Mutex<Option<S>>> = (0..self.max_workers())
+        let mut pool: Vec<Mutex<Option<S>>> = (0..self.max_threads)
             .map(|i| Mutex::new((i < threads).then(&make_sink)))
             .collect();
 
@@ -551,7 +517,8 @@ struct Worker<'scope, 'env, S, F> {
     shared: &'env Shared,
     run: &'env Run<'env, S, F>,
     scope: &'scope thread::Scope<'scope, 'env>,
-    meter: adaptive::Meter,
+    /// Judges whether the worker waits for the file system; `None` once the walk cannot grow.
+    meter: Option<adaptive::Meter>,
     sink: S,
     local: Vec<Task>,
     progress: Option<&'env AtomicU64>,
@@ -568,14 +535,18 @@ where
 {
     fn run(&mut self) {
         while let Some(task) = self.next_job() {
-            let started = Instant::now();
+            // Tasks are timed only while the walk may grow.
+            let started = self.meter.is_some().then(Instant::now);
             let tally = match task {
                 Task::Dir(job) => self.read_dir(job),
                 Task::Chunk(chunk) => self.walk_chunk(&chunk.dir, chunk.lo, chunk.hi),
             };
 
-            if self.meter.task(started.elapsed()) {
-                self.grow();
+            if let (Some(meter), Some(started)) = (&mut self.meter, started)
+                && meter.task(started.elapsed())
+                && !self.grow()
+            {
+                self.meter = None;
             }
 
             self.account(tally);
@@ -613,15 +584,16 @@ where
     }
 
     /// Doubles the number of workers, up to the limit, because the workers wait for the file
-    /// system. The new workers start idle, so the busy ones hand them directories.
-    fn grow(&self) {
+    /// system. The new workers start idle, so the busy ones hand them directories. Returns
+    /// whether the walk may still grow.
+    fn grow(&self) -> bool {
         let run = self.run;
-        let cap = self.walker.max_workers();
+        let cap = self.walker.max_threads;
         let mut have = run.workers.load(Ordering::Relaxed);
 
         loop {
             if have >= cap {
-                return;
+                return false;
             }
 
             let want = (have * 2).min(cap);
@@ -647,9 +619,11 @@ where
             // A refused thread leaves the walk with the workers it has.
             if spawn_worker(self.scope, run, index).is_err() {
                 run.workers.store(cap, Ordering::Relaxed);
-                return;
+                return false;
             }
         }
+
+        want < cap
     }
 
     /// Starts the next worker that has not started yet, if there is one. Returns whether it did.
@@ -721,7 +695,9 @@ where
             }
 
             self.shared.idle.fetch_add(1, Ordering::Relaxed);
-            self.meter.waited();
+            if let Some(meter) = &mut self.meter {
+                meter.waited();
+            }
             queue = unpoisoned(self.shared.wake.wait(queue));
             self.shared.idle.fetch_sub(1, Ordering::Relaxed);
         }
@@ -751,7 +727,7 @@ where
 
         let len = dir.listing.len();
 
-        if len >= self.walker.tuning.split_min && self.walker.max_workers() > 1 {
+        if len >= self.walker.tuning.split_min && self.walker.max_threads > 1 {
             // Idle workers may take over parts of a directory this large.
             let dir = Arc::new(dir);
             tally += self.walk_chunk(&dir, 0, len);
@@ -836,9 +812,9 @@ where
         let opened = self.lister.open(&job.path, &job.access);
 
         let (id, foreign, stat) = match job.me {
+            // For loop detection (`--follow`).
             Me::Pushed { id, foreign } => {
-                // For loop detection (`--follow`), and for the lister.
-                let stat = if walker.follow_links || self.lister.wants_dir_stat() {
+                let stat = if walker.follow_links {
                     opened.as_ref().and_then(|dir| dir.stat(Fields::default()))
                 } else {
                     None
@@ -1019,7 +995,7 @@ where
             let target = listing.stat(i, path, fields)?;
             file_type = target.kind;
 
-            if file_type.is_dir() && is_loop(&dir.rules, path, &target) {
+            if file_type.is_dir() && dir.rules.is_loop(path, &target) {
                 return None;
             }
 
@@ -1042,9 +1018,9 @@ where
         }
 
         if let Some(filter) = &walker.filter {
-            let candidate = Entry {
+            let candidate = filter::Entry {
                 path,
-                file_type,
+                kind: file_type,
                 depth,
                 hidden: listing.is_hidden(i),
             };
@@ -1108,30 +1084,10 @@ where
     }
 }
 
-/// Whether the directory `target` (a followed symlink's target) is one of the walked directories
-/// that lead to it. Compares device and inode numbers, so it also works for paths longer than
-/// `PATH_MAX`.
-#[cfg(fd_walk)]
-fn is_loop(rules: &Rules, _path: &Path, target: &Stat) -> bool {
-    rules.is_walked((target.dev, target.ino))
-}
-
-/// Whether the directory at `path` is one of the walked directories that lead to it.
-#[cfg(not(fd_walk))]
-fn is_loop(rules: &Rules, path: &Path, _target: &Stat) -> bool {
-    let Ok(child) = same_file::Handle::from_path(path) else {
-        // Upstream reports the error, which drops the entry.
-        return true;
-    };
-
-    rules
-        .walked_dirs()
-        .any(|dir| same_file::Handle::from_path(dir).map_or(true, |ancestor| ancestor == child))
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::fs::stat::Kind;
     use ignore::overrides::Override;
     use std::collections::BTreeSet;
 
@@ -1387,7 +1343,7 @@ mod test {
         };
 
         // `walk_with` checks that there is a sink per worker and that parents resolve to the
-        // sinks that recorded them; at the limit that is `max_workers()` sinks.
+        // sinks that recorded them; at the limit that is `max_threads` sinks.
         let mut reached = false;
         for _ in 0..50 {
             let (got, added) = walk_with(&root, 2, 16, always());

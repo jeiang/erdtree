@@ -1,4 +1,4 @@
-//! macOS: `fstatat` and `fstat`. Directories are listed by [`crate::fs::bulk`] or `readdir`.
+//! macOS: `fstatat`, `fstat` and `readdir`. Directories are also listed by [`crate::fs::bulk`].
 
 use super::{check, retry};
 use crate::fs::stat::{Fields, Kind, Stat, time};
@@ -37,6 +37,45 @@ pub fn stat_fd(fd: RawFd, fields: Fields) -> io::Result<Stat> {
 
     // SAFETY: zero-initialized, and every field is an integer.
     Ok(from_stat(&unsafe { buf.assume_init() }, fields))
+}
+
+/// Calls `f` with the name and `d_type` of every entry of the directory open as `fd` but `.` and
+/// `..`, until it returns `false`. Reads through a duplicate of `fd`, which stays open; a
+/// directory that cannot be read has no entries.
+pub fn for_each_readdir(fd: RawFd, mut f: impl FnMut(&[u8], u8) -> bool) {
+    // SAFETY: `fd` is open; the duplicate is owned by the stream from here on.
+    let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if dup < 0 {
+        return;
+    }
+    // SAFETY: `dup` is an open directory descriptor.
+    let stream = unsafe { libc::fdopendir(dup) };
+    if stream.is_null() {
+        // SAFETY: `dup` is open and owned here.
+        unsafe { libc::close(dup) };
+        return;
+    }
+
+    loop {
+        // SAFETY: `stream` is an open directory stream.
+        let ent = unsafe { libc::readdir(stream) };
+        if ent.is_null() {
+            break;
+        }
+        // SAFETY: `readdir` returned a valid entry, whose name is NUL-terminated.
+        let (name, d_type) = unsafe { (CStr::from_ptr((*ent).d_name.as_ptr()), (*ent).d_type) };
+        let name = name.to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+
+        if !f(name, d_type) {
+            break;
+        }
+    }
+
+    // SAFETY: `stream` is open and owned here.
+    unsafe { libc::closedir(stream) };
 }
 
 /// A [`Stat`] with the values `std::fs::Metadata` gives for `s`; only the timestamps in `fields`

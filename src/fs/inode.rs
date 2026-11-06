@@ -121,12 +121,6 @@ pub fn device_of(stat: &Stat, path: &Path) -> Option<u64> {
         file_information(path, FILE_FLAG_BACKUP_SEMANTICS)
             .map(|info| u64::from(info.dwVolumeSerialNumber))
     }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (stat, path);
-        None
-    }
 }
 
 #[cfg(test)]
