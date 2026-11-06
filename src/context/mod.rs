@@ -257,43 +257,6 @@ pub struct Context {
     #[clap(skip = stdout().is_terminal())]
     pub stdout_is_tty: bool,
 
-    /// Restricts column width of size not including units
-    #[clap(skip = usize::default())]
-    pub max_size_width: usize,
-
-    /// Restricts column width of `disk_usage` units
-    #[clap(skip = usize::default())]
-    pub max_size_unit_width: usize,
-
-    /// Restricts column width of nlink for long view
-    #[clap(skip = usize::default())]
-    #[cfg(unix)]
-    pub max_nlink_width: usize,
-
-    /// Restricts column width of ino for long view
-    #[clap(skip = usize::default())]
-    #[cfg(unix)]
-    pub max_ino_width: usize,
-
-    /// Restricts column width of block for long view
-    #[clap(skip = usize::default())]
-    #[cfg(unix)]
-    pub max_block_width: usize,
-
-    /// Restricts column width of file owner for long view
-    #[clap(skip = usize::default())]
-    #[cfg(unix)]
-    pub max_owner_width: usize,
-
-    /// Restricts column width of file group for long view
-    #[clap(skip = usize::default())]
-    #[cfg(unix)]
-    pub max_group_width: usize,
-
-    /// Width of the terminal emulator's window
-    #[clap(skip)]
-    pub window_width: Option<usize>,
-
     /// Whether `--threads` was given on the command line or in the config, which fixes the number
     /// of walk workers. Otherwise the walk may add workers when the file system is slow.
     #[clap(skip)]
@@ -582,27 +545,6 @@ impl Context {
                 || !dir_entry.is_hidden()
                 || include.matched(dir_entry.path(), is_dir).is_whitelist()
         }))
-    }
-
-    /// Update column width properties.
-    pub const fn update_column_properties(&mut self, col_props: &column::Properties) {
-        self.max_size_width = col_props.max_size_width;
-        self.max_size_unit_width = col_props.max_size_unit_width;
-
-        #[cfg(unix)]
-        {
-            self.max_owner_width = col_props.max_owner_width;
-            self.max_group_width = col_props.max_group_width;
-            self.max_nlink_width = col_props.max_nlink_width;
-            self.max_block_width = col_props.max_block_width;
-            self.max_ino_width = col_props.max_ino_width;
-        }
-    }
-
-    /// Setter for `window_width` which is set to the current terminal emulator's window width.
-    #[inline]
-    pub fn set_window_width(&mut self) {
-        self.window_width = crate::tty::get_window_width();
     }
 
     /// Answers whether disk usage is asked to be reported in bytes.

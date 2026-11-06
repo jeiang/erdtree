@@ -3,7 +3,7 @@ use super::{
     theme::{self, Esc},
 };
 use crate::{
-    context::{Context, time},
+    context::{Context, column, time},
     styles::{self, PLACEHOLDER},
     tree::node::Node,
 };
@@ -73,17 +73,17 @@ fn esc(style: Result<&'static Style, styles::error::Error<'static>>) -> Option<E
 }
 
 impl Long {
-    /// The long view as selected by `ctx`.
-    pub fn new(ctx: &Context) -> Self {
+    /// The long view as selected by `ctx`, with the column widths `widths`.
+    pub fn new(ctx: &Context, widths: &column::Properties) -> Self {
         Self {
             group: ctx.group,
             ino: ctx.ino,
             nlink: ctx.nlink,
             octal: ctx.octal,
-            owner_width: ctx.max_owner_width,
-            group_width: ctx.max_group_width,
-            ino_width: ctx.max_ino_width,
-            nlink_width: ctx.max_nlink_width,
+            owner_width: widths.max_owner_width,
+            group_width: widths.max_group_width,
+            ino_width: widths.max_ino_width,
+            nlink_width: widths.max_nlink_width,
             stamp: ctx.time(),
             format: ctx.time_format(),
             ino_esc: esc(styles::get_ino_style()),

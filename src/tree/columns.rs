@@ -45,9 +45,6 @@ pub struct Probe {
     /// executables.
     #[cfg(unix)]
     pub mode: bool,
-    /// Collect the allocated blocks of every entry (long view).
-    #[cfg(unix)]
-    pub blocks: bool,
 }
 
 impl Probe {
@@ -91,8 +88,6 @@ impl Probe {
             inodes: false,
             #[cfg(unix)]
             mode: ctx.long || ctx.classify,
-            #[cfg(unix)]
-            blocks: ctx.long,
         }
     }
 }
@@ -131,9 +126,6 @@ pub struct Columns {
     /// Mode bits; only with [`Probe::mode`].
     #[cfg(unix)]
     pub mode: Vec<u32>,
-    /// Allocated blocks; only with [`Probe::blocks`].
-    #[cfg(unix)]
-    pub blocks: Vec<u64>,
     /// Inodes with more than one link, for hard-link deduplication.
     pub multi_linked: Vec<(u32, Inode)>,
     /// Inode of every entry; only with [`Probe::inodes`].
@@ -277,9 +269,6 @@ impl Sink for Collector {
         {
             if probe.mode {
                 cols.mode.push(stat.mode);
-            }
-            if probe.blocks {
-                cols.blocks.push(stat.blocks);
             }
 
             if let Some(level) = probe.long_level {
@@ -522,13 +511,12 @@ impl Columns {
         #[cfg(unix)]
         if rest
             .iter()
-            .any(|s| !s.mode.is_empty() || !s.blocks.is_empty() || !s.long.is_empty())
+            .any(|s| !s.mode.is_empty() || !s.long.is_empty())
         {
-            let (mode, blocks, long) = (&mut merged.mode, &mut merged.blocks, &mut merged.long);
-            let (m, b, l) = (others!(mode), others!(blocks), others!(long));
+            let (mode, long) = (&mut merged.mode, &mut merged.long);
+            let (m, l) = (others!(mode), others!(long));
             jobs.push(Box::new(move || {
                 append_all(mode, m);
-                append_all(blocks, b);
                 append_all(long, l);
             }));
         }

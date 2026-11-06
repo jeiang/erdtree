@@ -70,6 +70,9 @@ pub struct Tree {
     /// Byte-metric display settings, to rebuild [`FileSize`] values.
     size_format: SizeFormat,
 
+    /// Column widths that fit the shown nodes (all nodes unless `--min-size` hid some).
+    widths: column::Properties,
+
     /// Owner and group names by id, sorted by id, for the long view.
     #[cfg(unix)]
     users: Vec<(u32, Option<String>)>,
@@ -116,39 +119,26 @@ struct SizeFormat {
 pub type Result<T> = StdResult<T, Error>;
 
 impl Tree {
-    /// Walks the root of `ctx` and builds the [Tree]; also computes the column widths that
-    /// rendering needs into the returned [Context]. The tree may be a stump (see
-    /// [`Self::is_stump`]). `progress` counts walked entries.
-    pub fn try_init(mut ctx: Context, progress: Option<&AtomicU64>) -> Result<(Self, Context)> {
-        let mut walker = walker(&ctx)?;
-        let probe = Probe::new(&ctx);
+    /// Walks the root of `ctx` and builds the [Tree] with the column widths that rendering
+    /// needs. The tree may be a stump (see [`Self::is_stump`]). `progress` counts walked
+    /// entries.
+    pub fn try_init(ctx: &Context, progress: Option<&AtomicU64>) -> Result<Self> {
+        let mut walker = walker(ctx)?;
+        let probe = Probe::new(ctx);
         walker.fields = probe.fields();
 
         let sinks = walker.run(|_| Collector::new(probe), progress);
         let cols = Columns::merge(sinks.into_iter().map(Collector::into_columns).collect());
 
-        let mut col_props = column::Properties::from(&ctx);
-        let tree = Self::assemble(cols, &ctx, &mut col_props)?;
-
-        ctx.update_column_properties(&col_props);
-
-        if ctx.truncate {
-            ctx.set_window_width();
-        }
-
-        Ok((tree, ctx))
+        Self::assemble(cols, ctx)
     }
 
-    /// Builds the topology, sizes, order and filters from the merged columns.
+    /// Builds the topology, sizes, order, filters and column widths from the merged columns.
     ///
     /// The `depth` column must hold each node's distance from the root (parent depth plus
     /// one, root 0), as the walk records it: that gives a parent-first order without a
     /// traversal, and cuts the display order off at `--level`.
-    fn assemble(
-        mut cols: Columns,
-        ctx: &Context,
-        col_props: &mut column::Properties,
-    ) -> Result<Self> {
+    fn assemble(mut cols: Columns, ctx: &Context) -> Result<Self> {
         let n = cols.len();
         let threads = ctx.threads;
         let root = cols
@@ -199,6 +189,7 @@ impl Tree {
                 human: ctx.human,
                 unit: ctx.unit,
             },
+            widths: column::Properties::from(ctx),
             #[cfg(unix)]
             users: vec![],
             #[cfg(unix)]
@@ -226,7 +217,7 @@ impl Tree {
         let stats = tree.sort_children(ctx, &mut children, filters.min_size.is_none(), threads);
         tree.filter_and_order(&children, &is_dir, filters, threads);
         let stats = stats.unwrap_or_else(|| tree.scan(ctx, Scope::Listed(&tree.order), threads));
-        tree.apply_widths(ctx, col_props, &stats);
+        tree.apply_widths(ctx, &stats);
 
         Ok(tree)
     }
@@ -448,6 +439,11 @@ impl Tree {
     /// The root node.
     pub const fn root(&self) -> u32 {
         self.root
+    }
+
+    /// Column widths that fit the shown nodes.
+    pub const fn widths(&self) -> &column::Properties {
+        &self.widths
     }
 
     /// Shown nodes in display pre-order, root first. Stops at the display level (`--level`)
