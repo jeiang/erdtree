@@ -36,7 +36,14 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
     let mut closing = vec![];
 
     for (k, &id) in order.iter().enumerate().rev() {
-        if !tree.has_children(id) {
+        let node = tree.node(id);
+        let depth = node.depth();
+
+        // In pre-order, a node has a shown child exactly when the next node is deeper.
+        if order
+            .get(k + 1)
+            .is_none_or(|&next| tree.node(next).depth() <= depth)
+        {
             // Directories whose last pre-order descendant is this leaf, innermost first.
             closing.clear();
             let mut cur = id;
@@ -65,8 +72,6 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
             }
         }
 
-        let node = tree.node(id);
-        let depth = node.depth();
         let theme = glyphs.get(get_theme(node));
 
         if depth <= max_depth {
@@ -83,9 +88,9 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
             }
         }
 
-        // The next edge is the parent's `Start` exactly when this node is its first child.
+        // The next edge is the parent's `Start` exactly when this node is its first child: the
+        // node before it in pre-order is shallower.
         if let Some(&prev) = k.checked_sub(1).and_then(|p| order.get(p))
-            && tree.has_children(prev)
             && tree.node(prev).depth() < depth
         {
             base.pop();
