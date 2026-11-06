@@ -1,5 +1,6 @@
 use crate::{
     context::{Context, layout},
+    styles::Theme,
     sync::unpoisoned,
     tree::Tree,
 };
@@ -30,13 +31,13 @@ mod paint;
 pub mod long;
 
 /// Which rows a layout prints, in order.
-enum Rows {
+enum Rows<'a> {
     /// The shown nodes of the tree in pre-order with the root on top if `inverted`, else in
     /// reverse pre-order with the root at the bottom, with the prefixes worked out from each
     /// row's ancestors.
     Tree {
         inverted: bool,
-        glyphs: prefix::Themes,
+        glyphs: prefix::Glyphs<'a>,
     },
 
     /// Flat rows of the nodes `ids`, each the path of its parent directory in `paths` and its
@@ -47,15 +48,15 @@ enum Rows {
     },
 }
 
-impl Rows {
-    fn new(tree: &Tree, ctx: &Context) -> Self {
+impl<'a> Rows<'a> {
+    fn new(tree: &Tree, ctx: &Context, theme: &'a Theme) -> Self {
         let flat = |ids| Self::Flat {
             ids,
             paths: paths::DirPaths::new(tree, ctx.level(), ctx.threads),
         };
         let tree_rows = |inverted| Self::Tree {
             inverted,
-            glyphs: prefix::Themes::new(ctx.follow),
+            glyphs: prefix::Glyphs::new(theme, ctx.follow),
         };
 
         match ctx.layout {
@@ -134,11 +135,11 @@ const CHUNK: usize = 4096;
 /// than formatting a few thousand rows.
 const INLINE_MAX: usize = 2 * CHUNK;
 
-/// Writes the rows of `tree` in the layout of `ctx`, one per line. Rows are formatted in
-/// parallel and written in order.
-pub fn write(tree: &Tree, ctx: &Context, out: &mut impl Write) -> io::Result<()> {
-    let rows = Rows::new(tree, ctx);
-    let fmt = RowFmt::new(tree, ctx);
+/// Writes the rows of `tree` in the layout of `ctx` with `theme`, one per line. Rows are
+/// formatted in parallel and written in order.
+pub fn write(tree: &Tree, ctx: &Context, theme: &Theme, out: &mut impl Write) -> io::Result<()> {
+    let rows = Rows::new(tree, ctx, theme);
+    let fmt = RowFmt::new(tree, ctx, theme);
 
     write_chunked(
         rows.len(tree),

@@ -15,7 +15,7 @@ use crate::{
         units::{PREFIXES, PrefixKind},
     },
     icons::{self, fs::Paint},
-    styles,
+    styles::{Colors, Theme},
     tree::{Tree, node::Node, widths::Widths},
 };
 
@@ -41,12 +41,12 @@ struct Size {
 }
 
 impl Size {
-    /// The size column of `ctx` with `widths`, if there is one: only if some row has a size.
-    fn new(ctx: &Context, widths: &Widths) -> Option<Self> {
+    /// The size column of `ctx` with `widths` and `colors`, if there is one: only if some row
+    /// has a size.
+    fn new(ctx: &Context, widths: &Widths, colors: Option<&Colors>) -> Option<Self> {
         if !widths.sized {
             return None;
         }
-        let colors = styles::colors();
 
         Some(Self {
             width: widths.max_size_width,
@@ -135,7 +135,8 @@ pub struct RowFmt<'a> {
 }
 
 impl<'a> RowFmt<'a> {
-    pub fn new(tree: &'a Tree, ctx: &Context) -> Self {
+    pub fn new(tree: &'a Tree, ctx: &Context, theme: &Theme) -> Self {
+        let colors = theme.colors.as_ref();
         Self {
             tree,
             painters: tree.styles().iter().copied().map(Painter::new).collect(),
@@ -147,10 +148,12 @@ impl<'a> RowFmt<'a> {
                 .then(terminal_size::terminal_size)
                 .flatten()
                 .map(|(width, _)| usize::from(width.0)),
-            size: Size::new(ctx, tree.widths()),
-            link_arrow: styles::colors().map(|colors| Esc::new(colors.link_arrow)),
+            size: Size::new(ctx, tree.widths(), colors),
+            link_arrow: colors.map(|colors| Esc::new(colors.link_arrow)),
             #[cfg(unix)]
-            long: ctx.long.then(|| long::Long::new(ctx, tree.widths())),
+            long: ctx
+                .long
+                .then(|| long::Long::new(ctx, tree.widths(), colors)),
         }
     }
 
@@ -159,7 +162,7 @@ impl<'a> RowFmt<'a> {
         &self,
         scratch: &mut Scratch,
         id: u32,
-        glyphs: &prefix::Themes,
+        glyphs: &prefix::Glyphs<'_>,
         inverted: bool,
         out: &mut Vec<u8>,
     ) {

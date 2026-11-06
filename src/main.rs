@@ -74,7 +74,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    styles::init(ctx.no_color());
+    let theme = styles::init(ctx.no_color());
 
     let indicator = Indicator::maybe_init(&ctx);
     let no_report = ctx.no_report;
@@ -90,7 +90,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     // On an error return, dropping `indicator` restores the terminal before the error is printed.
     for root in &roots {
         let progress = indicator.as_ref().map(IndicatorHandle::indexed);
-        trees.push(Tree::try_init(&ctx, root, styles::colors(), progress)?);
+        trees.push(Tree::try_init(&ctx, root, theme.colors.as_ref(), progress)?);
     }
 
     if !roots_only && trees.iter().all(Tree::is_stump) {
@@ -114,7 +114,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         if k > 0 {
             out.write_all(separator.as_bytes())?;
         }
-        let written = render::write(&tree, &ctx, &mut out);
+        let written = render::write(&tree, &ctx, theme, &mut out);
 
         // The last tree is not freed: the process ends soon after, and returning its memory to
         // the allocator page by page is wasted time.
