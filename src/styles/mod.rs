@@ -82,18 +82,19 @@ pub struct Long {
 
 #[cfg(unix)]
 impl Long {
-    /// The style of a character of symbolic permissions; characters without one are not shown.
-    pub fn permission(ch: char) -> Option<Style> {
-        Some(match ch {
-            '-' | '.' | '?' => Color::Purple.normal(),
+    /// The style of a character of symbolic permissions.
+    pub fn permission(ch: char) -> Style {
+        match ch {
             'd' => Color::Blue.bold(),
+            'p' => Color::Yellow.normal(),
             'r' => Color::Green.bold(),
-            'w' => Color::Yellow.bold(),
+            'w' | 'c' | 'b' => Color::Yellow.bold(),
             'l' | 'x' | 's' | 'S' | 't' | 'T' => Color::Red.bold(),
             '@' => Color::Cyan.bold(),
             ' ' => Color::White.normal(),
-            _ => return None,
-        })
+            // `-`, `.` and `?`.
+            _ => Color::Purple.normal(),
+        }
     }
 }
 

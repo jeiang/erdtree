@@ -271,3 +271,49 @@ mod colored {
         Ok(())
     }
 }
+
+/// The type characters of FIFOs and character and block devices are styled like the others, so
+/// coloured rows line up exactly as plain ones do.
+#[cfg(unix)]
+#[test]
+fn long_special_file_types() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::{FileTypeExt, symlink};
+
+    let tmp = tempfile::TempDir::new()?;
+    let root = tmp.path();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(root.join("fifo"))
+            .status()?
+            .success()
+    );
+    symlink("/dev/null", root.join("chr"))?;
+    let mut marks = vec!["\x1b[33mp\x1b[0m", "\x1b[1;33mc\x1b[0m"];
+
+    // Containers and the Nix sandbox may expose no block device.
+    let block = std::fs::read_dir("/dev")?
+        .filter_map(Result::ok)
+        .find(|e| e.file_type().is_ok_and(|t| t.is_block_device()));
+    if let Some(block) = block {
+        symlink(block.path(), root.join("blk"))?;
+        marks.push("\x1b[1;33mb\x1b[0m");
+    }
+
+    let root = root.to_str().unwrap();
+    let args = ["--long", "--follow", root];
+    let plain = String::from_utf8(utils::run_cmd_raw(&args, &[]))?;
+    let colored = utils::run_cmd_raw(&["--long", "--follow", "-C", "force", root], &[]);
+    let colored = String::from_utf8(colored)?;
+
+    assert_eq!(
+        String::from_utf8(strip_ansi_escapes::strip(&colored))?,
+        plain
+    );
+    for mark in marks {
+        assert!(
+            colored.lines().any(|l| l.starts_with(mark)),
+            "{mark:?} in {colored}"
+        );
+    }
+    Ok(())
+}

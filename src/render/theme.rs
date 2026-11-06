@@ -121,8 +121,10 @@ pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
 
     if styles::colors().is_some() {
         symb.chars()
-            .filter_map(|ch| {
-                styles::Long::permission(ch).map(|color| color.paint(ch.to_string()).to_string())
+            .map(|ch| {
+                styles::Long::permission(ch)
+                    .paint(ch.to_string())
+                    .to_string()
             })
             .collect()
     } else {
