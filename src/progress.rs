@@ -1,4 +1,4 @@
-use crate::context::Context;
+use crate::{context::Context, sync::unpoisoned};
 use crossterm::{
     QueueableCommand, cursor,
     terminal::{self, ClearType},
@@ -7,7 +7,7 @@ use std::{
     io::{self, Write},
     process,
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError, SyncSender},
     },
@@ -138,10 +138,6 @@ impl Indicator {
         }
     }
 
-    fn lock(hidden: &Mutex<bool>) -> MutexGuard<'_, bool> {
-        hidden.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Draws `count`. The first draw registers the interrupt handler, then saves the cursor
     /// position and hides the cursor. The handler comes first so that an interrupt can never
     /// leave the cursor hidden. A `SIGINT` before this point meets the default handler, and the
@@ -150,7 +146,7 @@ impl Indicator {
     // line.
     #[allow(clippy::significant_drop_tightening)]
     fn index(&mut self, count: u64) -> Result<(), Error> {
-        let mut hidden = Self::lock(&self.hidden);
+        let mut hidden = unpoisoned(self.hidden.lock());
         let mut stdout = io::stdout().lock();
 
         if !*hidden {
@@ -172,7 +168,7 @@ impl Indicator {
     // would exit with the cursor hidden.
     #[allow(clippy::significant_drop_tightening)]
     fn finish(&self) -> Result<(), Error> {
-        let mut hidden = Self::lock(&self.hidden);
+        let mut hidden = unpoisoned(self.hidden.lock());
         if *hidden {
             *hidden = false;
             restore(&mut io::stdout().lock())?;
@@ -187,7 +183,7 @@ impl Indicator {
 /// stdout is not touched here (the exit itself only tries the lock).
 #[allow(clippy::significant_drop_tightening)]
 fn interrupt(hidden: &Mutex<bool>) {
-    let hidden = Indicator::lock(hidden);
+    let hidden = unpoisoned(hidden.lock());
     if *hidden {
         let _ = restore(&mut io::stdout().lock());
     }

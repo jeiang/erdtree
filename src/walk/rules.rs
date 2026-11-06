@@ -200,11 +200,7 @@ impl Rules {
         let mut rules = self.clone();
         for parent in parents.into_iter().rev() {
             let compiled = &self.inner.common.compiled;
-            let lock = || {
-                compiled
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-            };
+            let lock = || crate::sync::unpoisoned(compiled.write());
 
             let prebuilt = lock()
                 .get(parent.as_os_str())

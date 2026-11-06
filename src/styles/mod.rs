@@ -1,4 +1,4 @@
-use crate::disk_usage::units::PREFIXES;
+use crate::{disk_usage::units::PREFIXES, sync::unpoisoned};
 use lscolors::LsColors;
 use nu_ansi_term::{Color, Style};
 use std::{
@@ -178,11 +178,8 @@ pub fn colors() -> Option<&'static Colors> {
 /// Reads the `LS_COLORS` environment variable, or takes the result of [`prefetch_ls_colors`]. If
 /// it isn't set, a default determined by `lscolors` crate is used.
 fn ls_colors() -> LsColors {
-    let prefetched = PREFETCH
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
-        .and_then(|handle| handle.join().ok());
+    let handle = unpoisoned(PREFETCH.lock()).take();
+    let prefetched = handle.and_then(|handle| handle.join().ok());
 
     prefetched
         .unwrap_or_else(LsColors::from_env)
@@ -196,7 +193,5 @@ static PREFETCH: Mutex<Option<JoinHandle<Option<LsColors>>>> = Mutex::new(None);
 /// large theme takes milliseconds to build. [`init`] picks up the result, and parses on the
 /// calling thread when this was not called or the thread failed.
 pub fn prefetch_ls_colors() {
-    if let Ok(mut slot) = PREFETCH.lock() {
-        *slot = Some(std::thread::spawn(LsColors::from_env));
-    }
+    *unpoisoned(PREFETCH.lock()) = Some(std::thread::spawn(LsColors::from_env));
 }

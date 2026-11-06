@@ -1,11 +1,11 @@
-use crate::{context::Context, tree::Tree};
+use crate::{context::Context, sync::unpoisoned, tree::Tree};
 use row::{RowFmt, Scratch};
 use std::{
     collections::BTreeMap,
     io::{self, Write},
     marker::PhantomData,
     ops::Range,
-    sync::{Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{Condvar, Mutex},
 };
 
 /// Truncation of ANSI escaped rows.
@@ -267,16 +267,11 @@ struct PanicGuard<'a>(&'a Shared);
 impl Drop for PanicGuard<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            lock(&self.0.state).stop = true;
+            unpoisoned(self.0.state.lock()).stop = true;
             self.0.free_cv.notify_all();
             self.0.done_cv.notify_all();
         }
     }
-}
-
-/// Locks `mutex`; a panicked worker is reported elsewhere, and the data stays consistent.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Formats the positions `0..n` in chunks of `chunk` with `format` and writes the chunks to `out`
@@ -331,7 +326,7 @@ fn write_chunked<S: Default + Send>(
 
                 loop {
                     let (k, mut buf) = {
-                        let mut pool = lock(&shared.state);
+                        let mut pool = unpoisoned(shared.state.lock());
 
                         loop {
                             if pool.stop || pool.next >= chunks {
@@ -341,10 +336,7 @@ fn write_chunked<S: Default + Send>(
                                 pool.next += 1;
                                 break (pool.next - 1, buf);
                             }
-                            pool = shared
-                                .free_cv
-                                .wait(pool)
-                                .unwrap_or_else(PoisonError::into_inner);
+                            pool = unpoisoned(shared.free_cv.wait(pool));
                         }
                     };
 
@@ -352,7 +344,7 @@ fn write_chunked<S: Default + Send>(
                     buf.reserve(chunk * 64);
                     format(&mut scratch, k * chunk..((k + 1) * chunk).min(n), &mut buf);
 
-                    lock(&shared.state).done.insert(k, buf);
+                    unpoisoned(shared.state.lock()).done.insert(k, buf);
                     shared.done_cv.notify_one();
                 }
             });
@@ -362,7 +354,7 @@ fn write_chunked<S: Default + Send>(
 
         for want in 0..chunks {
             let finished = {
-                let mut pool = lock(&shared.state);
+                let mut pool = unpoisoned(shared.state.lock());
 
                 loop {
                     if let Some(buf) = pool.done.remove(&want) {
@@ -371,10 +363,7 @@ fn write_chunked<S: Default + Send>(
                     if pool.stop {
                         break None;
                     }
-                    pool = shared
-                        .done_cv
-                        .wait(pool)
-                        .unwrap_or_else(PoisonError::into_inner);
+                    pool = unpoisoned(shared.done_cv.wait(pool));
                 }
             };
 
@@ -385,11 +374,11 @@ fn write_chunked<S: Default + Send>(
                 break;
             }
 
-            lock(&shared.state).free.push(buf);
+            unpoisoned(shared.state.lock()).free.push(buf);
             shared.free_cv.notify_one();
         }
 
-        lock(&shared.state).stop = true;
+        unpoisoned(shared.state.lock()).stop = true;
         shared.free_cv.notify_all();
         result
     })
