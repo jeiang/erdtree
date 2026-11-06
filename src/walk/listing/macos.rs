@@ -12,7 +12,7 @@ use crate::{
     walk::{Walker, fds::Budget, rules::Found},
 };
 use std::{
-    ffi::{CStr, OsStr},
+    ffi::OsStr,
     os::{fd::RawFd, unix::ffi::OsStrExt},
     path::Path,
     sync::Arc,
@@ -46,7 +46,7 @@ impl Lister {
             volumes: bulk::Volumes::default(),
             req: bulk::Request::new(walker.fields),
             budget: fd::budget(walker),
-            shared_links: (walker.max_workers() > 1)
+            shared_links: (walker.max_threads > 1)
                 .then(|| (walker.tuning.split_min as u64).saturating_mul(SHARED_DIR_FACTOR)),
         }
     }
@@ -66,17 +66,11 @@ impl Lister {
         fd::open(path, access, &self.budget)
     }
 
-    /// Whether listing uses the metadata of the directory itself: its link count, which on
-    /// APFS counts its entries, tells whether workers may share them.
-    pub const fn wants_dir_stat(&self) -> bool {
-        self.shared_links.is_some()
-    }
-
     /// Reads every entry of `dir` into `listing` and notes ignore-relevant names in `found`.
     /// The entries are read with `getattrlistbulk`, with the metadata of each entry but a
     /// directory, when the job asked for it, unless they are only counted (`count_only`) or
-    /// workers may share them (by the link count in `stat`); else with `readdir`, names and
-    /// types only. Entries listed before an I/O error are kept.
+    /// workers may share them (by the link count of the directory, from `stat` if given); else
+    /// with `readdir`, names and types only. Entries listed before an I/O error are kept.
     pub fn fill(
         &mut self,
         listing: &mut Listing,
@@ -85,15 +79,21 @@ impl Lister {
         count_only: bool,
         found: &mut Found,
     ) {
+        let fd = dir.dir.as_raw_fd();
+
         // Contents of another file system are only counted, which needs no metadata. Neither is
         // a bulk read worth it for a directory large enough that idle workers share its entries:
-        // it is serial, while their `fstatat` calls are not.
-        let shared = self
-            .shared_links
-            .is_some_and(|min| stat.is_some_and(|stat| stat.nlink >= min));
-        let bulk = dir.bulk && !count_only && !shared;
+        // it is serial, while their `fstatat` calls are not. Its link count, which on APFS
+        // counts its entries, tells; the job passes the directory's metadata when it has it.
+        let shared = || {
+            self.shared_links.is_some_and(|min| {
+                stat.map(|stat| stat.nlink)
+                    .or_else(|| at::stat_fd(fd, Fields::default()).ok().map(|s| s.nlink))
+                    .is_some_and(|nlink| nlink >= min)
+            })
+        };
+        let bulk = dir.bulk && !count_only && !shared();
 
-        let fd = dir.dir.as_raw_fd();
         listing.bulk = dir.bulk;
         listing.dir = Some(Arc::new(dir.dir));
 
@@ -146,42 +146,12 @@ impl Lister {
 
 /// Lists the directory open as `fd` with `readdir`: names and types, without metadata.
 fn fill_readdir(listing: &mut Listing, fd: RawFd, found: &mut Found) {
-    // SAFETY: `fd` is open; the duplicate is owned by the stream from here on.
-    let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
-    if dup < 0 {
-        return;
-    }
-    // SAFETY: `dup` is an open directory descriptor.
-    let stream = unsafe { libc::fdopendir(dup) };
-    if stream.is_null() {
-        // SAFETY: `dup` is open and owned here.
-        unsafe { libc::close(dup) };
-        return;
-    }
-
-    loop {
-        // SAFETY: `stream` is an open directory stream.
-        let ent = unsafe { libc::readdir(stream) };
-        if ent.is_null() {
-            break;
-        }
-        // SAFETY: `readdir` returned a valid entry, whose name is NUL-terminated.
-        let (name, d_type) = unsafe { (CStr::from_ptr((*ent).d_name.as_ptr()), (*ent).d_type) };
-        let name = name.to_bytes();
-        if name == b"." || name == b".." {
-            continue;
-        }
-
+    at::for_each_readdir(fd, |name, d_type| {
         if name.first() == Some(&b'.') {
             found.note(OsStr::from_bytes(name));
         }
-        if !listing.push(name, Kind::from_dtype(d_type)) {
-            break;
-        }
-    }
-
-    // SAFETY: `stream` is open and owned here.
-    unsafe { libc::closedir(stream) };
+        listing.push(name, Kind::from_dtype(d_type))
+    });
 }
 
 impl Listing {

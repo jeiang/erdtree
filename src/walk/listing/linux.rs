@@ -47,13 +47,6 @@ impl Lister {
         fd::open(path, access, &self.budget)
     }
 
-    /// Whether listing uses the metadata of the directory itself; only on macOS.
-    // The macOS lister decides at run time.
-    #[allow(clippy::unused_self)]
-    pub const fn wants_dir_stat(&self) -> bool {
-        false
-    }
-
     /// Reads every entry of `dir` into `listing` with `getdents64`, and notes ignore-relevant
     /// names in `found`. Entries listed before an I/O error are kept. The metadata of the
     /// directory and whether its entries are only counted matter on macOS only.

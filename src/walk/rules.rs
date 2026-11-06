@@ -429,23 +429,31 @@ impl Rules {
         m_ignore.or(m_gi).or(m_gi_exclude).or(m_global)
     }
 
-    /// The directory these rules were built for, and those of its walked ancestors (not the
-    /// ancestors of the root). Used for symlink loop detection.
-    #[cfg(not(fd_walk))]
-    pub fn walked_dirs(&self) -> impl Iterator<Item = &Path> {
-        self.parents()
-            .take_while(|ig| !ig.is_absolute_parent)
-            .map(|ig| ig.dir.as_path())
-    }
+    /// Whether the directory `target`, the target of the followed symlink at `path`, is the
+    /// directory these rules were built for or one of its walked ancestors (not the ancestors of
+    /// the root). The descriptor-based walk compares device and inode numbers, so it works at any
+    /// depth; elsewhere the directories are opened by path.
+    pub fn is_loop(&self, path: &Path, target: &Stat) -> bool {
+        let mut walked = self.parents().take_while(|ig| !ig.is_absolute_parent);
 
-    /// Whether `ident` is that of the directory these rules were built for, or of one of its
-    /// walked ancestors (not the ancestors of the root). Used for symlink loop detection; unlike
-    /// opening the directories by path, it works at any depth.
-    #[cfg(fd_walk)]
-    pub fn is_walked(&self, ident: Ident) -> bool {
-        self.parents()
-            .take_while(|ig| !ig.is_absolute_parent)
-            .any(|ig| ig.ident == Some(ident))
+        #[cfg(fd_walk)]
+        {
+            let _ = path;
+            walked.any(|ig| ig.ident == Some((target.dev, target.ino)))
+        }
+
+        #[cfg(not(fd_walk))]
+        {
+            let _ = target;
+            let Ok(child) = same_file::Handle::from_path(path) else {
+                // Upstream reports the error, which drops the entry.
+                return true;
+            };
+
+            walked.any(|ig| {
+                same_file::Handle::from_path(&ig.dir).map_or(true, |ancestor| ancestor == child)
+            })
+        }
     }
 }
 

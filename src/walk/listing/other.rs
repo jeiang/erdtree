@@ -48,11 +48,6 @@ impl Lister {
         fs::read_dir(path).ok().map(Opened)
     }
 
-    /// Whether listing uses the metadata of the directory itself; only on macOS.
-    pub const fn wants_dir_stat(&self) -> bool {
-        false
-    }
-
     /// Reads every entry of `dir` into `listing` and notes ignore-relevant names in `found`.
     /// The metadata of the directory and whether its entries are only counted matter on macOS
     /// only.

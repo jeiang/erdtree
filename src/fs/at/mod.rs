@@ -28,6 +28,8 @@ use macos as sys;
 
 #[cfg(target_os = "linux")]
 pub use linux::{for_each_dirent, getdents, inode_order_is_useless};
+#[cfg(target_os = "macos")]
+pub use macos::for_each_readdir;
 pub use sys::stat_fd;
 
 /// An entry named `name` in the directory open as `dir`.

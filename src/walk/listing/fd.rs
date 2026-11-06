@@ -77,7 +77,7 @@ impl Opened {
 /// subdirectories wait, so this allows many files, and holds no more of them than the limit
 /// allows.
 pub fn budget(walker: &Walker) -> Arc<Budget> {
-    Budget::new(at::raise_open_file_limit(), walker.max_workers())
+    Budget::new(at::raise_open_file_limit(), walker.max_threads)
 }
 
 /// Opens the directory at `path` as `access` says: relative to its parent when the job holds
