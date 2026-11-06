@@ -19,7 +19,6 @@ fn suppress_size() {
  data
 
 3 directories, 6 files"
-        ),
-        "Failed to suppress size."
+        )
     )
 }

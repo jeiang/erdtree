@@ -1,25 +1,15 @@
 //! The parallel row writer must print exactly what a single thread prints, also with the link
 //! theme of `--follow`, which each worker works out from a row's ancestors.
 
-use std::{fs, path::Path, process::Command};
+use std::{fs, path::Path};
 use tempfile::TempDir;
+use utils::Erd;
 
-/// Runs `erd` with `args` and returns stdout, which must be a success.
-fn erd(args: &[&str]) -> Vec<u8> {
-    let out = Command::new(env!("CARGO_BIN_EXE_erd"))
-        .args(["--no-config", "--disk-usage", "logical", "--sort", "name"])
-        .args(args)
-        .env_remove("NO_COLOR")
-        .env_remove("LS_COLORS")
-        .output()
-        .unwrap();
+mod utils;
 
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    out.stdout
+/// Stdout of a successful `erd` with `threads` workers, escapes included.
+fn erd(threads: usize, args: &[&str]) -> String {
+    Erd::new().threads(threads).args(args).ok().raw()
 }
 
 /// A tree of about 12000 entries with uneven fan-out, empty directories and depth up to 7, which
@@ -86,11 +76,10 @@ fn threads_print_the_same_as_one() {
             let mut args = layout.to_vec();
             args.extend(["-C", color, root]);
 
-            let one = erd(&[&["--threads", "1"], &args[..]].concat());
-            let four = erd(&[&["--threads", "4"], &args[..]].concat());
+            let one = erd(1, &args);
 
-            assert!(one.iter().filter(|&&b| b == b'\n').count() > 100);
-            assert!(one == four, "{layout:?} {color}");
+            assert!(one.lines().count() > 100);
+            assert!(one == erd(4, &args), "{layout:?} {color}");
         }
     }
 }
@@ -106,11 +95,10 @@ fn zero_threads_print_the_same_as_one() {
         let mut args = layout.to_vec();
         args.extend(["-C", "none", root]);
 
-        let one = erd(&[&["--threads", "1"], &args[..]].concat());
-        let zero = erd(&[&["--threads", "0"], &args[..]].concat());
+        let one = erd(1, &args);
 
-        assert!(one.iter().filter(|&&b| b == b'\n').count() > 100);
-        assert!(one == zero, "{layout:?}");
+        assert!(one.lines().count() > 100);
+        assert!(one == erd(0, &args), "{layout:?}");
     }
 }
 
@@ -151,15 +139,13 @@ fn follow_threads_print_the_same_as_one() {
             args.extend_from_slice(layout);
             args.push(root);
 
-            let one = erd(&[&["--threads", "1"], &args[..]].concat());
-            let four = erd(&[&["--threads", "4"], &args[..]].concat());
+            let one = erd(1, &args);
 
-            assert!(one.iter().filter(|&&b| b == b'\n').count() > 100);
-            assert!(one == four, "{layout:?} {color}");
+            assert!(one.lines().count() > 100);
+            assert!(one == erd(4, &args), "{layout:?} {color}");
 
-            // Red is the color of the link theme.
             if color == "force" {
-                assert!(one.windows(5).any(|w| w == b"\x1b[31m"), "{layout:?}");
+                assert!(utils::in_link_theme(&one), "{layout:?}");
             }
         }
     }
@@ -177,14 +163,14 @@ fn follow_without_links_prints_the_tree_theme() {
         &["-L", "2"],
         &["--prune", "-p", "f1"],
     ] {
-        let mut args = vec!["--threads", "4", "-C", "force"];
+        let mut args = vec!["-C", "force"];
         args.extend_from_slice(layout);
         args.push(root);
 
-        let plain = erd(&args);
+        let plain = erd(4, &args);
         args.push("--follow");
 
-        assert!(plain == erd(&args), "{layout:?}");
+        assert!(plain == erd(4, &args), "{layout:?}");
     }
 }
 
@@ -199,13 +185,15 @@ fn flat_paths_replace_invalid_utf8() {
     fs::create_dir(&sub).unwrap();
     fs::write(sub.join(OsStr::from_bytes(b"bad\xffname")), "x").unwrap();
 
-    let out = String::from_utf8(erd(&[
-        "-y",
-        "iflat",
-        "--suppress-size",
-        dir.path().to_str().unwrap(),
-    ]))
-    .unwrap();
+    let out = erd(
+        1,
+        &[
+            "-y",
+            "iflat",
+            "--suppress-size",
+            dir.path().to_str().unwrap(),
+        ],
+    );
 
     assert!(out.contains("d\u{fffd}/bad\u{fffd}name\n"), "{out}");
 }

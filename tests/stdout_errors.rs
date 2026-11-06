@@ -2,7 +2,10 @@
 
 #![cfg(unix)]
 
-use std::process::Command;
+use std::process::Stdio;
+use utils::Erd;
+
+mod utils;
 
 fn big_tree() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -19,13 +22,9 @@ fn big_tree() -> tempfile::TempDir {
 
 #[test]
 fn broken_pipe_exits_quietly() {
-    use std::process::Stdio;
-
     let dir = big_tree();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_erd"))
-        .args(["--no-config", "--no-progress"])
-        .arg(dir.path())
-        .stdin(Stdio::null())
+    let (mut cmd, _home) = Erd::new().arg("--no-progress").arg(dir.path()).command();
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -46,8 +45,6 @@ fn broken_pipe_exits_quietly() {
 #[cfg(target_os = "linux")]
 #[test]
 fn write_error_is_reported() {
-    use std::process::Stdio;
-
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "x").unwrap();
 
@@ -55,14 +52,8 @@ fn write_error_is_reported() {
         .write(true)
         .open("/dev/full")
         .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_erd"))
-        .args(["--no-config", "--no-progress"])
-        .arg(dir.path())
-        .stdin(Stdio::null())
-        .stdout(full)
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap();
+    let (mut cmd, _home) = Erd::new().arg("--no-progress").arg(dir.path()).command();
+    let output = cmd.stdout(full).stderr(Stdio::piped()).output().unwrap();
 
     assert!(!output.status.success(), "status: {:?}", output.status);
     let stderr = String::from_utf8_lossy(&output.stderr);

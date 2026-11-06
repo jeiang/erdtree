@@ -21,28 +21,14 @@ fn fixture() -> TempDir {
     dir
 }
 
-/// Paths of the shown entries, root excluded, sorted.
-fn shown(dir: &TempDir, args: &[&str]) -> Vec<String> {
-    let mut all = vec!["--layout", "iflat", "--suppress-size", "--no-report"];
-    all.extend_from_slice(args);
-    all.push(dir.path().to_str().unwrap());
-
-    let mut paths = utils::run_cmd(&all)
-        .lines()
-        .skip(1)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths
-}
-
 #[test]
 fn include_shows_matching_hidden_entries_only() {
     let dir = fixture();
+    let root = dir.path();
 
-    assert_eq!(shown(&dir, &[]), ["src", "src/main.rs"]);
+    assert_eq!(utils::paths(root, &[]), ["src", "src/main.rs"]);
     assert_eq!(
-        shown(&dir, &["--include", ".github"]),
+        utils::paths(root, &["--include", ".github"]),
         [
             ".github",
             ".github/workflows",
@@ -52,7 +38,7 @@ fn include_shows_matching_hidden_entries_only() {
         ]
     );
     assert_eq!(
-        shown(&dir, &["--include", ".github", "--include", ".github/**"]),
+        utils::paths(root, &["--include", ".github", "--include", ".github/**"]),
         [
             ".github",
             ".github/.keep",
@@ -69,8 +55,8 @@ fn include_composes_with_pattern() {
     let dir = fixture();
 
     assert_eq!(
-        shown(
-            &dir,
+        utils::paths(
+            dir.path(),
             &["--include", ".github", "--pattern", "ci.yml", "--prune"]
         ),
         [".github", ".github/workflows", ".github/workflows/ci.yml"]

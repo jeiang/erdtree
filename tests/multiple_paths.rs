@@ -1,4 +1,4 @@
-use std::process::Command;
+use utils::Erd;
 
 mod utils;
 
@@ -35,32 +35,25 @@ fn a_root_without_matches_is_shown_when_another_has_matches() {
     assert!(out.ends_with("flat_data\n\n1 directory, 1 file"), "{out}");
 }
 
-fn erd_failure(args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_erd"))
-        .arg("--no-config")
-        .args(args)
-        .output()
-        .unwrap();
-
-    assert!(!out.status.success());
-    String::from_utf8(out.stderr).unwrap()
-}
-
 #[test]
 fn no_matches_in_any_root_is_an_error() {
-    let stderr = erd_failure(&["--pattern", "zzz", "tests/data", "tests/flat_data"]);
+    let stderr = Erd::new()
+        .args(["--pattern", "zzz", "tests/data", "tests/flat_data"])
+        .fails(1);
     assert!(stderr.contains("No entries to show"), "{stderr}");
 }
 
 #[test]
 fn a_missing_root_is_named_in_the_error() {
-    let stderr = erd_failure(&["tests/data", "tests/missing"]);
+    let stderr = Erd::new().args(["tests/data", "tests/missing"]).fails(1);
     assert!(stderr.starts_with("erd: tests/missing: "), "{stderr}");
 }
 
 #[test]
 fn a_file_root_is_named_in_the_error() {
-    let stderr = erd_failure(&["tests/data", "tests/data/nemesis.txt"]);
+    let stderr = Erd::new()
+        .args(["tests/data", "tests/data/nemesis.txt"])
+        .fails(1);
     assert_eq!(stderr, "erd: tests/data/nemesis.txt: Not a directory\n");
 }
 
@@ -72,5 +65,5 @@ fn level_zero_prints_a_root_without_visible_entries() {
     let name = dir.path().file_name().unwrap().to_str().unwrap();
 
     assert_eq!(utils::run_cmd(&["--summarize", root]), name);
-    assert!(erd_failure(&[root]).contains("No entries to show"));
+    assert!(Erd::new().arg(root).fails(1).contains("No entries to show"));
 }

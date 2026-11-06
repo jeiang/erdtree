@@ -1,31 +1,18 @@
 //! The multi-threaded walk, which splits directories above 1024 entries between workers, must
 //! show exactly what a single thread shows.
 
-use std::{fs, process::Command};
+use std::fs;
+use utils::Erd;
 
-/// Output of `erd` with `threads` workers on `dir`.
-fn run(threads: &str, dir: &std::path::Path, extra: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_erd"))
-        .args([
-            "--no-config",
-            "--threads",
-            threads,
-            "--sort",
-            "name",
-            "-C",
-            "none",
-        ])
+mod utils;
+
+fn run(threads: usize, dir: &std::path::Path, extra: &[&str]) -> String {
+    Erd::new()
+        .threads(threads)
         .args(extra)
         .arg(dir)
-        .output()
-        .unwrap();
-
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout).unwrap()
+        .ok()
+        .stdout()
 }
 
 #[test]
@@ -58,10 +45,10 @@ fn many_threads_match_one_thread_on_large_directories() {
     .unwrap();
 
     let mut cases = vec![
-        &["-d", "logical"][..],
-        &["-d", "logical", "--report-ignored"],
-        &["-d", "logical", "-H", "-y", "flat"],
-        &["-d", "logical", "--min-size", "10"],
+        &[][..],
+        &["--report-ignored"],
+        &["-H", "-y", "flat"],
+        &["--min-size", "10"],
     ];
     // `--disk-usage block` and the long view exist only on Unix.
     if cfg!(unix) {
@@ -69,10 +56,10 @@ fn many_threads_match_one_thread_on_large_directories() {
     }
 
     for extra in cases {
-        let one = run("1", root, extra);
+        let one = run(1, root, extra);
 
         for _ in 0..3 {
-            assert_eq!(run("4", root, extra), one, "{extra:?}");
+            assert_eq!(run(4, root, extra), one, "{extra:?}");
         }
     }
 }

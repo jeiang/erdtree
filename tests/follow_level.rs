@@ -1,6 +1,30 @@
 #[cfg(unix)]
 mod utils;
 
+/// Stdout of `erd -C force args`, escapes included.
+#[cfg(unix)]
+fn colored(args: &[&str]) -> String {
+    utils::Erd::new()
+        .args(["-C", "force"])
+        .args(args)
+        .ok()
+        .raw()
+}
+
+/// `out` without escapes, each row in the link theme marked with a trailing ` *`.
+#[cfg(unix)]
+fn mark_link_theme(out: &str) -> String {
+    out.trim_end()
+        .lines()
+        .map(|line| {
+            let text = String::from_utf8(strip_ansi_escapes::strip(line)).unwrap();
+            let mark = if utils::in_link_theme(line) { " *" } else { "" };
+            format!("{text}{mark}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// `--follow` paints only the rows below a followed link in the link theme, so a link hidden by
 /// `--level` leaves the row of its shown ancestor in the tree theme.
 #[cfg(unix)]
@@ -18,8 +42,7 @@ fn follow_link_theme_skips_ancestors_of_hidden_link() -> Result<(), Box<dyn std:
     symlink("../../c", root.join("a/b/sd"))?;
 
     let root = root.to_string_lossy().into_owned();
-    let out = utils::run_cmd_raw(&["--follow", "--level", "1", "-C", "force", &root], &[]);
-    let out = String::from_utf8(out)?;
+    let out = colored(&["--follow", "--level", "1", &root]);
 
     // The hidden link a/b/sd -> c is below `a`, not above it.
     let row = out
@@ -31,7 +54,7 @@ fn follow_link_theme_skips_ancestors_of_hidden_link() -> Result<(), Box<dyn std:
 }
 
 /// Rows of `--follow -C force` over a tree with a link to a directory, after `filter` hides
-/// children in the middle of their directories. Rows in the link theme end in ` *`.
+/// children in the middle of their directories, marked by [`mark_link_theme`].
 #[cfg(unix)]
 fn follow_rows(filter: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
     use std::os::unix::fs::symlink;
@@ -49,21 +72,11 @@ fn follow_rows(filter: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
     symlink("../../c", root.join("a/b/sd"))?;
 
     let root = root.to_string_lossy().into_owned();
-    let mut args = vec!["--follow", "-C", "force"];
+    let mut args = vec!["--follow"];
     args.extend_from_slice(filter);
     args.push(&root);
 
-    let out = String::from_utf8(utils::run_cmd_raw(&args, &[]))?;
-    let rows: Vec<String> = out
-        .trim_end()
-        .lines()
-        .map(|line| {
-            let text = String::from_utf8(strip_ansi_escapes::strip(line))?;
-            let mark = if line.contains("\x1b[31m") { " *" } else { "" };
-            Ok(format!("{text}{mark}"))
-        })
-        .collect::<Result<_, std::string::FromUtf8Error>>()?;
-    Ok(rows.join("\n"))
+    Ok(mark_link_theme(&colored(&args)))
 }
 
 /// `--prune` hides the empty directories between `c` and `z`; the link theme covers exactly the
@@ -141,18 +154,10 @@ fn follow_link_theme_ends_after_subtree() -> Result<(), Box<dyn std::error::Erro
     symlink("../../c", root.join("a/b/sd"))?;
 
     let root = root.to_string_lossy().into_owned();
-    let out = utils::run_cmd_raw(&["--follow", "-C", "force", &root], &[]);
-    let rows = String::from_utf8(out)?
-        .lines()
-        .map(|line| {
-            let text = String::from_utf8(strip_ansi_escapes::strip(line))?;
-            let mark = if line.contains("\x1b[31m") { " *" } else { "" };
-            Ok(format!("{text}{mark}"))
-        })
-        .collect::<Result<Vec<_>, std::string::FromUtf8Error>>()?;
+    let rows = mark_link_theme(&colored(&["--follow", &root]));
 
     assert_eq!(
-        rows.join("\n"),
+        rows,
         indoc::indoc!(
             "
             1 B    ┌─ x
@@ -189,8 +194,7 @@ fn follow_link_theme_inverted_golden() -> Result<(), Box<dyn std::error::Error>>
     symlink("../../c", root.join("a/b/sd"))?;
 
     let root = root.to_string_lossy().into_owned();
-    let out = utils::run_cmd_raw(&["--follow", "-y", "inverted", "-C", "force", &root], &[]);
-    let out = String::from_utf8(out)?;
+    let out = colored(&["--follow", "-y", "inverted", &root]);
 
     let expected = concat!(
         "\x1b[1;36m1 B\x1b[0m \x1b[1;34mt\x1b[0m\n",

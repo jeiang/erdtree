@@ -3,7 +3,12 @@
 mod utils;
 
 fn has_escapes(color: &str, no_color: &str) -> bool {
-    utils::run_cmd_raw(&["--color", color, "tests/data"], &[("NO_COLOR", no_color)]).contains(&0x1b)
+    utils::Erd::new()
+        .args(["--color", color, "tests/data"])
+        .env("NO_COLOR", no_color)
+        .ok()
+        .raw()
+        .contains('\x1b')
 }
 
 #[test]

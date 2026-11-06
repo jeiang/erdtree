@@ -1,6 +1,7 @@
 use indoc::indoc;
 use std::fs;
 use tempfile::TempDir;
+use utils::Erd;
 
 mod utils;
 
@@ -17,34 +18,20 @@ fn dream_parent() -> TempDir {
     dir
 }
 
-/// Paths of the shown entries below `dreamroot/foo`, root excluded, sorted.
-fn shown_below_dream_parent(dir: &TempDir, args: &[&str]) -> Vec<String> {
-    let root = dir.path().join("dreamroot/foo");
-    let mut all = vec!["--layout", "iflat", "--suppress-size", "--no-report"];
-    all.extend_from_slice(args);
-    all.push(root.to_str().unwrap());
-
-    let mut paths = utils::run_cmd(&all)
-        .lines()
-        .skip(1)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths
-}
-
 /// `--file-type dir` matches directories below the root only, not the root's ancestors.
 #[test]
 fn glob_with_filetype_ignores_ancestors_of_root() {
     let dir = dream_parent();
     let args = ["--glob", "--file-type", "dir", "--pattern"];
 
+    let root = dir.path().join("dreamroot/foo");
+
     assert_eq!(
-        shown_below_dream_parent(&dir, &[&args[..], &["dream*"]].concat()),
+        utils::paths(&root, &[&args[..], &["dream*"]].concat()),
         ["dreamy", "dreamy/c.txt"]
     );
     assert_eq!(
-        shown_below_dream_parent(&dir, &[&args[..], &["!dream*"]].concat()),
+        utils::paths(&root, &[&args[..], &["!dream*"]].concat()),
         ["other", "other/b.txt", "sub", "sub/a.txt"]
     );
 }
@@ -149,22 +136,26 @@ fn negated_glob_with_filetype() {
 }
 
 #[test]
-#[should_panic]
 fn glob_empty_set_dir() {
-    utils::run_cmd(&[
-        "--glob",
-        "--pattern",
-        "*.txt",
-        "--file-type",
-        "dir",
-        "tests/data",
-    ]);
+    let err = Erd::new()
+        .args([
+            "--glob",
+            "--pattern",
+            "*.txt",
+            "--file-type",
+            "dir",
+            "tests/data",
+        ])
+        .fails(1);
+    assert_eq!(err, "erd: No entries to show with given arguments.\n");
 }
 
 #[test]
-#[should_panic]
 fn glob_empty_set_file() {
-    utils::run_cmd(&["--glob", "--pattern", "*weewoo*", "tests/data"]);
+    let err = Erd::new()
+        .args(["--glob", "--pattern", "*weewoo*", "tests/data"])
+        .fails(1);
+    assert_eq!(err, "erd: No entries to show with given arguments.\n");
 }
 
 /// A glob containing a slash is anchored to the root; it must match even when the root is given as

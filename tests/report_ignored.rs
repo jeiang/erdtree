@@ -73,17 +73,8 @@ fn unread_directories_at_the_traversal_limit_are_not_counted() {
 
 #[test]
 fn conflicts_with_pattern() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_erd"))
-        .args([
-            "--no-config",
-            "--report-ignored",
-            "--pattern",
-            "x",
-            "tests/data",
-        ])
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be used with"));
+    let err = utils::Erd::new()
+        .args(["--report-ignored", "--pattern", "x", "tests/data"])
+        .fails(2);
+    assert!(err.contains("cannot be used with"), "{err}");
 }

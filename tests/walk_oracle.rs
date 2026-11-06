@@ -101,23 +101,13 @@ const OPTION_SETS: &[Opts] = &[
 
 /// Relative paths (with `/`) of the entries below `root` that `erd` shows.
 fn erd_entries(root: &Path, opts: Opts) -> BTreeSet<String> {
-    let mut args = vec![
-        "--layout".to_string(),
-        "iflat".into(),
-        "--suppress-size".into(),
-        "--no-report".into(),
-    ];
-    args.extend(opts.args());
-    args.push(root.display().to_string());
-
+    let args = opts.args();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = utils::run_cmd_untrimmed(&args);
-
-    // The first line is the root.
-    out.lines().skip(1).map(str::to_string).collect()
+    utils::paths(root, &args).into_iter().collect()
 }
 
-/// Relative paths of the entries below `root` that `ignore` yields.
+/// Relative paths of the entries below `root` that `ignore` yields. `erd` runs with an empty
+/// home, so the global gitignore of the machine running the tests must not apply here either.
 fn oracle_entries(root: &Path, opts: Opts) -> BTreeSet<String> {
     let root = fs::canonicalize(root).unwrap();
     let mut overrides = OverrideBuilder::new(&root);
@@ -133,7 +123,7 @@ fn oracle_entries(root: &Path, opts: Opts) -> BTreeSet<String> {
     builder
         .follow_links(opts.follow)
         .git_ignore(!opts.no_ignore)
-        .git_global(!opts.no_ignore)
+        .git_global(false)
         .hidden(!opts.hidden)
         .overrides(overrides.build().unwrap())
         .max_depth(opts.traversal_depth);
