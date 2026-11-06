@@ -33,7 +33,7 @@ pub mod long;
 enum Rows {
     /// The shown nodes of the tree in pre-order with the root on top if `inverted`, else in
     /// reverse pre-order with the root at the bottom, with the prefixes worked out from each
-    /// row's ancestors. Rows deeper than the level are left out.
+    /// row's ancestors.
     Tree {
         inverted: bool,
         glyphs: prefix::Glyphs,
@@ -71,7 +71,7 @@ impl Rows {
         }
     }
 
-    /// Number of positions to format; a tree layout may skip some of them.
+    /// Number of rows.
     fn len(&self, tree: &Tree) -> usize {
         match self {
             Self::Tree { .. } => tree.order().len(),
@@ -84,7 +84,6 @@ impl Rows {
         &self,
         fmt: &RowFmt<'_>,
         tree: &Tree,
-        level: usize,
         scratch: &mut Scratch,
         positions: Range<usize>,
         out: &mut Vec<u8>,
@@ -96,10 +95,7 @@ impl Rows {
 
                 for k in positions {
                     let id = order[if *inverted { k } else { last - k }];
-
-                    if tree.node(id).depth() <= level {
-                        fmt.tree_row(scratch, id, glyphs, *inverted, out);
-                    }
+                    fmt.tree_row(scratch, id, glyphs, *inverted, out);
                 }
             },
             Self::Flat { ids, paths } => {
@@ -145,7 +141,6 @@ const INLINE_MAX: usize = 2 * CHUNK;
 pub fn write(tree: &Tree, ctx: &Context, out: &mut impl Write) -> io::Result<()> {
     let rows = Rows::new(tree, ctx);
     let fmt = RowFmt::new(tree, ctx);
-    let level = ctx.level();
 
     write_chunked(
         rows.len(tree),
@@ -153,7 +148,7 @@ pub fn write(tree: &Tree, ctx: &Context, out: &mut impl Write) -> io::Result<()>
         CHUNK,
         INLINE_MAX,
         &|scratch: &mut Scratch, positions, buf: &mut Vec<u8>| {
-            rows.write_range(&fmt, tree, level, scratch, positions, buf);
+            rows.write_range(&fmt, tree, scratch, positions, buf);
         },
         out,
     )

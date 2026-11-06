@@ -2,7 +2,7 @@
 //! per node. Digit counts grow with the value, so the widest number comes from the largest one;
 //! human-readable sizes switch unit as values grow, so each unit keeps its own largest value.
 
-use super::{Tree, topo::ix};
+use super::Tree;
 use crate::{
     bytes::digits,
     context::Context,
@@ -70,16 +70,16 @@ pub enum Scope<'a> {
     /// Every node.
     All,
 
-    /// The listed nodes.
-    Listed(&'a [u32]),
+    /// The nodes `i` with `shown[i]`.
+    Shown(&'a [bool]),
 }
 
 impl Scope<'_> {
-    /// Number of nodes.
+    /// Number of positions to look at.
     const fn len(self, all: usize) -> usize {
         match self {
             Self::All => all,
-            Self::Listed(ids) => ids.len(),
+            Self::Shown(shown) => shown.len(),
         }
     }
 }
@@ -232,11 +232,12 @@ impl Tree {
         #[cfg(unix)]
         let mut last_owner = None;
 
-        for k in range {
-            let i = match scope {
-                Scope::All => k,
-                Scope::Listed(ids) => ix(ids[k]),
-            };
+        for i in range {
+            if let Scope::Shown(shown) = scope
+                && !shown[i]
+            {
+                continue;
+            }
 
             if let Some(value) = cols.size[i] {
                 stats.size.add(value);

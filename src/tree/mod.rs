@@ -51,8 +51,7 @@ pub struct Tree {
     cols: Columns,
     root: u32,
 
-    /// Alive nodes in display pre-order (children sorted), down to the display level unless a
-    /// filter needs the whole tree.
+    /// Alive nodes in display pre-order (children sorted), down to the display level.
     order: Vec<u32>,
 
     /// Whether a node is the last alive child of its parent.
@@ -61,9 +60,8 @@ pub struct Tree {
     /// Bit `i` is set when node `i` is a symlink (has a link target).
     link: Vec<u64>,
 
-    /// Nodes at this depth or deeper have no shown children: the display level, when `order`
-    /// stops there. [`u32::MAX`] when `order` goes all the way down.
-    shown_depth: u32,
+    /// The display level: `order` stops at this depth.
+    level: u32,
 
     /// Whether there is nothing to show below the root.
     stump: bool,
@@ -98,11 +96,6 @@ impl Filters {
             dirs_only: ctx.dirs_only,
             min_size: ctx.min_size.map(|m| m.value).filter(|&v| v > 0),
         }
-    }
-
-    /// Whether any node can be hidden.
-    const fn any(self) -> bool {
-        self.prune || self.dirs_only || self.min_size.is_some()
     }
 }
 
@@ -159,20 +152,16 @@ impl Tree {
         let is_dir: Vec<bool> = cols.file_type.iter().map(|kind| kind.is_dir()).collect();
         let mut children = Children::from_runs(n, &std::mem::take(&mut cols.runs));
 
-        // Nothing is hidden by a filter, so the display order can stop at `--level`.
+        // The display order stops at `--level`; the filters only decide which nodes are shown.
         let filters = Filters::new(ctx);
-        let cap = if filters.any() {
-            u32::MAX
-        } else {
-            u32::try_from(ctx.level()).unwrap_or(u32::MAX)
-        };
+        let level = u32::try_from(ctx.level()).unwrap_or(u32::MAX);
 
         let mut tree = Self {
             root,
             order: vec![],
             last: vec![],
             link,
-            shown_depth: cap,
+            level,
             stump: false,
             widths: Widths::new(ctx),
             #[cfg(unix)]
@@ -198,26 +187,26 @@ impl Tree {
         drop(uncounted);
 
         // Entries hidden by `--min-size` must not widen the size columns, so then the widths
-        // wait for the display order.
+        // wait for the filters.
         let stats = tree.sort_children(ctx, &mut children, filters.min_size.is_none(), threads);
-        tree.filter_and_order(&children, &is_dir, filters, threads);
-        let stats = stats.unwrap_or_else(|| tree.scan(ctx, Scope::Listed(&tree.order), threads));
+        let shown = tree.filter_and_order(&children, &is_dir, filters, threads);
+        let stats = stats.unwrap_or_else(|| tree.scan(ctx, Scope::Shown(&shown), threads));
         tree.apply_widths(ctx, &stats);
 
         Ok(tree)
     }
 
     /// Applies `--prune`, patterns, `--dirs-only` and `--min-size`, then builds the display
-    /// order and the summary count.
+    /// order and the summary count. Returns which nodes are shown, at any depth.
     fn filter_and_order(
         &mut self,
         children: &Children,
         is_dir: &[bool],
         filters: Filters,
         threads: usize,
-    ) {
+    ) -> Vec<bool> {
         let tree = self;
-        let (root, cap) = (tree.root, tree.shown_depth);
+        let root = tree.root;
         let n = tree.cols.len();
 
         // Nodes still shown after the filters.
@@ -260,25 +249,16 @@ impl Tree {
             .fold(hidden, |acc, i| acc + tree.node(i));
         }
 
-        tree.order = topo::preorder(children, root, &alive, &tree.cols.depth, cap);
+        tree.order = topo::preorder(children, root, &alive, &tree.cols.depth, tree.level);
 
+        // The filters leave the parent of every shown node shown, so the shown nodes are the
+        // ones a pre-order without the level would reach.
+        let shown = tree.count_shown(&alive, threads);
+        tree.stump = shown.num_dirs + shown.num_files + shown.num_links == 0;
         hidden.num_ignored = tree.cols.ignored;
-
-        // Without filters every node is shown, whatever the level cuts off the display.
-        tree.count = if filters.any() {
-            tree.order
-                .iter()
-                .skip(1)
-                .fold(hidden, |acc, &i| acc + tree.node(i))
-        } else {
-            tree.count_all(threads)
-        };
-        tree.stump = if filters.any() {
-            tree.order.len() <= 1
-        } else {
-            n <= 1
-        };
+        tree.count = shown + hidden;
         tree.last = topo::last_alive_child(children, &tree.order, &alive, threads);
+        alive
     }
 
     /// Sorts the child lists of the directories shown (down to the display level), and with
@@ -291,7 +271,7 @@ impl Tree {
         scan: bool,
         threads: usize,
     ) -> Option<Stats> {
-        let cap = self.shown_depth;
+        let cap = self.level;
         let sorter = Sorter::new(self, ctx.sort, ctx.dir_order, Ties::Name);
         let overlap = scan && self.cols.len() >= OVERLAP_MIN && threads > 1;
 
@@ -312,19 +292,19 @@ impl Tree {
         })
     }
 
-    /// The summary count of an unfiltered tree: every node below the root, plus those skipped
-    /// by the walk.
-    fn count_all(&self, threads: usize) -> FileCount {
-        let n = self.cols.len();
+    /// The shown nodes below the root (`shown[i]` for node `i`), counted with up to `threads`
+    /// threads.
+    fn count_shown(&self, shown: &[bool], threads: usize) -> FileCount {
+        let n = shown.len();
         let count = |range: std::ops::Range<usize>| {
             range
-                .filter(|&i| i != ix(self.root))
+                .filter(|&i| shown[i] && i != ix(self.root))
                 .fold(FileCount::default(), |acc, i| {
                     acc + self.node(u32::try_from(i).unwrap_or(NONE))
                 })
         };
 
-        let mut total = if n < PAR_COUNT_MIN || threads < 2 {
+        if n < PAR_COUNT_MIN || threads < 2 {
             count(0..n)
         } else {
             let width = n.div_ceil(threads);
@@ -339,10 +319,7 @@ impl Tree {
                     acc + job.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
                 })
             })
-        };
-
-        total.num_ignored = self.cols.ignored;
-        total
+        }
     }
 
     /// Hard-link deduplication (see [`topo::dedupe`]): among entries sharing an inode identity
@@ -427,8 +404,7 @@ impl Tree {
         &self.widths
     }
 
-    /// Shown nodes in display pre-order, root first. Stops at the display level (`--level`)
-    /// unless a filter is active; layouts show nothing deeper either way.
+    /// Shown nodes in display pre-order, root first, down to the display level (`--level`).
     pub fn order(&self) -> &[u32] {
         &self.order
     }
@@ -473,28 +449,14 @@ impl Tree {
     /// list a directory before its contents.
     #[must_use]
     pub fn flat_order(&self, ctx: &Context) -> Vec<u32> {
-        let level = ctx.level();
-
         if ctx.sort.is_name() || self.order.len() <= 1 {
-            let mut ids = self.order.clone();
-
-            // The order is cut at the level unless a filter kept all of it.
-            if ix(self.shown_depth) > level {
-                ids.retain(|&i| ix(self.cols.depth[ix(i)]) <= level);
-            }
-            return ids;
+            return self.order.clone();
         }
 
-        // The flat layouts show nothing deeper than the level, and a stable sort of a subset
-        // lists it as the sort of the whole does, so sort just the visible nodes.
-        let rest: Vec<u32> = self.order[1..]
-            .iter()
-            .copied()
-            .filter(|&i| ix(self.cols.depth[ix(i)]) <= level)
-            .collect();
+        let rest = &self.order[1..];
 
         // Sort positions in `rest`, breaking ties by position to keep the stable order.
-        let sorter = Sorter::new(self, ctx.sort, ctx.dir_order, Ties::Position(&rest));
+        let sorter = Sorter::new(self, ctx.sort, ctx.dir_order, Ties::Position(rest));
         let mut positions: Vec<u32> = (0..rest.len())
             .map(|k| u32::try_from(k).unwrap_or(NONE))
             .collect();
