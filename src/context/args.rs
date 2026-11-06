@@ -19,7 +19,7 @@ pub fn compute_args() -> Result<ArgMatches, Error> {
     // slow path would succeed too (relations only add constraints) with identical values. On
     // any error, help or version request, take the slow path so that output, error order and
     // exit status stay exactly as they were.
-    let mut cmd = with_relations(Context::command().args_override_self(true));
+    let mut cmd = with_relations(command());
 
     match cmd.try_get_matches_from_mut(std::env::args_os()) {
         Ok(user_args) => return reconcile(cmd, user_args, true),
@@ -29,15 +29,20 @@ pub fn compute_args() -> Result<ArgMatches, Error> {
     }
 
     // Exits for usage errors, like `Command::get_matches`.
-    let user_args = Context::command()
-        .args_override_self(true)
+    let user_args = command()
         .try_get_matches_from(std::env::args_os())
         .unwrap_or_else(|err| err.exit());
 
     // A command that has parsed once cannot take `mut_arg`; build another for the relations.
-    let cmd = with_relations(Context::command().args_override_self(true));
+    let cmd = with_relations(command());
 
     reconcile(cmd, user_args, false)
+}
+
+/// The command that parses the command-line and the config file; an argument given twice takes
+/// its last value.
+fn command() -> Command {
+    Context::command().args_override_self(true)
 }
 
 /// Merges the config file, if any, into `user_args`, the matches of the command-line. `cmd` must
@@ -172,16 +177,21 @@ fn with_relations(cmd: Command) -> Command {
 }
 
 /// Parses `args` (without the binary name) against `cmd`, which must carry the argument
-/// relations. The real binary name is prepended so usage errors read `Usage: erd ...`.
+/// relations. The program name is prepended so usage errors read `Usage: erd ...`.
 fn validate(
     cmd: &mut Command,
     args: impl IntoIterator<Item = OsString>,
 ) -> Result<ArgMatches, Error> {
+    cmd.try_get_matches_from_mut(with_program_name(args))
+        .map_err(Error::ArgParse)
+}
+
+/// `args` led by the program name, as clap expects.
+fn with_program_name(args: impl IntoIterator<Item = OsString>) -> impl Iterator<Item = OsString> {
     let bin = std::env::args_os()
         .next()
         .unwrap_or_else(|| OsString::from("erd"));
-    let full = std::iter::once(bin).chain(args);
-    cmd.try_get_matches_from_mut(full).map_err(Error::ArgParse)
+    std::iter::once(bin).chain(args)
 }
 
 /// Loads an [`ArgMatches`] from `.erdtree.toml`, or `None` if there is no such file.
@@ -190,9 +200,9 @@ fn load_toml_config_args(named_table: Option<&str>) -> Result<Option<ArgMatches>
     let Some(toml_config) = config::load()? else {
         return Ok(None);
     };
-    let parsed_args = config::parse(toml_config, named_table)?;
-    let config_args = Context::command()
-        .try_get_matches_from(parsed_args)
+    let config_args = config::parse(toml_config, named_table)?;
+    let config_args = command()
+        .try_get_matches_from(with_program_name(config_args))
         .map_err(Error::Config)?;
 
     Ok(Some(config_args))
@@ -200,12 +210,8 @@ fn load_toml_config_args(named_table: Option<&str>) -> Result<Option<ArgMatches>
 
 #[cfg(test)]
 mod test {
-    use super::{Command, CommandFactory, Context, merge, validate, with_relations};
+    use super::{Context, command, merge, validate, with_relations};
     use crate::context::sort;
-
-    fn command() -> Command {
-        Context::command().args_override_self(true)
-    }
 
     /// The [`Context`] that `cli` on the command-line and `config` from a config file give.
     fn context(cli: &[&str], config: &[&str]) -> Context {
