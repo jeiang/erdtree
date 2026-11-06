@@ -30,7 +30,7 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
     let mut plan = Plan::with_capacity(order.len());
 
     let glyphs = theme::GlyphCache::new();
-    let mut get_theme = theme::link_theme_getter();
+    let mut links = theme::LinkTracker::new();
 
     let mut base: Vec<&str> = vec![];
     let mut closing = vec![];
@@ -62,7 +62,7 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
                     continue;
                 }
 
-                let theme = glyphs.get(get_theme(node));
+                let theme = glyphs.get(links.is_link(node));
 
                 if tree.is_last(dir) {
                     base.push(styles::SEP);
@@ -72,7 +72,7 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
             }
         }
 
-        let theme = glyphs.get(get_theme(node));
+        let theme = glyphs.get(links.is_link(node));
 
         if depth <= max_depth {
             if depth == 0 {

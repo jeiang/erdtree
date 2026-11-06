@@ -29,7 +29,7 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
     plan.push_with_prefix(tree.root(), [""]);
 
     let glyphs = theme::GlyphCache::new();
-    let mut get_theme = theme::link_theme_getter();
+    let mut links = theme::LinkTracker::new();
 
     // Box-drawing segments of the ancestors below the root, outermost first.
     let mut base: Vec<&str> = vec![];
@@ -38,7 +38,7 @@ fn plan(tree: &Tree, ctx: &Context) -> Plan {
         let node = tree.node(id);
         let depth = node.depth();
         let last_sibling = tree.is_last(id);
-        let theme = glyphs.get(get_theme(node));
+        let theme = glyphs.get(links.is_link(node));
 
         if depth <= level {
             let part = if last_sibling { theme.uprt } else { theme.vtrt };
