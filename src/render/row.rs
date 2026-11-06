@@ -156,7 +156,7 @@ impl<'a> RowFmt<'a> {
         &self,
         scratch: &mut Scratch,
         id: u32,
-        glyphs: &prefix::Glyphs<'_>,
+        themes: &prefix::Themes<'_>,
         inverted: bool,
         out: &mut Vec<u8>,
     ) {
@@ -173,7 +173,7 @@ impl<'a> RowFmt<'a> {
         out.push(b' ');
         scratch
             .cursor
-            .write(self.tree, id, node.depth(), glyphs, inverted, out);
+            .write(self.tree, id, node.depth(), themes, inverted, out);
 
         if self.icons {
             self.write_icon(node, out);
