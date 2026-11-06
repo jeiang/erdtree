@@ -1143,6 +1143,24 @@ mod test {
         dir
     }
 
+    /// A walk of `root` with hidden and ignored entries skipped and counted, and a fixed
+    /// number of workers.
+    fn walker(root: &Path, threads: usize, tuning: Tuning) -> Walker {
+        Walker {
+            root: root.to_path_buf(),
+            rules: Rules::root(rules::Options::new(true, true), Override::empty(), None),
+            follow_links: false,
+            same_file_system: false,
+            max_depth: None,
+            threads,
+            max_threads: threads,
+            filter: None,
+            count_ignored: true,
+            fields: Fields::default(),
+            tuning,
+        }
+    }
+
     /// Every record as (path, kind, size, parent's path), the ignored count and how often a
     /// directory was split.
     fn walk(root: &Path, threads: usize, tuning: Tuning) -> (BTreeSet<String>, usize, usize) {
@@ -1157,17 +1175,8 @@ mod test {
         tuning: Tuning,
     ) -> ((BTreeSet<String>, usize, usize), usize) {
         let walker = Walker {
-            root: root.to_path_buf(),
-            rules: Rules::root(rules::Options::new(true, true), Override::empty(), None),
-            follow_links: false,
-            same_file_system: false,
-            max_depth: None,
-            threads,
             max_threads,
-            filter: None,
-            count_ignored: true,
-            fields: Fields::default(),
-            tuning,
+            ..walker(root, threads, tuning)
         };
 
         let progress = AtomicU64::new(0);
@@ -1280,17 +1289,8 @@ mod test {
     /// How many workers a walk with `threads` workers starts.
     fn started(root: &Path, threads: usize) -> usize {
         let walker = Walker {
-            root: root.to_path_buf(),
-            rules: Rules::root(rules::Options::new(true, true), Override::empty(), None),
-            follow_links: false,
-            same_file_system: false,
-            max_depth: None,
-            threads,
-            max_threads: threads,
-            filter: None,
             count_ignored: false,
-            fields: Fields::default(),
-            tuning: Tuning::default(),
+            ..walker(root, threads, Tuning::default())
         };
 
         let sinks = walker.run(Collect::default, None);

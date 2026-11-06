@@ -364,7 +364,7 @@ fn parse<'a>(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::fs::at;
+    use crate::fs::at::{self, test::ALL};
     use std::{
         collections::BTreeSet,
         fs,
@@ -373,12 +373,6 @@ mod test {
             unix::{ffi::OsStrExt, fs::symlink},
         },
         path::Path,
-    };
-
-    const ALL: Fields = Fields {
-        modified: true,
-        accessed: true,
-        created: true,
     };
 
     /// One entry read in bulk: name, type and metadata.

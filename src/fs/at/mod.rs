@@ -240,10 +240,11 @@ pub fn raise_open_file_limit() -> usize {
 }
 
 #[cfg(test)]
-mod test {
+pub(super) mod test {
     use super::*;
     use std::{
         fs,
+        io::Read,
         os::{fd::AsRawFd, unix::fs::symlink},
     };
 
@@ -357,16 +358,6 @@ mod test {
         assert!(open("dirlink", false).is_err());
         assert!(open("dirlink", true).is_ok());
     }
-}
-
-#[cfg(test)]
-mod test_at_calls {
-    use super::*;
-    use std::{
-        fs,
-        io::Read,
-        os::{fd::AsRawFd, unix::fs::symlink},
-    };
 
     #[test]
     fn targets_match_the_path_based_calls() {
