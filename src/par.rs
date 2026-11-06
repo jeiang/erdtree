@@ -13,10 +13,13 @@ pub fn run_parts<J: Send, R: Send>(
     parts: impl IntoIterator<Item = J>,
     part: impl Fn(J) -> R + Sync,
 ) -> Vec<R> {
-    let mut parts = parts.into_iter();
+    let mut parts = parts.into_iter().peekable();
     let Some(first) = parts.next() else {
         return vec![];
     };
+    if parts.peek().is_none() {
+        return vec![part(first)];
+    }
     std::thread::scope(|s| {
         let part = &part;
         let jobs: Vec<_> = parts.map(|job| s.spawn(move || part(job))).collect();
