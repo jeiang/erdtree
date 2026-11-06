@@ -25,12 +25,14 @@ impl LinkTracker {
     }
 
     /// Whether `node` gets the link theme: it is a symlink or lies below a followed symlinked
-    /// directory. Nodes must arrive in render order.
+    /// directory. Nodes must arrive in render order: pre-order, or the reverse pre-order of the
+    /// regular layout, where a directory's `End` edge precedes its descendants. Either way, the
+    /// first node no deeper than the followed directory after it leaves its subtree.
     pub fn is_link(&mut self, node: Node<'_>) -> bool {
         let current_depth = node.depth();
 
         if let Some(ldepth) = self.depth
-            && current_depth == ldepth
+            && current_depth <= ldepth
         {
             self.depth = None;
         }
