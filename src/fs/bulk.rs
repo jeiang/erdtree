@@ -14,7 +14,7 @@
 //! Other entries come with a [`Stat`] when their attributes are complete and on APFS, whose
 //! attributes are those `lstat` reports.
 
-use super::stat::{Fields, Kind, Stat};
+use super::stat::{Fields, Kind, Stat, time};
 use std::{
     ffi::{CStr, c_void},
     io,
@@ -243,12 +243,6 @@ impl Cursor<'_> {
     }
 }
 
-/// A timestamp as `std` makes it from the seconds and nanoseconds of a `timespec`.
-fn system_time(time: Option<(i64, u64)>) -> Option<std::time::SystemTime> {
-    let (secs, nanos) = time?;
-    super::stat::system_time(secs, u32::try_from(nanos).ok()?)
-}
-
 /// The kind of a `vtype` (`ATTR_CMN_OBJTYPE`); `None` for one without a file type.
 const fn kind_of(vtype: u32) -> Option<Kind> {
     Some(match vtype {
@@ -359,9 +353,9 @@ fn parse<'a>(
             nlink: u64::from(nlink?.min(u32::from(u16::MAX))),
             uid: uid?,
             gid: gid?,
-            modified: fields.modified.then(|| system_time(modified)).flatten(),
-            accessed: fields.accessed.then(|| system_time(accessed)).flatten(),
-            created: fields.created.then(|| system_time(created)).flatten(),
+            modified: modified.and_then(|(secs, nanos)| time(fields.modified, secs, nanos)),
+            accessed: accessed.and_then(|(secs, nanos)| time(fields.accessed, secs, nanos)),
+            created: created.and_then(|(secs, nanos)| time(fields.created, secs, nanos)),
         })
     })()
     // The mode must agree with the type the listing reported.

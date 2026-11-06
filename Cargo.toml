@@ -34,7 +34,6 @@ config = { version = "0.15.27", default-features = false, features = ["toml"] }
 crossterm = "0.29.0"
 ctrlc = "3.5.2"
 dirs = "7.0.0"
-errno = "0.3.14"
 filesize = "0.2.0"
 ignore = "0.4.33"
 

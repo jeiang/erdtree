@@ -22,18 +22,14 @@ impl Inode {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("Insufficient information to compute inode")]
-pub struct Error;
-
 impl Inode {
-    /// Computes the inode of the entry at `path` given its `stat`, which describes the link
-    /// target if `followed_link` is `true` and the entry itself otherwise.
+    /// The inode of the entry at `path` given its `stat`, which describes the link target if
+    /// `followed_link` is `true` and the entry itself otherwise; `None` when it cannot be known.
     #[cfg(unix)]
     // Same signature as the fallible Windows implementation.
     #[allow(clippy::unnecessary_wraps)]
-    pub const fn try_new(_path: &Path, stat: &Stat, _followed_link: bool) -> Result<Self, Error> {
-        Ok(Self::new(stat.ino, stat.dev, stat.nlink))
+    pub const fn try_new(_path: &Path, stat: &Stat, _followed_link: bool) -> Option<Self> {
+        Some(Self::new(stat.ino, stat.dev, stat.nlink))
     }
 
     /// Computes the inode of the file at `path`. Windows does not expose the file index through
@@ -42,13 +38,13 @@ impl Inode {
     /// (directories, unfollowed symlinks) is reported as having insufficient information. A
     /// followed symlink resolves to its target, matching the Unix behavior.
     #[cfg(windows)]
-    pub fn try_new(path: &Path, stat: &Stat, followed_link: bool) -> Result<Self, Error> {
+    pub fn try_new(path: &Path, stat: &Stat, followed_link: bool) -> Option<Self> {
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
         };
 
         if !stat.kind.is_file() {
-            return Err(Error);
+            return None;
         }
 
         // Open the reparse point itself unless it is a followed link, so that file-type reparse
@@ -62,7 +58,7 @@ impl Inode {
         let info = file_information(path, flags)?;
         let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
 
-        Ok(Self::new(
+        Some(Self::new(
             index,
             u64::from(info.dwVolumeSerialNumber),
             u64::from(info.nNumberOfLinks),
@@ -71,8 +67,8 @@ impl Inode {
 
     /// Platforms without a notion of inodes.
     #[cfg(not(any(unix, windows)))]
-    pub fn try_new(_path: &Path, _stat: &Stat, _followed_link: bool) -> Result<Self, Error> {
-        Err(Error)
+    pub const fn try_new(_path: &Path, _stat: &Stat, _followed_link: bool) -> Option<Self> {
+        None
     }
 }
 
@@ -81,7 +77,7 @@ impl Inode {
 fn file_information(
     path: &Path,
     flags: u32,
-) -> Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION, Error> {
+) -> Option<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
     use std::{
         fs::OpenOptions,
         mem::MaybeUninit,
@@ -98,7 +94,7 @@ fn file_information(
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(flags)
         .open(path)
-        .map_err(|_e| Error)?;
+        .ok()?;
 
     let mut raw = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
 
@@ -106,21 +102,52 @@ fn file_information(
     // a `BY_HANDLE_FILE_INFORMATION`, which is fully initialized when the call succeeds.
     unsafe {
         if GetFileInformationByHandle(file.as_raw_handle().cast(), raw.as_mut_ptr()) == 0 {
-            return Err(Error);
+            return None;
         }
-        Ok(raw.assume_init())
+        Some(raw.assume_init())
     }
 }
 
-/// Serial number of the volume holding the file or directory at `path` (following symlinks),
-/// for `--one-file-system`.
-#[cfg(windows)]
-pub fn volume_serial(path: &Path) -> Option<u64> {
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+/// Device number of the file system `path` is on (following symlinks), for
+/// `--one-file-system`. On Windows, the serial number of the volume.
+pub fn device_num(path: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
 
-    file_information(path, FILE_FLAG_BACKUP_SEMANTICS)
-        .ok()
-        .map(|info| u64::from(info.dwVolumeSerialNumber))
+        std::fs::metadata(path).ok().map(|md| md.dev())
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+        file_information(path, FILE_FLAG_BACKUP_SEMANTICS)
+            .map(|info| u64::from(info.dwVolumeSerialNumber))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Device number of the directory at `path` given its stat.
+// Only the Windows lookup can fail or is not `const`.
+#[cfg_attr(unix, allow(clippy::unnecessary_wraps, clippy::missing_const_for_fn))]
+pub fn device_of(stat: &Stat, path: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let _ = path;
+        Some(stat.dev)
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = stat;
+        device_num(path)
+    }
 }
 
 #[cfg(test)]

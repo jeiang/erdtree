@@ -1,19 +1,21 @@
 #[cfg(test)]
 mod test;
 
+use super::stat::Kind;
+
 /// Symbolic notation of `mode` as `ls -l` prints it: the file type (`?` when unknown) and the
 /// `rwx` triads of user, group and other, with setuid, setgid and the sticky bit shown as `s`/`S`
 /// and `t`/`T` in the execute slot.
 pub const fn symbolic(mode: u32) -> [u8; 10] {
-    let file_type = match mode & 0o170_000 {
-        0o040_000 => b'd',
-        0o100_000 => b'.',
-        0o120_000 => b'l',
-        0o010_000 => b'p',
-        0o140_000 => b's',
-        0o020_000 => b'c',
-        0o060_000 => b'b',
-        _ => b'?',
+    let file_type = match Kind::from_mode(mode) {
+        Kind::Dir => b'd',
+        Kind::File => b'.',
+        Kind::Symlink => b'l',
+        Kind::Fifo => b'p',
+        Kind::Socket => b's',
+        Kind::CharDevice => b'c',
+        Kind::BlockDevice => b'b',
+        Kind::Other => b'?',
     };
     let [ur, uw, ux] = triad(mode >> 6, mode & 0o4000 != 0, b's');
     let [gr, gw, gx] = triad(mode >> 3, mode & 0o2000 != 0, b's');

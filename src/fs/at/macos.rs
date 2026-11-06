@@ -1,7 +1,7 @@
 //! macOS: `fstatat` and `fstat`. Directories are listed by [`crate::fs::bulk`] or `readdir`.
 
 use super::{check, retry};
-use crate::fs::stat::{Fields, Kind, Stat};
+use crate::fs::stat::{Fields, Kind, Stat, time};
 use std::{
     ffi::{CStr, c_int, c_long},
     io,
@@ -44,12 +44,6 @@ pub fn stat_fd(fd: RawFd, fields: Fields) -> io::Result<Stat> {
 // `std` reads `st_dev` (an `i32`) with `as u64`, which sign-extends; this does the same.
 #[allow(clippy::cast_sign_loss)]
 fn from_stat(s: &libc::stat, fields: Fields) -> Stat {
-    let time = |wanted: bool, secs: libc::time_t, nanos: c_long| {
-        wanted
-            .then(|| crate::fs::stat::system_time(secs, u32::try_from(nanos).ok()?))
-            .flatten()
-    };
-
     Stat {
         kind: Kind::from_mode(u32::from(s.st_mode)),
         mode: u32::from(s.st_mode),

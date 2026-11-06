@@ -228,7 +228,7 @@ impl Sink for Collector {
             self.cols.link_target.push((index, target));
         }
 
-        let inode = Inode::try_new(path, stat, record.is_symlink).ok();
+        let inode = Inode::try_new(path, stat, record.is_symlink);
 
         // A directory can be reached again through a followed symlink even with one link, as
         // on btrfs, where directories always have one.
