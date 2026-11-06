@@ -11,6 +11,8 @@ use columns::{Collector, Columns, Probe};
 use count::FileCount;
 use error::Error;
 use id::{NONE, id, ix};
+#[cfg(unix)]
+use node::owners::Owners;
 use node::{
     Node,
     cmp::{Sorter, Ties},
@@ -73,11 +75,9 @@ pub struct Tree {
     /// Column widths that fit the shown nodes (all nodes unless `--min-size` hid some).
     widths: Widths,
 
-    /// Owner and group names by id, sorted by id, for the long view.
+    /// Owner and group names of the shown nodes, for the long view.
     #[cfg(unix)]
-    users: Vec<(u32, Option<String>)>,
-    #[cfg(unix)]
-    groups: Vec<(u32, Option<String>)>,
+    owners: Owners,
 
     /// The summary count, see [`Self::file_count`].
     count: FileCount,
@@ -172,11 +172,9 @@ impl Tree {
             link,
             level,
             stump: false,
-            widths: Widths::new(ctx),
+            widths: Widths::default(),
             #[cfg(unix)]
-            users: vec![],
-            #[cfg(unix)]
-            groups: vec![],
+            owners: Owners::default(),
             count: FileCount::default(),
             cols,
         };
@@ -200,7 +198,16 @@ impl Tree {
         let stats = tree.sort_children(ctx, &mut children, filters.min_size.is_none(), threads);
         let shown = tree.filter_and_order(&children, &is_dir, filters, threads);
         let stats = stats.unwrap_or_else(|| tree.scan(ctx, Scope::Shown(&shown), threads));
-        tree.apply_widths(ctx, &stats);
+
+        #[cfg(unix)]
+        {
+            tree.owners = Owners::resolve(stats.owners());
+            tree.widths = Widths::new(ctx, &stats, &tree.owners);
+        }
+        #[cfg(not(unix))]
+        {
+            tree.widths = Widths::new(ctx, &stats);
+        }
 
         Ok(tree)
     }

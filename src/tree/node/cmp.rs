@@ -445,9 +445,7 @@ mod test {
             stump: false,
             widths: Widths::default(),
             #[cfg(unix)]
-            users: vec![],
-            #[cfg(unix)]
-            groups: vec![],
+            owners: crate::tree::node::owners::Owners::default(),
             count: FileCount::default(),
         }
     }

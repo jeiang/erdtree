@@ -11,12 +11,16 @@ use crate::{
     bytes::{push_lossy, push_str_padded, push_u64_padded},
     context::Context,
     disk_usage::{
-        file_size::{DiskUsage, byte},
+        file_size::byte,
         units::{PREFIXES, PrefixKind},
     },
     icons::{self, fs::Paint},
     styles::{Colors, Theme},
-    tree::{Tree, node::Node, widths::Widths},
+    tree::{
+        Tree,
+        node::Node,
+        widths::{SizeFormat, Widths},
+    },
 };
 
 #[cfg(unix)]
@@ -26,12 +30,13 @@ use crate::fs::stat::Stat;
 
 /// How the size column is written. Rows without a size show the placeholder in it.
 struct Size {
+    format: SizeFormat,
     width: usize,
     unit_width: usize,
-    disk_usage: DiskUsage,
-    human: bool,
-    /// The unit of byte sizes; also picks the color of block counts, by the prefix of their
-    /// size in bytes.
+    /// Whether sizes are block counts, colored by the prefix of their size in bytes.
+    #[cfg(unix)]
+    blocks: bool,
+    /// The prefix kind that picks the colors of sizes, by the closest prefix.
     unit: PrefixKind,
 
     placeholder_esc: Option<Esc>,
@@ -44,15 +49,17 @@ impl Size {
     /// The size column of `ctx` with `widths` and `colors`, if there is one: only if some row
     /// has a size.
     fn new(ctx: &Context, widths: &Widths, colors: Option<&Colors>) -> Option<Self> {
-        if !widths.sized {
-            return None;
-        }
+        let format = widths.size_format?;
 
         Some(Self {
+            format,
             width: widths.max_size_width,
             unit_width: widths.max_size_unit_width,
-            disk_usage: ctx.disk_usage,
-            human: ctx.human,
+            #[cfg(unix)]
+            blocks: matches!(
+                ctx.disk_usage,
+                crate::disk_usage::file_size::DiskUsage::Block
+            ),
             unit: ctx.unit,
             placeholder_esc: colors.map(|colors| Esc::new(colors.placeholder)),
             du: colors.map(|colors| colors.du.map(Esc::new)),
@@ -61,10 +68,9 @@ impl Size {
 
     /// Width of the size column: the number, then a space and the unit for byte metrics.
     const fn column_width(&self) -> usize {
-        if self.disk_usage.is_bytes() {
-            self.width + 1 + self.unit_width
-        } else {
-            self.width
+        match self.format {
+            SizeFormat::Human(_) | SizeFormat::Bytes => self.width + 1 + self.unit_width,
+            SizeFormat::Count => self.width,
         }
     }
 
@@ -80,10 +86,15 @@ impl Size {
         // The unit colors are present exactly with color.
         let unit_esc = |index: usize| self.du.as_ref().map(|du| &du[index]);
 
-        if self.disk_usage.is_bytes() {
+        let metric = match self.format {
+            SizeFormat::Human(unit) => Some(byte::Metric::new(unit, true)),
+            SizeFormat::Bytes => Some(byte::Metric::new(self.unit, false)),
+            SizeFormat::Count => None,
+        };
+
+        if let Some(metric) = metric {
             let mut buf = [0; 32];
-            let (number, unit, index) =
-                byte::Metric::new(self.unit, self.human).parts(value, &mut buf);
+            let (number, unit, index) = metric.parts(value, &mut buf);
             paint(out, unit_esc(index), |out| {
                 push_str_padded(out, number, self.width);
                 out.push(b' ');
@@ -94,7 +105,7 @@ impl Size {
 
         // Counts take the color of bytes, except blocks, which take that of their size in bytes.
         #[cfg(unix)]
-        let index = if matches!(self.disk_usage, DiskUsage::Block) {
+        let index = if self.blocks {
             self.unit.index_of(value * Stat::BLOCK_BYTES)
         } else {
             0

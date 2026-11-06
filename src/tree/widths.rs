@@ -3,6 +3,8 @@
 //! human-readable sizes switch unit as values grow, so each unit keeps its own largest value.
 
 use super::Tree;
+#[cfg(unix)]
+use super::node::owners::Owners;
 use crate::{
     bytes::digits,
     context::Context,
@@ -13,14 +15,58 @@ use crate::{
 };
 use std::ops::Range;
 
+/// How the size column shows sizes, decided once from the [`Context`].
+#[derive(Clone, Copy)]
+pub enum SizeFormat {
+    /// Bytes in the largest unit of this kind that fits, e.g. `1.5 KiB`.
+    Human(PrefixKind),
+
+    /// Bytes as an integer, with the byte unit.
+    Bytes,
+
+    /// Blocks, lines or words as an integer, without a unit.
+    Count,
+}
+
+impl SizeFormat {
+    pub const fn new(ctx: &Context) -> Self {
+        match (ctx.disk_usage.is_bytes(), ctx.human) {
+            (true, true) => Self::Human(ctx.unit),
+            (true, false) => Self::Bytes,
+            (false, _) => Self::Count,
+        }
+    }
+
+    /// The unit of human-readable sizes.
+    const fn human(self) -> Option<PrefixKind> {
+        match self {
+            Self::Human(unit) => Some(unit),
+            Self::Bytes | Self::Count => None,
+        }
+    }
+
+    /// Width of the unit: that of the longest unit name that sizes can show.
+    fn unit_width(self) -> usize {
+        match self {
+            Self::Human(unit) => unit
+                .names()
+                .iter()
+                .map(|name| name.len())
+                .max()
+                .unwrap_or(0),
+            // Both kinds name bytes `B`.
+            Self::Bytes => PrefixKind::Bin.names()[0].len(),
+            Self::Count => 0,
+        }
+    }
+}
+
 /// Widths of the size and long-view columns, in terminal columns, that fit the shown nodes.
 #[derive(Default)]
 pub struct Widths {
-    /// Whether some shown node has a size; only then is there a size column.
-    pub sized: bool,
+    /// The format of the size column; the number widths are those of this format.
+    pub size_format: Option<SizeFormat>,
     pub max_size_width: usize,
-
-    /// Width of the unit of byte sizes: that of the longest unit name that sizes can show.
     pub max_size_unit_width: usize,
 
     #[cfg(unix)]
@@ -37,27 +83,42 @@ pub struct Widths {
 }
 
 impl Widths {
-    /// The widths of no nodes: no size column, and the unit width that sizes of `ctx` show.
-    pub fn new(ctx: &Context) -> Self {
-        let names = ctx.unit.names();
-        let unit_width = match human(ctx) {
-            Some(_) => names.iter().map(|name| name.len()).max().unwrap_or(0),
-            None => names[0].len(),
+    /// The widths that fit the nodes `stats` was scanned from, whose owner and group names
+    /// are in `owners`.
+    #[cfg_attr(
+        not(unix),
+        allow(unused_variables, reason = "only the Unix long view reads `ctx`")
+    )]
+    pub fn new(ctx: &Context, stats: &Stats, #[cfg(unix)] owners: &Owners) -> Self {
+        #[cfg(unix)]
+        let (ino, nlink, owner, group) = if ctx.long {
+            let (owner, group) = stats
+                .owners
+                .iter()
+                .filter_map(|&(uid, gid)| owners.get(uid, gid))
+                .fold((0, 0), |(o, g), (owner, group)| {
+                    (o.max(owner.len()), g.max(group.len()))
+                });
+            (digits(stats.ino), digits(stats.nlink), owner, group)
+        } else {
+            (0, 0, 0, 0)
         };
+        let number = stats.size.width();
 
         Self {
-            max_size_unit_width: unit_width,
-            ..Self::default()
+            // A size column exists exactly when some node has a size.
+            size_format: number.map(|_| stats.format),
+            max_size_width: number.unwrap_or(0),
+            max_size_unit_width: stats.format.unit_width(),
+            #[cfg(unix)]
+            max_nlink_width: nlink,
+            #[cfg(unix)]
+            max_ino_width: ino,
+            #[cfg(unix)]
+            max_owner_width: owner,
+            #[cfg(unix)]
+            max_group_width: group,
         }
-    }
-}
-
-/// The unit of sizes shown human-readable, if they are.
-const fn human(ctx: &Context) -> Option<PrefixKind> {
-    if ctx.human && ctx.disk_usage.is_bytes() {
-        Some(ctx.unit)
-    } else {
-        None
     }
 }
 
@@ -160,14 +221,15 @@ impl SizeStats {
 
 /// Maxima and the owners over some nodes.
 pub struct Stats {
+    format: SizeFormat,
     size: SizeStats,
     #[cfg(unix)]
     ino: u64,
     #[cfg(unix)]
     nlink: u64,
 
-    /// `(uid, gid)` of nodes whose owner and group were read, without consecutive repeats; not
-    /// yet distinct.
+    /// `(uid, gid)` of nodes whose owner and group were read: sorted and distinct once the scan
+    /// is done, without consecutive repeats in a part of it.
     #[cfg(unix)]
     owners: Vec<(u32, u32)>,
 }
@@ -182,6 +244,13 @@ impl Stats {
             self.owners.extend_from_slice(&other.owners);
         }
     }
+
+    /// The `(uid, gid)` of the scanned nodes whose owner and group were read, sorted and
+    /// distinct.
+    #[cfg(unix)]
+    pub fn owners(&self) -> &[(u32, u32)] {
+        &self.owners
+    }
 }
 
 impl Tree {
@@ -189,26 +258,36 @@ impl Tree {
     pub fn scan(&self, ctx: &Context, scope: Scope<'_>, threads: usize) -> Stats {
         let len = scope.len(self.cols.len());
 
-        if len < PAR_MIN || threads < 2 {
-            return self.scan_range(ctx, scope, 0..len);
-        }
+        #[cfg_attr(not(unix), allow(unused_mut, reason = "only Unix collects owners"))]
+        let mut stats = if len < PAR_MIN || threads < 2 {
+            self.scan_range(ctx, scope, 0..len)
+        } else {
+            let parts = crate::par::run_parts(0..threads, |k| {
+                self.scan_range(ctx, scope, crate::par::split(len, threads, k))
+            });
+            let mut parts = parts.into_iter();
+            let mut total = parts.next().expect("parallel scan has parts");
+            for part in parts {
+                total.merge(&part);
+            }
+            total
+        };
 
-        let parts = crate::par::run_parts(0..threads, |k| {
-            self.scan_range(ctx, scope, crate::par::split(len, threads, k))
-        });
-        let mut parts = parts.into_iter();
-        let mut total = parts.next().expect("parallel scan has parts");
-        for part in parts {
-            total.merge(&part);
+        #[cfg(unix)]
+        {
+            stats.owners.sort_unstable();
+            stats.owners.dedup();
         }
-        total
+        stats
     }
 
     /// [`Self::scan`] of the nodes at positions `range` of `scope`, on this thread.
     fn scan_range(&self, ctx: &Context, scope: Scope<'_>, range: Range<usize>) -> Stats {
         let cols = &self.cols;
+        let format = SizeFormat::new(ctx);
         let mut stats = Stats {
-            size: SizeStats::new(human(ctx)),
+            format,
+            size: SizeStats::new(format.human()),
             #[cfg(unix)]
             ino: 0,
             #[cfg(unix)]
@@ -249,68 +328,6 @@ impl Tree {
 
         stats
     }
-
-    /// Widens the tree's column widths to fit the nodes `stats` was scanned from, and resolves
-    /// their owner and group names.
-    #[cfg_attr(
-        not(unix),
-        allow(unused_variables, reason = "only the Unix long view reads `ctx`")
-    )]
-    pub fn apply_widths(&mut self, ctx: &Context, stats: &Stats) {
-        let props = &mut self.widths;
-        if let Some(number) = stats.size.width() {
-            props.sized = true;
-            props.max_size_width = props.max_size_width.max(number);
-        }
-
-        #[cfg(unix)]
-        if ctx.long {
-            props.max_ino_width = props.max_ino_width.max(digits(stats.ino));
-            props.max_nlink_width = props.max_nlink_width.max(digits(stats.nlink));
-
-            let mut owners = stats.owners.clone();
-            owners.sort_unstable();
-            owners.dedup();
-            self.resolve_owners(&owners);
-
-            let props = &mut self.widths;
-
-            for (uid, gid) in owners {
-                if let (Some(owner), Some(group)) =
-                    (lookup(&self.users, uid), lookup(&self.groups, gid))
-                {
-                    props.max_owner_width = props.max_owner_width.max(owner.len());
-                    props.max_group_width = props.max_group_width.max(group.len());
-                }
-            }
-        }
-    }
-
-    /// Resolves the names of the users and groups in `owners` (sorted, distinct), once each.
-    #[cfg(unix)]
-    fn resolve_owners(&mut self, owners: &[(u32, u32)]) {
-        fn names(mut ids: Vec<u32>, get: fn(u32) -> Option<String>) -> Vec<(u32, Option<String>)> {
-            ids.sort_unstable();
-            ids.dedup();
-            ids.into_iter().map(|id| (id, get(id))).collect()
-        }
-
-        self.users = names(
-            owners.iter().map(|o| o.0).collect(),
-            crate::fs::ug::user_name,
-        );
-        self.groups = names(
-            owners.iter().map(|o| o.1).collect(),
-            crate::fs::ug::group_name,
-        );
-    }
-}
-
-/// The resolved name of `id` in `table`, sorted by id.
-#[cfg(unix)]
-pub fn lookup(table: &[(u32, Option<String>)], id: u32) -> Option<&str> {
-    let k = table.binary_search_by_key(&id, |(i, _)| *i).ok()?;
-    table[k].1.as_deref()
 }
 
 #[cfg(test)]

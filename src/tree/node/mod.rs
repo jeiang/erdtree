@@ -2,11 +2,11 @@ use super::{Tree, columns::StyleIndex, id::ix};
 use crate::fs::stat::Kind;
 use std::{ffi::OsStr, path::Path, time::SystemTime};
 
-#[cfg(unix)]
-use crate::tree::widths::lookup;
-
 /// Ordering and sorting rules for [Node].
 pub mod cmp;
+
+#[cfg(unix)]
+pub mod owners;
 
 /// A borrowed view of one entry of a [`Tree`]. All file-system data was read during the walk;
 /// every method here is CPU-only.
@@ -146,9 +146,7 @@ impl<'a> Node<'a> {
     #[cfg(unix)]
     pub fn owner_and_group(self) -> Option<(&'a str, &'a str)> {
         let attrs = self.tree.cols.long.get(ix(self.i)).filter(|a| a.read)?;
-        let owner = lookup(&self.tree.users, attrs.uid)?;
-        let group = lookup(&self.tree.groups, attrs.gid)?;
-        Some((owner, group))
+        self.tree.owners.get(attrs.uid, attrs.gid)
     }
 
     /// `LS_COLORS` style, if colors are enabled.
