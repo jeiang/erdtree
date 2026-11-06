@@ -1,27 +1,20 @@
 use indoc::indoc;
-use std::{env::current_dir, error::Error, fs};
+use std::{error::Error, fs};
 
 mod utils;
 
 #[test]
 fn hardlink() -> Result<(), Box<dyn Error>> {
-    let current_dir = current_dir()?;
+    let tmp = tempfile::TempDir::new()?;
+    let root = tmp.path().join("hardlinks");
+    fs::create_dir(&root)?;
+    fs::write(
+        root.join("kadath.txt"),
+        "“It was a song, but not the song of any voice. Night and the spheres sang it, and it was old when space and Nyarlathotep and the Other Gods were born.” \n",
+    )?;
+    fs::hard_link(root.join("kadath.txt"), root.join("curwin.hpl"))?;
 
-    let src = current_dir
-        .join("tests")
-        .join("hardlinks")
-        .join("kadath.txt");
-
-    let link = current_dir
-        .join("tests")
-        .join("hardlinks")
-        .join("curwin.hpl");
-
-    fs::hard_link(src, &link)?;
-
-    let out = utils::run_cmd(&["tests/hardlinks"]);
-
-    fs::remove_file(&link)?;
+    let out = utils::run_cmd(&[&root.display().to_string()]);
 
     assert_eq!(
         out,
