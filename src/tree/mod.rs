@@ -1,6 +1,5 @@
 use crate::{
     context::{Context, column},
-    fs::inode::Inode,
     walk::{Walker, rules},
 };
 use columns::{Collector, Columns, Probe};
@@ -347,11 +346,11 @@ impl Tree {
         total
     }
 
-    /// Hard-link deduplication (see [`topo::dedupe`]): among entries sharing an inode (hard
-    /// links, or a directory reached again through a followed symlink), one counts towards its
-    /// directory's size: preferably one not reached through a symlink, then the least path.
+    /// Hard-link deduplication (see [`topo::dedupe`]): among entries sharing an inode identity
+    /// (hard links, or a directory reached again through a followed symlink), one counts towards
+    /// its directory's size: preferably one not reached through a symlink, then the least path.
     fn dedupe_hard_links(&mut self, threads: usize) -> Vec<u32> {
-        let mut linked: Vec<(u32, Inode)> = std::mem::take(&mut self.cols.multi_linked);
+        let mut linked = std::mem::take(&mut self.cols.multi_linked);
 
         topo::dedupe(&mut linked, threads, |a, b| {
             self.through_symlink(a)

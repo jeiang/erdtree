@@ -1,18 +1,24 @@
 use super::stat::Stat;
 use std::path::Path;
 
-/// Represents a file's underlying inode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// A file's underlying inode: its identity, [`Inode::id`], and its link count.
+#[derive(Clone, Copy, Debug)]
 pub struct Inode {
     pub ino: u64,
     pub dev: u64,
+    /// Number of hard links. Not part of the identity: another process may add or remove a link
+    /// between two stats of the same file.
     pub nlink: u64,
 }
 
 impl Inode {
-    /// Initializer for an inode given all the properties that make it unique.
     pub const fn new(ino: u64, dev: u64, nlink: u64) -> Self {
         Self { ino, dev, nlink }
+    }
+
+    /// What makes the inode unique: device and inode number.
+    pub const fn id(self) -> (u64, u64) {
+        (self.dev, self.ino)
     }
 }
 
@@ -115,4 +121,22 @@ pub fn volume_serial(path: &Path) -> Option<u64> {
     file_information(path, FILE_FLAG_BACKUP_SEMANTICS)
         .ok()
         .map(|info| u64::from(info.dwVolumeSerialNumber))
+}
+
+#[cfg(test)]
+mod test {
+    use super::Inode;
+    use crate::tree::topo;
+
+    /// A link added or removed between the stats of two names of one file changes the count
+    /// each name sees, not the file: it must still count once.
+    #[test]
+    fn link_count_is_not_identity() {
+        let a = Inode::new(7, 1, 2);
+        let b = Inode::new(7, 1, 3);
+        assert_eq!(a.id(), b.id());
+
+        let mut linked = vec![(0, a.id()), (1, b.id()), (2, Inode::new(8, 1, 2).id())];
+        assert_eq!(topo::dedupe(&mut linked, 1, |x, y| x.cmp(&y)), [1]);
+    }
 }
