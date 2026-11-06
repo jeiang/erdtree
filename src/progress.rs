@@ -1,14 +1,15 @@
-use crate::{context::Context, tty};
+use crate::context::Context;
 use crossterm::{
-    ExecutableCommand, cursor,
+    QueueableCommand, cursor,
     terminal::{self, ClearType},
 };
 use std::{
     io::{self, Write},
+    process,
     sync::{
-        Arc,
+        Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicU64, Ordering},
-        mpsc::{self, RecvTimeoutError, SendError, SyncSender},
+        mpsc::{self, RecvTimeoutError, SyncSender},
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -17,36 +18,28 @@ use std::{
 /// How often the indicator redraws the entry count.
 const REFRESH: Duration = Duration::from_millis(50);
 
+/// Exit status after an interrupt: 128 + `SIGINT`, as a shell reports it.
+const INTERRUPTED: i32 = 130;
+
 /// Responsible for displying the progress indicator. This struct will be owned by a separate
 /// thread that is responsible for displaying the progress text whereas the [`IndicatorHandle`]
 /// is how the outside world will interact with it.
-pub struct Indicator<'a> {
+pub struct Indicator {
     count: u64,
-    stdout: io::StdoutLock<'a>,
-    /// Whether the cursor was hidden, so that it has to be restored. Nothing is written to the
-    /// terminal before the walk has been running for one [`REFRESH`] tick.
-    hidden: bool,
+    /// Whether the cursor is hidden and the indicator line drawn, so that the terminal has to be
+    /// restored. Nothing is written to the terminal before the walk has been running for one
+    /// [`REFRESH`] tick. The interrupt handler shares it: whoever holds the lock owns the
+    /// terminal, so the handler can restore it and exit without racing a redraw.
+    hidden: Arc<Mutex<bool>>,
 }
 
-/// This struct is how the outside world will inform the [`Indicator`] about the progress of the
-/// program. The `join_handle` returns the handle to the thread that owns the [`Indicator`] and the
-/// `mailbox` is the [`SyncSender`] channel that allows [`Message`]s to be sent to [`Indicator`].
+/// How the outside world stops the [`Indicator`] thread and feeds it the number of entries
+/// indexed so far.
 pub struct IndicatorHandle {
-    pub join_handle: Option<JoinHandle<Result<(), Error>>>,
-    mailbox: SyncSender<Message>,
+    thread: Option<JoinHandle<Result<(), Error>>>,
+    stop: SyncSender<()>,
     /// Entries indexed so far; the walk increments it and the [`Indicator`] polls it.
     indexed: Arc<AtomicU64>,
-}
-
-/// The different messages that could be sent to the thread that owns the [`Indicator`].
-#[derive(Debug, PartialEq, Eq)]
-pub enum Message {
-    /// Message that indicates that the output is ready to be flushed and that we should cleanup
-    /// the [`Indicator`] as well as the screen.
-    RenderReady,
-
-    /// Tear down the progress indicator for whatever reason.
-    Finish,
 }
 
 /// Errors associated with [`crossterm`];
@@ -56,9 +49,6 @@ pub enum Error {
     #[error("#{0}")]
     Io(#[from] io::Error),
 
-    #[error("#{0}")]
-    Send(#[from] SendError<Message>),
-
     #[error("Failed to set interrupt handler: {0}")]
     Interrupt(#[from] ctrlc::Error),
 
@@ -66,62 +56,25 @@ pub enum Error {
     Panicked,
 }
 
-impl Default for Indicator<'_> {
-    /// Default constructor for [`Indicator`].
-    fn default() -> Self {
-        Self {
-            count: u64::default(),
-            stdout: io::stdout().lock(),
-            hidden: false,
-        }
-    }
-}
-
 impl IndicatorHandle {
-    /// The constructor for an [`IndicatorHandle`].
-    pub const fn new(
-        join_handle: Option<JoinHandle<Result<(), Error>>>,
-        mailbox: SyncSender<Message>,
-        indexed: Arc<AtomicU64>,
-    ) -> Self {
-        Self {
-            join_handle,
-            mailbox,
-            indexed,
-        }
-    }
-
     /// Counter of indexed entries, for the walk to increment.
     pub fn indexed(&self) -> &AtomicU64 {
         &self.indexed
     }
 
-    /// Getter for a cloned `mailbox` wherewith to send [`Message`]s to the [`Indicator`].
-    pub fn mailbox(&self) -> SyncSender<Message> {
-        self.mailbox.clone()
+    /// Stops the [`Indicator`] and waits until the terminal is restored. Output may be written to
+    /// stdout only afterwards.
+    pub fn finish(mut self) -> Result<(), Error> {
+        self.stop()
     }
 
-    /// Waits for the [`Indicator`] thread to finish, if it hasn't been joined already.
-    pub fn join(&mut self) -> Result<(), Error> {
-        self.join_handle
-            .take()
-            .map_or(Ok(()), |h| h.join().map_err(|_e| Error::Panicked)?)
-    }
-
-    /// Attempts to terminate the [`Indicator`] with cleanup.
-    pub fn try_terminate(this: Option<Self>) -> Result<(), Error> {
-        if let Some(mut handle) = this {
-            // This is allowed to fail silently. If user administers interrupt then the `Indicator`
-            // will be dropped along with the receiving end of the `mailbox`.
-            //
-            // If user does not administer interrupt but file-system traversal fails for whatever
-            // reason then this will proceed as normal.
-            let _ = handle.mailbox().send(Message::Finish);
-
-            handle.join()?;
-        }
-
-        Ok(())
+    fn stop(&mut self) -> Result<(), Error> {
+        let Some(thread) = self.thread.take() else {
+            return Ok(());
+        };
+        // Fails only if the thread has already returned with an error, which `join` reports.
+        let _ = self.stop.send(());
+        thread.join().map_err(|_e| Error::Panicked)?
     }
 }
 
@@ -129,108 +82,123 @@ impl Drop for IndicatorHandle {
     /// Makes sure the [`Indicator`] thread is torn down, and thus the cursor restored, even when
     /// the owner unwinds from a panic or returns early.
     fn drop(&mut self) {
-        if self.join_handle.is_some() {
-            let _ = self.mailbox.send(Message::Finish);
-            let _ = self.join();
-        }
+        let _ = self.stop();
     }
 }
 
-impl Drop for Indicator<'_> {
-    /// Once the cursor is hidden, always show it again, including when the owning thread fails
-    /// with an error or panics.
+impl Drop for Indicator {
+    /// Once the cursor is hidden, always restore the terminal, including when the owning thread
+    /// fails with an error or panics.
     fn drop(&mut self) {
-        if self.hidden {
-            let _ = self.stdout.execute(cursor::Show);
-        }
+        let _ = self.finish();
     }
 }
 
-impl Indicator<'_> {
+impl Indicator {
     /// Initializes an [`Indicator`] returning an [`IndicatorHandle`] if a progress indicator is
     /// enabled via [`Context`]. The interrupt handler is registered, and the terminal touched,
     /// only once the walk outlasts one [`REFRESH`] tick; failing to register the handler is then
-    /// reported when the thread is joined.
+    /// reported by [`IndicatorHandle::finish`].
     pub fn maybe_init(ctx: &Context) -> Option<IndicatorHandle> {
         if !ctx.stdout_is_tty || ctx.no_progress {
             return None;
         }
 
-        Some(Indicator::measure())
+        Some(Self::measure())
     }
 
-    /// Initializes a worker thread that owns [`Indicator`] that awaits on [`Message`]s to traverse
-    /// through its internal states. An [`IndicatorHandle`] is returned as a mechanism to allow the
-    /// outside world to send messages to the worker thread and ultimately to the [`Indicator`].
-    pub fn measure() -> IndicatorHandle {
-        let (tx, rx) = mpsc::sync_channel(1024);
+    /// Spawns the thread that owns the [`Indicator`] and redraws the count every [`REFRESH`]
+    /// until it is told to stop.
+    fn measure() -> IndicatorHandle {
+        let (stop, rx) = mpsc::sync_channel(1);
         let indexed = Arc::new(AtomicU64::new(0));
         let counter = Arc::clone(&indexed);
 
-        let interrupt_mailbox = tx.clone();
+        let thread = thread::spawn(move || {
+            let mut indicator = Self {
+                count: 0,
+                hidden: Arc::new(Mutex::new(false)),
+            };
 
-        let join_handle = thread::spawn(move || {
-            let mut indicator = Self::default();
-
-            loop {
-                match rx.recv_timeout(REFRESH) {
-                    Ok(Message::RenderReady | Message::Finish) => {
-                        indicator.finish()?;
-                        return Ok(());
-                    },
-                    Err(RecvTimeoutError::Timeout) => {
-                        let count = counter.load(Ordering::Relaxed);
-                        if count != indicator.count {
-                            if !indicator.hidden {
-                                indicator.start(&interrupt_mailbox)?;
-                            }
-                            indicator.index(count)?;
-                            indicator.stdout.execute(cursor::RestorePosition)?;
-                        }
-                    },
-                    Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            // The handle sends before it drops the sender, so a disconnect is only a fallback.
+            while rx.recv_timeout(REFRESH) == Err(RecvTimeoutError::Timeout) {
+                let count = counter.load(Ordering::Relaxed);
+                if count != indicator.count {
+                    indicator.index(count)?;
                 }
             }
+
+            indicator.finish()
         });
 
-        IndicatorHandle::new(Some(join_handle), tx, indexed)
+        IndicatorHandle {
+            thread: Some(thread),
+            stop,
+            indexed,
+        }
     }
 
-    /// Registers the interrupt handler, then saves the cursor position and hides the cursor. The
-    /// handler comes first so that an interrupt can never leave the cursor hidden. A `SIGINT`
-    /// before this point meets the default handler, and the terminal is untouched.
-    fn start(&mut self, mailbox: &SyncSender<Message>) -> Result<(), Error> {
-        let mailbox = mailbox.clone();
+    fn lock(hidden: &Mutex<bool>) -> MutexGuard<'_, bool> {
+        hidden.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 
-        ctrlc::set_handler(move || {
-            let _ = mailbox.try_send(Message::Finish);
-            let _ = tty::restore();
-        })?;
+    /// Draws `count`. The first draw registers the interrupt handler, then saves the cursor
+    /// position and hides the cursor. The handler comes first so that an interrupt can never
+    /// leave the cursor hidden. A `SIGINT` before this point meets the default handler, and the
+    /// terminal is untouched.
+    // The lock is held across the write so that the interrupt handler never meets a half-drawn
+    // line.
+    #[allow(clippy::significant_drop_tightening)]
+    fn index(&mut self, count: u64) -> Result<(), Error> {
+        let mut hidden = Self::lock(&self.hidden);
+        let mut stdout = io::stdout().lock();
 
-        self.hidden = true;
-        self.stdout.execute(cursor::SavePosition)?;
-        self.stdout.execute(cursor::Hide)?;
+        if !*hidden {
+            let shared = Arc::clone(&self.hidden);
+            ctrlc::set_handler(move || interrupt(&shared))?;
+
+            *hidden = true;
+            stdout.queue(cursor::SavePosition)?.queue(cursor::Hide)?;
+        }
+
+        self.count = count;
+        write!(stdout, "Indexing {count} files...")?;
+        stdout.queue(cursor::RestorePosition)?.flush()?;
         Ok(())
     }
 
     /// Clears the indicator and shows the cursor again, unless nothing was ever drawn.
-    fn finish(&mut self) -> Result<(), Error> {
-        if !self.hidden {
-            return Ok(());
+    // The lock is held until the terminal is restored; released earlier, an interrupt in between
+    // would exit with the cursor hidden.
+    #[allow(clippy::significant_drop_tightening)]
+    fn finish(&self) -> Result<(), Error> {
+        let mut hidden = Self::lock(&self.hidden);
+        if *hidden {
+            *hidden = false;
+            restore(&mut io::stdout().lock())?;
         }
-
-        let stdout = &mut self.stdout;
-        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-        stdout.execute(cursor::RestorePosition)?;
-        stdout.execute(cursor::Show)?;
         Ok(())
     }
+}
 
-    /// The user-facing output while indexing.
-    #[inline]
-    fn index(&mut self, count: u64) -> Result<(), Error> {
-        self.count = count;
-        write!(self.stdout, "Indexing {} files...", self.count)?;
-        Ok(())
+/// The interrupt handler: restores the terminal if the indicator is drawn, then exits. Holding the
+/// lock until the exit keeps the indicator from drawing again. Once the indicator has finished,
+/// `main` may hold the stdout lock while it renders, but then the terminal needs no restoring and
+/// stdout is not touched here (the exit itself only tries the lock).
+#[allow(clippy::significant_drop_tightening)]
+fn interrupt(hidden: &Mutex<bool>) {
+    let hidden = Indicator::lock(hidden);
+    if *hidden {
+        let _ = restore(&mut io::stdout().lock());
     }
+    process::exit(INTERRUPTED);
+}
+
+/// Clears the indicator line and shows the cursor at the position saved before the first draw.
+fn restore(stdout: &mut impl Write) -> io::Result<()> {
+    stdout
+        .queue(terminal::Clear(ClearType::CurrentLine))?
+        .queue(cursor::RestorePosition)?
+        .queue(cursor::Show)?
+        .flush()
 }
