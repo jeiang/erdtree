@@ -1,7 +1,8 @@
 use crate::{
     context::Context,
+    styles::Colors,
     walk::{
-        Walker,
+        self, Walker,
         filter::{self, EntryFilter, Hidden, Pattern},
         rules,
     },
@@ -45,12 +46,6 @@ pub mod widths;
 
 /// Trees with at least this many nodes compute column widths while the child lists are sorted.
 const OVERLAP_MIN: usize = 1 << 16;
-
-/// Factor by which the walk may add workers when it waits for the file system.
-const WALK_GROWTH: usize = 8;
-
-/// Most walk workers when the walk adds workers.
-const WALK_MAX_THREADS: usize = 64;
 
 /// Counts of at least this many nodes use all threads.
 const PAR_COUNT_MIN: usize = 1 << 18;
@@ -112,14 +107,18 @@ pub type Result<T> = StdResult<T, Error>;
 
 impl Tree {
     /// Walks `root` with the options of `ctx` and builds the [Tree] with the column widths that
-    /// rendering needs. The tree may be a stump (see [`Self::is_stump`]). `progress` counts
-    /// walked entries.
-    pub fn try_init(ctx: &Context, root: &Path, progress: Option<&AtomicU64>) -> Result<Self> {
-        let mut walker = walker(ctx, root)?;
+    /// rendering needs. Entries get `LS_COLORS` styles from `colors`, when output is colored.
+    /// The tree may be a stump (see [`Self::is_stump`]). `progress` counts walked entries.
+    pub fn try_init(
+        ctx: &Context,
+        root: &Path,
+        colors: Option<&'static Colors>,
+        progress: Option<&AtomicU64>,
+    ) -> Result<Self> {
         let probe = Probe::new(ctx);
-        walker.fields = probe.fields();
+        let walker = walker(ctx, root, probe)?;
 
-        let sinks = walker.run(|_| Collector::new(probe), progress);
+        let sinks = walker.run(|_| Collector::new(probe, colors), progress);
         let cols = Columns::merge(sinks.into_iter().map(Collector::into_columns).collect());
 
         Self::assemble(cols, ctx)
@@ -474,8 +473,8 @@ impl Tree {
     }
 }
 
-/// Configures the walk of `root` from `ctx`.
-fn walker(ctx: &Context, root: &Path) -> Result<Walker> {
+/// Configures the walk of `root` from `ctx`, reading what `probe` asks for.
+fn walker(ctx: &Context, root: &Path, probe: Probe) -> Result<Walker> {
     let canonical = std::fs::canonicalize(root)
         .map_err(|e| Error::DirNotFound(format!("{}: {e}", root.display())))?;
 
@@ -511,18 +510,14 @@ fn walker(ctx: &Context, root: &Path) -> Result<Walker> {
         max_depth: ctx.traversal_depth,
         threads,
         // Without `--threads`, workers that wait for the file system get company.
-        max_threads: if ctx.threads_explicit {
-            threads
-        } else {
-            (threads * WALK_GROWTH).min(WALK_MAX_THREADS).max(threads)
-        },
+        max_threads: walk::max_threads(threads, !ctx.threads_explicit),
         filter,
         count_ignored: ctx.report_ignored,
-        fields: crate::fs::stat::Fields::default(),
-        tuning: if ctx.suppress_size || !ctx.disk_usage.reads_files() {
-            crate::walk::Tuning::default()
+        fields: probe.fields(),
+        tuning: if probe.reads_files() {
+            walk::Tuning::reading_files()
         } else {
-            crate::walk::Tuning::reading_files()
+            walk::Tuning::default()
         },
     })
 }

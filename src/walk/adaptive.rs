@@ -6,10 +6,14 @@
 //! the CPU time of the thread and counts the voluntary context switches in the window. Waiting
 //! for I/O is a voluntary switch; being preempted by another process is not, so a busy machine
 //! does not look like a slow file system. Only Linux offers both numbers per thread
-//! (`getrusage` with `RUSAGE_THREAD`); elsewhere the walk keeps the number of workers it was
-//! given.
+//! (`getrusage` with `RUSAGE_THREAD`); elsewhere ([`MEASURES`] is false) the walk keeps the
+//! number of workers it was given.
 
 use std::time::Duration;
+
+/// Whether a worker can tell that it waits for the file system (Linux), so that adding workers
+/// can pay off.
+pub const MEASURES: bool = cfg!(target_os = "linux");
 
 /// When a window counts as blocked on I/O.
 #[derive(Clone, Copy)]

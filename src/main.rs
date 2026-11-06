@@ -110,8 +110,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     // On an error return, dropping `indicator` restores the terminal before the error is printed.
     for root in &roots {
-        let tree = Tree::try_init(&ctx, root, indicator.as_ref().map(IndicatorHandle::indexed))?;
-        trees.push(tree);
+        let progress = indicator.as_ref().map(IndicatorHandle::indexed);
+        trees.push(Tree::try_init(&ctx, root, styles::colors(), progress)?);
     }
 
     if !roots_only && trees.iter().all(Tree::is_stump) {
