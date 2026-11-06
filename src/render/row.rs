@@ -3,12 +3,12 @@
 
 use super::{
     ansi,
-    paint::{Esc, Painter, paint, placeholder},
+    paint::{Esc, Painter, paint, placeholder, push_fixed},
     paths::DirPaths,
     prefix,
 };
 use crate::{
-    bytes::{push_fixed, push_lossy, push_str_padded, push_u64_padded},
+    bytes::{push_lossy, push_str_padded, push_u64_padded},
     context::Context,
     disk_usage::{
         file_size::{DiskUsage, byte},
@@ -78,13 +78,13 @@ impl Size {
         };
 
         // The unit colors are present exactly with color.
-        let paint = |index: usize| self.du.as_ref().map(|du| &du[index]);
+        let unit_esc = |index: usize| self.du.as_ref().map(|du| &du[index]);
 
         if self.disk_usage.is_bytes() {
             let mut buf = [0; 32];
             let (number, unit, index) =
                 byte::Metric::new(self.unit, self.human).parts(value, &mut buf);
-            super::paint::paint(out, paint(index), |out| {
+            paint(out, unit_esc(index), |out| {
                 push_str_padded(out, number, self.width);
                 out.push(b' ');
                 push_str_padded(out, unit, self.unit_width);
@@ -102,7 +102,7 @@ impl Size {
         #[cfg(not(unix))]
         let index = 0;
 
-        super::paint::paint(out, paint(index), |out| {
+        paint(out, unit_esc(index), |out| {
             push_u64_padded(out, value, self.width);
         });
     }

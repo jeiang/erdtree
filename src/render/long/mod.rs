@@ -6,7 +6,7 @@ use crate::{
     tree::{node::Node, widths::Widths},
 };
 use chrono::{DateTime, FixedOffset, Utc};
-use nu_ansi_term::Style;
+use nu_ansi_term::{Color, Style};
 use std::time::SystemTime;
 
 /// Timestamps without chrono's per-row conversion.
@@ -50,8 +50,22 @@ pub struct State {
     time: Vec<u8>,
 }
 
-#[cfg(unix)]
-pub fn style_sym_permissions(mode: u32, has_xattrs: bool, colored: bool) -> String {
+/// The style of a character of symbolic permissions.
+fn permission_style(ch: char) -> Style {
+    match ch {
+        'd' => Color::Blue.bold(),
+        'p' => Color::Yellow.normal(),
+        'r' => Color::Green.bold(),
+        'w' | 'c' | 'b' => Color::Yellow.bold(),
+        'l' | 'x' | 's' | 'S' | 't' | 'T' => Color::Red.bold(),
+        '@' => Color::Cyan.bold(),
+        ' ' => Color::White.normal(),
+        // `-`, `.` and `?`.
+        _ => Color::Purple.normal(),
+    }
+}
+
+fn style_sym_permissions(mode: u32, has_xattrs: bool, colored: bool) -> String {
     // A trailing space aligns entries without extended attributes with those with them.
     let symb: String = crate::fs::permissions::symbolic(mode)
         .iter()
@@ -61,19 +75,14 @@ pub fn style_sym_permissions(mode: u32, has_xattrs: bool, colored: bool) -> Stri
 
     if colored {
         symb.chars()
-            .map(|ch| {
-                styles::Long::permission(ch)
-                    .paint(ch.to_string())
-                    .to_string()
-            })
+            .map(|ch| permission_style(ch).paint(ch.to_string()).to_string())
             .collect()
     } else {
         symb
     }
 }
 
-#[cfg(unix)]
-pub fn style_oct_permissions(mode: u32, style: Option<Style>) -> String {
+fn style_oct_permissions(mode: u32, style: Option<Style>) -> String {
     let oct = crate::fs::permissions::octal(mode);
 
     if let Some(style) = style {
