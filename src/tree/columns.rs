@@ -124,8 +124,8 @@ pub struct Columns {
     /// Mode bits; only with [`Probe::mode`].
     #[cfg(unix)]
     pub mode: Vec<u32>,
-    /// Inodes with more than one link, for hard-link deduplication.
-    pub multi_linked: Vec<(u32, Inode)>,
+    /// Identities ([`Inode::id`]) of inodes with more than one link, for hard-link deduplication.
+    pub multi_linked: Vec<(u32, (u64, u64))>,
     /// Inode of every entry; only with [`Probe::inodes`].
     pub inode: Vec<Option<Inode>>,
     /// Symlink targets.
@@ -235,7 +235,7 @@ impl Sink for Collector {
         if let Some(inode) =
             inode.filter(|inode| inode.nlink > 1 || probe.follow && file_type.is_dir())
         {
-            self.cols.multi_linked.push((index, inode));
+            self.cols.multi_linked.push((index, inode.id()));
         }
 
         if probe.inodes {
