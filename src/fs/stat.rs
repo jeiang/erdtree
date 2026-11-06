@@ -1,5 +1,6 @@
 //! Platform-neutral metadata of one directory entry. The walk fills a [`Stat`] straight from the
-//! kernel (`statx` on Linux) or from [`std::fs::Metadata`] elsewhere, so later stages never need
+//! kernel (`statx` or `fstatat` on Linux, `getattrlistbulk` or `fstatat` on macOS), or from
+//! [`std::fs::Metadata`] for the root and on other platforms, so later stages never need
 //! `Metadata` and the walk can ask the kernel for only the fields it uses.
 
 use std::{
@@ -26,28 +27,23 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Whether this is a regular file.
     pub const fn is_file(self) -> bool {
         matches!(self, Self::File)
     }
 
-    /// Whether this is a directory.
     pub const fn is_dir(self) -> bool {
         matches!(self, Self::Dir)
     }
 
-    /// Whether this is a symbolic link.
     pub const fn is_symlink(self) -> bool {
         matches!(self, Self::Symlink)
     }
 
-    /// Whether this is a named pipe.
     #[cfg(unix)]
     pub const fn is_fifo(self) -> bool {
         matches!(self, Self::Fifo)
     }
 
-    /// Whether this is a socket.
     #[cfg(unix)]
     pub const fn is_socket(self) -> bool {
         matches!(self, Self::Socket)
@@ -134,7 +130,8 @@ pub struct Fields {
     pub created: bool,
 }
 
-/// Metadata of one entry. Fields the platform lacks are zero, except `nlink`, which is 1.
+/// Metadata of one entry. Without Unix, `mode` is zero and `nlink` is 1. A timestamp is `None`
+/// when [`Fields`] did not ask for it or the platform or file system does not report it.
 #[derive(Clone, Copy, Debug)]
 pub struct Stat {
     pub kind: Kind,

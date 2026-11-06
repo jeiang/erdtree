@@ -23,7 +23,6 @@ const XDG_CONFIG_HOME: &str = "XDG_CONFIG_HOME";
 /// Errors associated with loading and parsing the toml config file.
 pub mod error;
 
-/// Testing related to `.erdtree.toml`.
 #[cfg(test)]
 mod test;
 
@@ -46,10 +45,9 @@ enum ArgInstructions {
     Pass,
 }
 
-/// Takes in a `Config` that is generated from [`load`] returning a `Vec<OsString>` which
-/// represents command-line arguments from `.erdtree.toml`. If a `named_table` is provided then
-/// the top-level table in `.erdtree.toml` is ignored and the configurations specified in the
-/// `named_table` will be used instead.
+/// The command-line arguments that `.erdtree.toml` gives, led by `--` in place of the binary
+/// name. If a `named_table` is provided then the top-level table in `.erdtree.toml` is ignored
+/// and the configurations specified in the `named_table` will be used instead.
 pub fn parse(config: Config, named_table: Option<&str>) -> Result<Vec<OsString>, Error> {
     let mut args_map = config.cache.into_table()?;
 
@@ -160,9 +158,7 @@ fn in_erdtree_dir(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
         .into_iter()
 }
 
-/// Simple utility used to extract the underlying value from the [`Value`] enum that we get when
-/// loading in the values from `.erdtree.toml`, returning instructions on how the argument should
-/// be processed into the ultimate arguments vector.
+/// How the value `arg` of `keyword` from `.erdtree.toml` goes into the arguments vector.
 fn parse_argument(keyword: &str, arg: &Value) -> Result<ArgInstructions, Error> {
     macro_rules! try_parse_num {
         ($n:expr_2021) => {

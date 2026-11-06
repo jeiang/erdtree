@@ -25,25 +25,18 @@ pub mod args;
 /// Operations to load in defaults from configuration file.
 pub mod config;
 
-/// Controlling color of output.
 pub mod color;
 
-/// Controlling order of directories in output.
 pub mod dir;
 
-/// [Context] related errors.
 pub mod error;
 
-/// Common cross-platform file-types.
 pub mod file;
 
-/// For determining the output layout.
 pub mod layout;
 
-/// Printing order kinds.
 pub mod sort;
 
-/// Different types of timestamps available in long view.
 #[cfg(unix)]
 pub mod time;
 
@@ -246,7 +239,7 @@ pub struct Context {
     //////////////////////////
     /* INTERNAL USAGE BELOW */
     //////////////////////////
-    /// Is stdin in a tty?
+    /// Whether stdout is a terminal.
     #[clap(skip = stdout().is_terminal())]
     pub stdout_is_tty: bool,
 
@@ -328,8 +321,8 @@ impl Context {
         }
     }
 
-    /// The max depth to print. Note that all directories are fully traversed to compute file
-    /// sizes; this just determines how much to print.
+    /// The max depth to print, unlimited when `--level` is unset. It does not limit the walk
+    /// (`--traversal-depth` does).
     pub fn level(&self) -> usize {
         self.level.unwrap_or(usize::MAX)
     }

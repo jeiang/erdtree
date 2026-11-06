@@ -73,7 +73,6 @@ pub enum Direction {
 }
 
 impl Type {
-    /// What this sort type orders by and in which direction.
     pub const fn spec(self) -> (By, Direction) {
         use Direction::{Ascending, Descending};
 

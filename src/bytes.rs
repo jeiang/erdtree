@@ -47,7 +47,6 @@ pub fn u64_into(buf: &mut [u8; 20], mut n: u64) -> usize {
     pos
 }
 
-/// Appends `n` in decimal.
 pub fn push_u64(out: &mut Vec<u8>, n: u64) {
     let mut buf = [0_u8; 20];
     let pos = u64_into(&mut buf, n);
@@ -61,7 +60,6 @@ pub fn push_pair(out: &mut Vec<u8>, n: u32) {
     out.extend_from_slice(&PAIRS[pair..pair + 2]);
 }
 
-/// Appends `n` spaces.
 #[inline]
 pub fn push_spaces(out: &mut Vec<u8>, n: usize) {
     out.resize(out.len() + n, b' ');

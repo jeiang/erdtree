@@ -3,10 +3,8 @@ use clap::ValueEnum;
 /// Formats sizes in bytes, logical or physical.
 pub mod byte;
 
-/// Concerned with measuring file size by line count.
 pub mod line_count;
 
-/// Concerned with measuring file size by word count.
 pub mod word_count;
 
 /// Streaming UTF-8 validation shared by the line and word count metrics.

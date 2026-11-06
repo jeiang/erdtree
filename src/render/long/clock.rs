@@ -17,10 +17,8 @@ const WINDOW: i64 = 3600;
 /// Spans remembered; file times cluster in time, so a small direct-mapped table suffices.
 const SLOTS: usize = 256;
 
-/// Selects the slot of a window.
 const SLOT_MASK: i64 = 255;
 
-/// One remembered span.
 #[derive(Clone, Copy)]
 struct Slot {
     window: i64,
@@ -81,7 +79,6 @@ impl Default for Clock {
 }
 
 impl Clock {
-    /// The offset at `secs`, using `lookup` to find it.
     fn offset(&mut self, secs: i64, lookup: impl Fn(i64) -> i32) -> i32 {
         let window = secs.div_euclid(WINDOW);
         let slot = &mut self.slots[usize::try_from(window & SLOT_MASK).unwrap_or_default()];

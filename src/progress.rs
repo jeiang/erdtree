@@ -42,7 +42,8 @@ pub struct IndicatorHandle {
     indexed: Arc<AtomicU64>,
 }
 
-/// Errors associated with [`crossterm`];
+/// Errors of the progress indicator: terminal I/O, registering the interrupt handler, or a
+/// panic of its thread.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 pub enum Error {
@@ -57,7 +58,6 @@ pub enum Error {
 }
 
 impl IndicatorHandle {
-    /// Counter of indexed entries, for the walk to increment.
     pub fn indexed(&self) -> &AtomicU64 {
         &self.indexed
     }

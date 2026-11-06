@@ -17,7 +17,6 @@ pub struct Node<'a> {
 }
 
 impl<'a> Node<'a> {
-    /// View of node `i` of `tree`.
     pub const fn new(tree: &'a Tree, i: u32) -> Self {
         Self { tree, i }
     }
@@ -69,12 +68,10 @@ impl<'a> Node<'a> {
         self.file_type().is_dir()
     }
 
-    /// Whether the entry is a symlink.
     pub fn is_symlink(self) -> bool {
         self.tree.is_link(self.i)
     }
 
-    /// Target of the symlink.
     pub fn symlink_target_path(self) -> Option<&'a Path> {
         self.is_symlink()
             .then(|| self.tree.cols.link_target(self.i))

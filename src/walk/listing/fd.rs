@@ -68,7 +68,6 @@ pub struct Opened {
 }
 
 impl Opened {
-    /// Metadata of the directory, from its descriptor.
     pub fn stat(&self, fields: Fields) -> Option<Stat> {
         at::stat_fd(self.dir.as_raw_fd(), fields).ok()
     }
@@ -186,7 +185,6 @@ impl Listing {
         at::stat_at(self.at(i)?, true, fields).ok()
     }
 
-    /// Whether entry `i` is hidden.
     pub fn is_hidden(&self, i: usize) -> bool {
         self.name(i).first() == Some(&b'.')
     }

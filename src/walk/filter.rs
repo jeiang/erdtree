@@ -49,7 +49,6 @@ impl Hidden {
         Ok(Self::HideExcept(builder.build()?))
     }
 
-    /// Whether the ignore rules skip hidden entries.
     pub const fn hidden_by_rules(&self) -> bool {
         matches!(self, Self::Hide)
     }

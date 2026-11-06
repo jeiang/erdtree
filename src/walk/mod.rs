@@ -74,7 +74,6 @@ impl Entry<'_> {
         self.file_type
     }
 
-    /// Name of the entry.
     pub fn file_name(&self) -> &OsStr {
         self.path.file_name().unwrap_or(self.path.as_os_str())
     }
@@ -159,7 +158,6 @@ pub trait Sink: Send {
     fn add_ignored(&mut self, count: usize);
 }
 
-/// Walk configuration.
 pub struct Walker {
     pub root: PathBuf,
     pub rules: Rules,
@@ -210,7 +208,7 @@ const READING_SPLIT_BLOCK: usize = 1;
 /// Entries per block that idle workers take over from a directory of [`SPLIT_MIN`] entries.
 const SPLIT_BLOCK: usize = SPLIT_MIN / 8;
 
-/// Knobs of the walk that tests change.
+/// Knobs of the walk; tests and walks that read every file change them.
 pub struct Tuning {
     /// Directories with at least this many entries are visited in blocks that idle workers take
     /// over. Never splits when `usize::MAX`.
@@ -272,7 +270,6 @@ enum Me {
 
 /// Work for a worker.
 enum Task {
-    /// Read a directory.
     Dir(Job),
     /// Visit part of the entries of a directory another worker listed.
     Chunk(Chunk),
@@ -387,7 +384,6 @@ where
 }
 
 impl Walker {
-    /// Most workers a walk may have.
     fn max_workers(&self) -> usize {
         self.threads.max(self.max_threads)
     }
@@ -534,7 +530,6 @@ struct Tally {
     /// Entries listed. A directory whose own job stores its record is listed again by that job,
     /// which then records it or counts it as ignored.
     listed: usize,
-    /// Entries recorded.
     recorded: usize,
     /// Directories kept whose own job stores their record.
     deferred: usize,
@@ -892,7 +887,8 @@ where
         Some((id, listing, found, stat))
     }
 
-    /// Stores the record of the directory of `job`, whose records are stored by its own job.
+    /// Stores the record of the directory of `job`, a directory its parent deferred
+    /// ([`Me::Deferred`]).
     #[cfg(fd_walk)]
     fn store_dir(&mut self, job: &Job, parent: NodeRef, stat: &Stat) -> Option<u32> {
         let name = job.path.file_name()?;

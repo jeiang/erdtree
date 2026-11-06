@@ -21,7 +21,7 @@ pub fn for_each_chunk(reader: impl Read, buf_size: usize, f: impl FnMut(&str)) -
 /// `size` is the size the file system reports for a regular file, or 0 when unknown (a file that
 /// reports 0 may still have contents, as in `/proc`). Once that many bytes have been read the
 /// stream ends there, without the read that would only find the end of the file. A file that
-/// grows while it is read is counted up to the size reported.
+/// grows while it is read may be counted only up to the size reported.
 pub fn for_each_chunk_in(
     mut reader: impl Read,
     buf: &mut [u8],

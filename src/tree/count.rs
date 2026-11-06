@@ -5,7 +5,7 @@ use std::{
     ops::{Add, AddAssign},
 };
 
-/// For keeping track of the number of various file-types of [Node]'s chlidren.
+/// Counts of entries by file type, for the summary line.
 #[allow(clippy::module_name_repetitions)]
 #[derive(Clone, Copy, Default)]
 pub struct FileCount {
@@ -24,7 +24,6 @@ impl FileCount {
 }
 
 impl AddAssign<Node<'_>> for FileCount {
-    /// Update [Self] with information from [Node].
     fn add_assign(&mut self, rhs: Node<'_>) {
         if rhs.is_dir() {
             self.num_dirs += 1;
@@ -37,7 +36,6 @@ impl AddAssign<Node<'_>> for FileCount {
 }
 impl Add<Node<'_>> for FileCount {
     type Output = Self;
-    /// Update [Self] with information from [Node].
     fn add(self, rhs: Node<'_>) -> Self::Output {
         if rhs.is_dir() {
             Self {
@@ -59,7 +57,6 @@ impl Add<Node<'_>> for FileCount {
 }
 
 impl AddAssign for FileCount {
-    /// Update [Self] with information from [Self].
     fn add_assign(&mut self, rhs: Self) {
         self.num_dirs += rhs.num_dirs;
         self.num_links += rhs.num_links;
@@ -69,7 +66,6 @@ impl AddAssign for FileCount {
 }
 impl Add for FileCount {
     type Output = Self;
-    /// Add [Self] with information from another [Self].
     fn add(self, rhs: Self) -> Self::Output {
         Self {
             num_dirs: self.num_dirs + rhs.num_dirs,

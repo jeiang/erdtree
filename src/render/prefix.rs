@@ -3,15 +3,14 @@
 
 use crate::{styles, tree::Tree};
 
-/// The themes of the prefixes: the tree theme, and with `--follow` the link theme of symlinks
-/// and of everything below a symlink.
+/// The glyphs of the prefixes: [`styles::Theme::tree`], and with `--follow`
+/// [`styles::Theme::link`] for symlinks and everything below a symlink.
 pub struct Themes {
     tree: &'static styles::Glyphs,
     link: Option<&'static styles::Glyphs>,
 }
 
 impl Themes {
-    /// The glyphs of the current theme; `follow` adds the link theme.
     pub fn new(follow: bool) -> Self {
         let theme = styles::theme();
 
@@ -21,7 +20,7 @@ impl Themes {
         }
     }
 
-    /// The set of the link theme if `link`, else of the tree theme.
+    /// The link glyphs if `link` and they are in use, else the tree glyphs.
     const fn get(&self, link: bool) -> &styles::Glyphs {
         match self.link {
             Some(set) if link => set,
@@ -29,8 +28,8 @@ impl Themes {
         }
     }
 
-    /// Whether node `id` of `tree` is in the link theme, given whether its parent is: it is a
-    /// symlink or lies below one. Always `false` without the link theme.
+    /// Whether node `id` of `tree` is drawn with the link glyphs, given whether its parent is: it
+    /// is a symlink or lies below one. Always `false` without `--follow`.
     fn inside(&self, tree: &Tree, id: u32, parent_inside: bool) -> bool {
         self.link.is_some() && (parent_inside || tree.node(id).is_symlink())
     }
@@ -39,15 +38,15 @@ impl Themes {
 /// Prefixes of consecutive rows share most of their bytes, so the cursor keeps the prefix of
 /// the ancestors of the last row and only changes its tail. A row's prefix is, for each ancestor
 /// below the root, outermost first, blank if the ancestor is the last of its siblings and a
-/// vertical line otherwise, then the glyph of the row itself; each piece is in the link theme
-/// if its node is a symlink or lies below one (the root never is). A fresh or stale cursor is
-/// always correct: ancestors are compared by identity.
+/// vertical line otherwise, then the glyph of the row itself; with `--follow`, each piece uses
+/// the link glyphs if its node is a symlink or lies below one (the root never is). A fresh or
+/// stale cursor is always correct: ancestors are compared by identity.
 #[derive(Default)]
 pub struct Cursor {
     /// `chain[k]` is the ancestor at depth `k + 1`.
     chain: Vec<u32>,
 
-    /// `inside[k]` is whether `chain[k]` is in the link theme.
+    /// `inside[k]` is whether `chain[k]` is drawn with the link glyphs.
     inside: Vec<bool>,
 
     /// `ends[k]` is the end of the segment of `chain[k]` in `bytes`.

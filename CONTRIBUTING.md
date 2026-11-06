@@ -5,7 +5,7 @@ Thank you for taking an interest in *erdtree*! If you'd like to play a part in t
   * Pull requests: documentation improvements, bug fixes, code improvements, new features, etc..
 
 The following are the general rules for contributing code:
-  * Every function, struct, traits, etc. no matter how trivial, should be documented in `cargo doc` fashion.
+  * Document what the code cannot say: constraints, invariants, and external facts (kernel, filesystem, or std behavior, upstream tools, measurements). Do not write comments or rustdoc that restate the code. Doc comments on CLI options are the `--help` text.
   * When adding or amending a new feature and if warranted, the `usage` as well as the `documentation` section of the README should be updated appropriately.
   * Integration is usually required when adding or amending a feature that alters the output.
   * All existing tests must pass, and CI must be green: `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`, and `cargo test --locked`. With Nix, `nix develop` provides the toolchain and `nix flake check` runs the same checks.

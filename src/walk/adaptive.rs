@@ -36,7 +36,6 @@ impl Default for Policy {
     }
 }
 
-/// Measures one worker.
 pub struct Meter {
     policy: Policy,
     busy: Duration,
@@ -60,7 +59,6 @@ impl Meter {
         }
     }
 
-    /// Notes that the worker waited for work.
     pub const fn waited(&mut self) {
         self.waits += 1;
     }

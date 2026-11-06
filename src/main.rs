@@ -27,39 +27,17 @@ use std::{
 };
 use tree::{Tree, count::FileCount};
 
-/// Decimal numbers, padding, lossy names and prefetch hints, written as bytes.
 mod bytes;
-
-/// CLI rules and definitions as well as context to be injected throughout the entire program.
 mod context;
-
-/// Operations relevant to the computation and presentation of disk usage.
 mod disk_usage;
-
-/// Filesystem operations.
 mod fs;
-
-/// All things related to icons on how to map certain files to the appropriate icons.
 mod icons;
-
-/// Concerned with displaying a progress indicator when stdout is a tty.
-mod progress;
-
-/// Concerned with taking an initialized [`tree::Tree`] and its [`tree::node::Node`]s and rendering the output.
-mod render;
-
-/// Global used throughout the program to paint the output.
-mod styles;
-
 mod par;
-/// Lock helpers shared by the threads of the walk, render and progress indicator.
+mod progress;
+mod render;
+mod styles;
 mod sync;
-
-/// Houses the primary data structures that are used to virtualize the filesystem, containing also
-/// information on how the tree output should be ultimately rendered.
 mod tree;
-
-/// Parallel filesystem walk.
 mod walk;
 
 fn main() -> ExitCode {
@@ -84,7 +62,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    // Color is only ever used on a terminal unless forced; parse the theme while clap works.
+    // Color is only ever used on a terminal unless forced; parse `LS_COLORS` while clap works.
     if stdout().is_terminal() && std::env::var_os("LS_COLORS").is_some_and(|v| !v.is_empty()) {
         styles::prefetch_ls_colors();
     }
@@ -100,7 +78,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let indicator = Indicator::maybe_init(&ctx);
     let no_report = ctx.no_report;
-    // `--summarize` prints one line per root, like `du -s a b`.
+    // `--summarize` prints one line per root, like `du -s a b`. Every rendered tree ends in a
+    // newline, so "\n" leaves a blank line between trees.
     let separator = if ctx.summarize { "" } else { "\n" };
     // At level 0 (and so with `--summarize`) only the roots are requested, so a root without
     // visible entries is still worth printing.
@@ -129,8 +108,6 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let mut out = BufWriter::with_capacity(1 << 16, stdout().lock());
 
-    // Every rendered tree ends in a newline, so the "\n" separator leaves a blank line between
-    // trees.
     let count = trees.len();
 
     for (k, tree) in trees.into_iter().enumerate() {
