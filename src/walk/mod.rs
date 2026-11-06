@@ -247,8 +247,9 @@ impl Default for Tuning {
 /// Where the record of a queued directory is.
 #[derive(Clone, Copy)]
 enum Me {
-    /// Already stored, at this reference.
-    Pushed(NodeRef),
+    /// Already stored, at `id`. `foreign` tells whether the directory is on another file system
+    /// than the root (`-x`).
+    Pushed { id: NodeRef, foreign: bool },
     /// Not stored yet: whoever reads the directory stores it, below this parent. Reading the
     /// directory first gives its metadata for free (`statx` or `fstat` of the open directory),
     /// instead of a second lookup of its name.
@@ -279,9 +280,6 @@ struct Job {
     depth: usize,
     /// Rules of the parent directory.
     rules: Rules,
-    /// Whether the directory is on another file system than the root (`-x`). Only known for
-    /// [`Me::Pushed`].
-    foreign: bool,
     /// The parent directory, which the directory is opened relative to. `None` when the budget
     /// of held descriptors is spent: the directory is then opened by path.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -314,30 +312,34 @@ struct Run<'a, S, F> {
     make_sink: F,
     /// Number of workers the walk may have now: `threads`, and more once it grows.
     workers: AtomicUsize,
-    /// The sinks of workers that have not started, by sink index.
+    /// Every sink, by sink index: those of the first `threads` workers, the root's, then those
+    /// of extra workers once the walk grows. A running worker holds its sink and puts it back
+    /// when it is done.
     pool: Vec<Mutex<Option<S>>>,
     /// Sink index of the next of the first `threads` workers to start. Worker 0 starts with the
     /// walk; the others start when work is available for them.
     next: AtomicUsize,
-    /// Sinks of the workers other than worker 0, once they are done.
-    finished: Mutex<Vec<(u32, S)>>,
     /// How many directory descriptors queued jobs may hold.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     budget: Arc<Budget>,
 }
 
-/// Runs the worker with sink index `sink_index` until the walk is done, and returns its sink.
+/// Runs the worker with sink index `sink_index` until the walk is done. It takes its sink from
+/// `run.pool` and puts it back there.
 fn run_worker<'scope, 'env, S, F>(
     scope: &'scope thread::Scope<'scope, 'env>,
     run: &'env Run<'env, S, F>,
     sink_index: usize,
-    sink: S,
     local: Vec<Task>,
-) -> S
-where
+) where
     S: Sink + 'env,
     F: Fn(u32) -> S + Sync + 'env,
 {
+    let slot = &run.pool[sink_index];
+    let Some(sink) = slot.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+        return;
+    };
+
     let guard = QuitOnPanic(&run.shared);
     let mut worker = Worker {
         walker: run.walker,
@@ -360,7 +362,7 @@ where
     };
     worker.run();
     mem::forget(guard);
-    worker.sink
+    *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(worker.sink);
 }
 
 /// Starts a thread for the worker with sink index `sink_index`, whose sink is in `run.pool`. A
@@ -375,18 +377,7 @@ where
     F: Fn(u32) -> S + Sync + 'env,
 {
     thread::Builder::new().spawn_scoped(scope, move || {
-        let sink = run.pool[sink_index]
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-
-        if let Some(sink) = sink {
-            let sink = run_worker(scope, run, sink_index, sink, vec![]);
-            run.finished
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push((u32::try_from(sink_index).unwrap_or(u32::MAX), sink));
-        }
+        run_worker(scope, run, sink_index, vec![]);
     })?;
 
     Ok(())
@@ -408,74 +399,55 @@ impl Walker {
         progress: Option<&AtomicU64>,
     ) -> Vec<S> {
         let threads = self.threads.max(1);
-        let mut sinks: Vec<S> = (0..=threads)
-            .map(|i| make_sink(u32::try_from(i).unwrap_or(u32::MAX)))
+
+        // The pool has room for the sinks of extra workers too.
+        let mut pool: Vec<Mutex<Option<S>>> = (0..=self.max_workers())
+            .map(|i| {
+                Mutex::new((i <= threads).then(|| make_sink(u32::try_from(i).unwrap_or(u32::MAX))))
+            })
             .collect();
 
         let root_sink_index = u32::try_from(threads).unwrap_or(u32::MAX);
-        let Some(root) = self.root_job(&mut sinks[threads], root_sink_index) else {
-            return sinks;
-        };
+        let root = pool[threads]
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .and_then(|sink| self.root_job(sink, root_sink_index));
 
-        // Parent directories stay open while their subdirectories wait, so allow many files, and
-        // hold no more of them than the limit allows.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let budget = Budget::new(at::raise_open_file_limit(), self.max_workers());
-
-        let root_sink = sinks.pop();
-        let mut sinks = sinks.into_iter();
-        let first = sinks.next();
-
-        // Sink `i` of the workers that start later waits in the pool, which has room for the
-        // extra workers too.
-        let mut pool: Vec<Mutex<Option<S>>> =
-            (0..=self.max_workers()).map(|_| Mutex::new(None)).collect();
-        for (i, sink) in sinks.enumerate() {
-            *pool[i + 1]
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner) = Some(sink);
-        }
-
-        let run = Run {
-            walker: self,
-            shared: Shared {
-                queue: Mutex::new(Vec::new()),
-                wake: Condvar::new(),
-                pending: AtomicUsize::new(1),
-                idle: AtomicUsize::new(0),
-                quit: AtomicBool::new(false),
-            },
-            progress,
-            make_sink,
-            workers: AtomicUsize::new(threads),
-            pool,
-            next: AtomicUsize::new(1),
-            finished: Mutex::new(Vec::new()),
+        if let Some(root) = root {
+            // Parent directories stay open while their subdirectories wait, so allow many
+            // files, and hold no more of them than the limit allows.
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            budget,
-        };
+            let budget = Budget::new(at::raise_open_file_limit(), self.max_workers());
 
-        // Each worker owns its sink, so no two threads write next to each other in memory.
-        // Worker 0 runs on this thread; a tree with no work to share never starts another.
-        let first = thread::scope(|s| {
-            first.map(|sink| run_worker(s, &run, 0, sink, vec![Task::Dir(root)]))
-        });
+            let run = Run {
+                walker: self,
+                shared: Shared {
+                    queue: Mutex::new(Vec::new()),
+                    wake: Condvar::new(),
+                    pending: AtomicUsize::new(1),
+                    idle: AtomicUsize::new(0),
+                    quit: AtomicBool::new(false),
+                },
+                progress,
+                make_sink,
+                workers: AtomicUsize::new(threads),
+                pool,
+                next: AtomicUsize::new(1),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                budget,
+            };
 
-        let mut all: Vec<(u32, S)> = run
-            .finished
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner);
-        all.extend(first.map(|sink| (0, sink)));
-        all.extend(root_sink.map(|sink| (root_sink_index, sink)));
-
-        // Workers that never started still have their sinks, which keep the sink numbering whole.
-        for (i, slot) in run.pool.into_iter().enumerate() {
-            let sink = slot.into_inner().unwrap_or_else(PoisonError::into_inner);
-            all.extend(sink.map(|sink| (u32::try_from(i).unwrap_or(u32::MAX), sink)));
+            // Each worker owns its sink, so no two threads write next to each other in memory.
+            // Worker 0 runs on this thread; a tree with no work to share never starts another.
+            thread::scope(|s| run_worker(s, &run, 0, vec![Task::Dir(root)]));
+            pool = run.pool;
         }
 
-        all.sort_unstable_by_key(|(index, _)| *index);
-        all.into_iter().map(|(_, sink)| sink).collect()
+        // Every worker the walk had, and the root, put a sink in the first slots.
+        pool.into_iter()
+            .filter_map(|slot| slot.into_inner().unwrap_or_else(PoisonError::into_inner))
+            .collect()
     }
 
     /// Records the root and returns the job that reads it.
@@ -504,13 +476,15 @@ impl Walker {
 
         Some(Job {
             path: self.root.clone(),
-            me: Me::Pushed(NodeRef {
-                sink: sink_index,
-                index,
-            }),
+            me: Me::Pushed {
+                id: NodeRef {
+                    sink: sink_index,
+                    index,
+                },
+                foreign: false,
+            },
             depth: 0,
             rules: self.rules.add_parents(&self.root),
-            foreign: false,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             parent: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -548,16 +522,16 @@ struct Dir {
 }
 
 /// An entry the walk kept.
-struct Kept {
-    /// Its index in the worker's sink; `None` for a directory whose record the job that reads it
-    /// stores.
-    index: Option<u32>,
-    kind: Kind,
-    /// Whether it is a directory on another file system than the root (`-x`).
-    foreign: bool,
-    /// Whether it is a symlink that was followed.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    followed: bool,
+enum Kept {
+    /// Recorded, and not descended into.
+    Leaf,
+    /// A directory to read.
+    Dir {
+        me: Me,
+        /// Whether it is a symlink that was followed.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        follow: bool,
+    },
 }
 
 struct Worker<'scope, 'env, S, F> {
@@ -646,13 +620,16 @@ where
         }
 
         let want = (have * 2).min(cap);
-        for k in have..want {
-            // Sink `threads` is the root's, so the extra workers follow it.
-            let index = k + 1;
+        // Sink `threads` is the root's, so the extra workers follow it. Every sink of the range
+        // exists before any worker starts, so a refused thread leaves no gap in the numbering.
+        for index in have + 1..=want {
             let sink = (run.make_sink)(u32::try_from(index).unwrap_or(u32::MAX));
             *run.pool[index]
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = Some(sink);
+        }
+
+        for index in have + 1..=want {
             self.walker.tuning.grown.fetch_add(1, Ordering::Relaxed);
 
             // A refused thread leaves the walk with the workers it has.
@@ -762,9 +739,9 @@ where
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let fd = None;
 
-        let rules =
-            job.rules
-                .add_child(&job.path, Some(&found), self.walker.follow_links, ident, fd);
+        let rules = job
+            .rules
+            .add_child(&job.path, found, self.walker.follow_links, ident, fd);
         let dir = Dir {
             listing,
             path: job.path,
@@ -883,7 +860,7 @@ where
         let mut links = None;
 
         let (id, foreign) = match job.me {
-            Me::Pushed(id) => {
+            Me::Pushed { id, foreign } => {
                 #[cfg(not(target_os = "macos"))]
                 let wanted = walker.follow_links;
                 #[cfg(target_os = "macos")]
@@ -902,7 +879,7 @@ where
                     }
                 }
 
-                (id, job.foreign)
+                (id, foreign)
             },
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Me::Deferred(parent) => {
@@ -991,9 +968,9 @@ where
     /// Opens and lists the directory of `job`.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn open(&mut self, job: &Job) -> Option<(NodeRef, Listing, Found, Option<rules::Ident>)> {
-        let Me::Pushed(id) = job.me;
+        let Me::Pushed { id, foreign } = job.me;
 
-        if job.foreign && !self.walker.count_ignored {
+        if foreign && !self.walker.count_ignored {
             return None;
         }
 
@@ -1002,7 +979,7 @@ where
         listing.clear();
         let readable = listing.fill(&job.path, &mut found);
 
-        if job.foreign {
+        if foreign {
             // Contents of another file system are not walked, only counted.
             if readable {
                 self.sink.add_ignored(listing.len() + listing.unusable);
@@ -1082,28 +1059,29 @@ where
             };
             kept += 1;
 
+            // Every kept entry is recorded but a directory whose own job stores it.
+            let Kept::Dir {
+                me,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                follow,
+            } = entry
+            else {
+                #[cfg(target_os = "macos")]
+                {
+                    recorded += usize::from(file);
+                }
+                continue;
+            };
+
             #[cfg(target_os = "macos")]
             {
-                recorded += usize::from(file && entry.index.is_some());
+                recorded += usize::from(file && matches!(me, Me::Pushed { .. }));
             }
 
-            if !(entry.kind.is_dir() && may_descend) {
-                continue;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if let Me::Deferred(_) = me {
+                self.deferred += 1;
             }
-
-            let me = match entry.index {
-                Some(index) => Me::Pushed(NodeRef {
-                    sink: self.sink_index,
-                    index,
-                }),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None => {
-                    self.deferred += 1;
-                    Me::Deferred(dir.id)
-                },
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-                None => continue,
-            };
 
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             let parent = dir.listing.dir.as_ref().and_then(|parent| {
@@ -1120,11 +1098,10 @@ where
                 me,
                 depth,
                 rules: dir.rules.clone(),
-                foreign: entry.foreign,
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 parent,
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
-                follow: entry.followed,
+                follow,
                 #[cfg(target_os = "macos")]
                 bulk: dir.bulk,
             }));
@@ -1212,11 +1189,9 @@ where
         let readable = at::fits_path_max(path.as_os_str().len());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if reported.is_dir() && may_descend && stat.is_none() && followed.is_none() && readable {
-            return Some(Kept {
-                index: None,
-                kind: Kind::Dir,
-                foreign: false,
-                followed: false,
+            return Some(Kept::Dir {
+                me: Me::Deferred(dir.id),
+                follow: false,
             });
         }
 
@@ -1241,18 +1216,24 @@ where
                 .filter(|_| at::fits_path_max(path.as_os_str().len())),
         })?;
 
-        let foreign = may_descend
-            && stat.kind.is_dir()
-            && self
-                .root_device
-                .is_some_and(|root| device_of(&stat, path).is_some_and(|dev| dev != root));
+        if !(stat.kind.is_dir() && may_descend) {
+            return Some(Kept::Leaf);
+        }
 
-        Some(Kept {
-            index: Some(index),
-            kind: stat.kind,
-            foreign,
+        let foreign = self
+            .root_device
+            .is_some_and(|root| device_of(&stat, path).is_some_and(|dev| dev != root));
+
+        Some(Kept::Dir {
+            me: Me::Pushed {
+                id: NodeRef {
+                    sink: self.sink_index,
+                    index,
+                },
+                foreign,
+            },
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            followed: is_symlink && walker.follow_links,
+            follow: is_symlink && walker.follow_links,
         })
     }
 }
@@ -1512,6 +1493,12 @@ mod test {
 
         let progress = AtomicU64::new(0);
         let sinks = walker.run(|_| Collect::default(), Some(&progress));
+        let grown = walker.tuning.grown.load(Ordering::Relaxed);
+        assert_eq!(
+            sinks.len(),
+            threads.max(1) + 1 + grown,
+            "a sink per worker and the root's"
+        );
 
         let parent_path = |parent: Option<NodeRef>| {
             parent.map(|p| sinks[p.sink as usize].records[p.index as usize].0.clone())
@@ -1545,7 +1532,7 @@ mod test {
                 ignored,
                 walker.tuning.splits.load(Ordering::Relaxed),
             ),
-            walker.tuning.grown.load(Ordering::Relaxed),
+            grown,
         )
     }
 
@@ -1688,5 +1675,33 @@ mod test {
         // A fixed number of workers never grows, whatever the policy says.
         let (got, added) = walk_with(&root, 2, 2, 32, always);
         assert_eq!((got.0, added), (expected.0, 0));
+    }
+
+    #[test]
+    fn growing_to_the_limit_keeps_every_sink() {
+        let dir = tree(300, 60, 20);
+        let root = dir.path().canonicalize().unwrap();
+        let (expected, _) = walk_with(&root, 1, 1, SPLIT_MIN, adaptive::Policy::default());
+
+        // Every task counts as blocked, so the walk doubles its workers up to the limit.
+        let always = adaptive::Policy {
+            window: std::time::Duration::ZERO,
+            min_switches: 0,
+            min_blocked: 0.0,
+        };
+
+        // `walk_with` checks that there is a sink per worker and that parents resolve to the
+        // sinks that recorded them; at the limit that is `max_workers() + 1` sinks.
+        let mut reached = false;
+        for _ in 0..50 {
+            let (got, added) = walk_with(&root, 2, 16, 32, always);
+            assert_eq!(got.0, expected.0);
+            assert_eq!(got.1, expected.1);
+            if added == 14 {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "the walk grew to 16 workers");
     }
 }

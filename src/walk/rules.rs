@@ -23,37 +23,24 @@ use std::{
     sync::{Arc, OnceLock, RwLock, Weak},
 };
 
-/// Which kinds of rules apply. Mirrors the options `erd` passes to [`ignore::WalkBuilder`].
+/// Which kinds of rules apply. Of the options `erd` passes to [`ignore::WalkBuilder`], only
+/// these vary: `.ignore` files, the ignore files of the root's ancestors and
+/// `.git/info/exclude` always apply, and git rules only inside a git (or jj) repository.
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     /// Skip hidden entries unless a rule whitelists them.
     pub hidden: bool,
-    /// Read `.ignore` files.
-    pub ignore: bool,
-    /// Respect ignore files in the parent directories of the root.
-    pub parents: bool,
-    /// Read git's global gitignore.
-    pub git_global: bool,
-    /// Read `.gitignore` files.
-    pub git_ignore: bool,
-    /// Read `.git/info/exclude`.
-    pub git_exclude: bool,
-    /// Apply git rules only inside a git (or jj) repository.
-    pub require_git: bool,
+    /// Read `.gitignore` files and git's global gitignore.
+    pub respect_ignore: bool,
 }
 
 impl Options {
-    /// The defaults of [`ignore::WalkBuilder`] with `git_ignore`, `git_global`, `git_exclude`
-    /// and `ignore` all set to `respect_ignore`, as `erd` sets them.
+    /// The defaults of [`ignore::WalkBuilder`] with `git_ignore` and `git_global` set to
+    /// `respect_ignore`, as `erd` sets them; `ignore` and `git_exclude` stay on.
     pub const fn new(hidden: bool, respect_ignore: bool) -> Self {
         Self {
             hidden,
-            ignore: true,
-            parents: true,
-            git_global: respect_ignore,
-            git_ignore: respect_ignore,
-            git_exclude: true,
-            require_git: true,
+            respect_ignore,
         }
     }
 }
@@ -87,7 +74,7 @@ struct Common {
 impl Common {
     fn git_global(&self, opts: Options) -> &Gitignore {
         self.git_global.get_or_init(|| match &self.cwd {
-            Some(cwd) if opts.git_global => GitignoreBuilder::new(cwd).build_global().0,
+            Some(cwd) if opts.respect_ignore => GitignoreBuilder::new(cwd).build_global().0,
             _ => Gitignore::empty(),
         })
     }
@@ -145,6 +132,14 @@ pub struct Found {
 }
 
 impl Found {
+    /// Every name present, so that every ignore file is probed on disk.
+    pub const ALL: Self = Self {
+        has_ignore: true,
+        has_git_ignore: true,
+        has_git_dir: true,
+        has_jj_dir: true,
+    };
+
     /// Records `name` if it is relevant.
     pub fn note(&mut self, name: &OsStr) {
         match name.as_encoded_bytes() {
@@ -191,10 +186,6 @@ impl Rules {
     pub fn add_parents(&self, path: &Path) -> Self {
         let opts = self.inner.opts;
 
-        if !opts.parents && !opts.git_ignore && !opts.git_exclude && !opts.git_global {
-            return self.clone();
-        }
-
         let Ok(absolute_base) = path.canonicalize().map(Arc::new) else {
             return self.clone();
         };
@@ -224,11 +215,13 @@ impl Rules {
                 continue;
             }
 
-            let mut inner = rules.child_inner(parent, None, None, None);
+            let mut inner = rules.child_inner(parent, Found::ALL, None, None);
             inner.is_absolute_parent = true;
             inner.absolute_base = Some(Arc::clone(&absolute_base));
-            // `child_inner` already looked for `.git` and `.jj`.
-            inner.has_git = opts.require_git && opts.git_ignore && inner.has_git;
+            // `child_inner` already looked for `.git` and `.jj`. As upstream does, an ancestor
+            // of the root only counts as a repository when `.gitignore` files are read, though
+            // walked directories count either way.
+            inner.has_git = opts.respect_ignore && inner.has_git;
 
             let inner = Arc::new(inner.derive());
             lock().insert(parent.as_os_str().to_os_string(), Arc::downgrade(&inner));
@@ -238,21 +231,21 @@ impl Rules {
         rules
     }
 
-    /// The rules of child directory `dir`, given which ignore files its listing contains. With
-    /// `found` as `None` the ignore files are probed on disk. A directory without ignore files
-    /// shares the rules of its parent, unless `own_rules` asks for rules of its own (symlink loop
-    /// detection lists the walked directories) or the parent is an ancestor of the root. `ident`
+    /// The rules of child directory `dir`, given which ignore files its listing contains (with
+    /// [`Found::ALL`] they are probed on disk). A directory without ignore files shares the
+    /// rules of its parent, unless `own_rules` asks for rules of its own (symlink loop detection
+    /// lists the walked directories) or the parent is an ancestor of the root. `ident`
     /// identifies the directory for loop detection; `fd` is its open descriptor.
     pub fn add_child(
         &self,
         dir: &Path,
-        found: Option<&Found>,
+        found: Found,
         own_rules: bool,
         ident: Option<Ident>,
         fd: DirFd,
     ) -> Self {
-        let no_files = found
-            .is_some_and(|f| !f.has_ignore && !f.has_git_ignore && !f.has_git_dir && !f.has_jj_dir);
+        let no_files =
+            !found.has_ignore && !found.has_git_ignore && !found.has_git_dir && !found.has_jj_dir;
 
         if no_files && !own_rules && !self.inner.is_absolute_parent {
             return self.clone();
@@ -263,43 +256,34 @@ impl Rules {
         }
     }
 
-    fn child_inner(
-        &self,
-        dir: &Path,
-        found: Option<&Found>,
-        ident: Option<Ident>,
-        fd: DirFd,
-    ) -> Inner {
+    fn child_inner(&self, dir: &Path, found: Found, ident: Option<Ident>, fd: DirFd) -> Inner {
         // Loops are found by path elsewhere.
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = ident;
 
         let opts = self.inner.opts;
-        let check_vcs_dir = opts.require_git && (opts.git_ignore || opts.git_exclude);
 
-        let git_type = if check_vcs_dir && found.is_none_or(|f| f.has_git_dir) {
+        let git_type = if found.has_git_dir {
             kind_in(dir, fd, ".git")
         } else {
             None
         };
-        let has_jj = check_vcs_dir
-            && found.is_none_or(|f| f.has_jj_dir)
-            && kind_in(dir, fd, ".jj").is_some();
-        let has_git = check_vcs_dir && (git_type.is_some() || has_jj);
+        let has_jj = found.has_jj_dir && kind_in(dir, fd, ".jj").is_some();
+        let has_git = git_type.is_some() || has_jj;
 
-        let ignore_matcher = if opts.ignore && found.is_none_or(|f| f.has_ignore) {
+        let ignore_matcher = if found.has_ignore {
             create_gitignore(dir, || open_in(dir, fd, ".ignore"))
         } else {
             Gitignore::empty()
         };
 
-        let git_ignore_matcher = if opts.git_ignore && found.is_none_or(|f| f.has_git_ignore) {
+        let git_ignore_matcher = if opts.respect_ignore && found.has_git_ignore {
             create_gitignore(dir, || open_in(dir, fd, ".gitignore"))
         } else {
             Gitignore::empty()
         };
 
-        let git_exclude_matcher = if opts.git_exclude && found.is_none_or(|f| f.has_git_dir) {
+        let git_exclude_matcher = if found.has_git_dir {
             if git_type.is_some_and(Kind::is_file) {
                 resolve_git_commondir(dir, fd).map_or_else(Gitignore::empty, |git_dir| {
                     create_gitignore(dir, || File::open(git_dir.join("info/exclude")))
@@ -358,16 +342,12 @@ impl Rules {
         }
 
         let opts = self.inner.opts;
-        let git_applies = !opts.require_git || self.inner.any_git;
-        let any_rules = opts.ignore || opts.git_global || opts.git_ignore || opts.git_exclude;
 
         // With every matcher that can apply empty, `matched_ignore` is `Match::None`. Git
         // matchers only apply inside a repository.
-        if any_rules
-            && (self.inner.any_ignore
-                || git_applies
-                    && (self.inner.any_git_matcher
-                        || !self.inner.common.git_global(opts).is_empty()))
+        if self.inner.any_ignore
+            || self.inner.any_git
+                && (self.inner.any_git_matcher || !self.inner.common.git_global(opts).is_empty())
         {
             let m = self.matched_ignore(path, is_dir);
             if m.is_ignore() || m.is_whitelist() {
@@ -387,7 +367,7 @@ impl Rules {
         let mut m_gi = Match::None;
         let mut m_gi_exclude = Match::None;
 
-        let any_git = !self.inner.opts.require_git || self.inner.any_git;
+        let any_git = self.inner.any_git;
         let mut saw_git = false;
 
         let mut visit = |ig: &Inner, path: &Path| {
@@ -407,9 +387,7 @@ impl Rules {
             visit(ig, path);
         }
 
-        if self.inner.opts.parents
-            && let Some(abs_parent_path) = self.inner.absolute_base.as_deref()
-        {
+        if let Some(abs_parent_path) = self.inner.absolute_base.as_deref() {
             let topmost = self
                 .parents()
                 .take_while(|ig| !ig.is_absolute_parent)

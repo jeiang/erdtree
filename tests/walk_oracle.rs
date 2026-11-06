@@ -231,6 +231,44 @@ fn handcrafted_ignore_rules() {
     assert_same_entries(root);
 }
 
+/// Repositories marked by a `.git` file (a worktree, whose `info/exclude` is in the common git
+/// directory) or by `.jj`, and a root inside a repository, whose ancestors' rules apply.
+#[test]
+fn repository_markers() {
+    let dir = TempDir::new().unwrap();
+    let top = fs::canonicalize(dir.path()).unwrap();
+
+    for (path, contents) in [
+        ("real/info/exclude", "wt_excluded\n"),
+        ("real/worktrees/wt/commondir", "../..\n"),
+        ("tree/wt/.gitignore", "*.o\n"),
+        ("tree/wt/wt_excluded", ""),
+        ("tree/wt/a.o", ""),
+        ("tree/wt/kept", ""),
+        ("tree/jj/.jj/repo", ""),
+        ("tree/jj/.gitignore", "*.o\n"),
+        ("tree/jj/a.o", ""),
+        ("tree/jj/kept", ""),
+        ("tree/plain/.gitignore", "*.o\n"),
+        ("tree/plain/a.o", ""),
+        ("repo/.git/info/exclude", "excluded\n"),
+        ("repo/.gitignore", "parent_ignored\n"),
+        ("repo/root/excluded", ""),
+        ("repo/root/parent_ignored", ""),
+        ("repo/root/kept", ""),
+    ] {
+        write(&top.join(path), contents);
+    }
+    let git_dir = top.join("real/worktrees/wt");
+    write(
+        &top.join("tree/wt/.git"),
+        &format!("gitdir: {}\n", git_dir.display()),
+    );
+
+    assert_same_entries(&top.join("tree"));
+    assert_same_entries(&top.join("repo/root"));
+}
+
 /// A small deterministic generator (64-bit LCG), so failures reproduce.
 struct Rng(u64);
 
