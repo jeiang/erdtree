@@ -109,22 +109,18 @@ pub struct LongAttrs {
 }
 
 /// A run of consecutive entries of a sink that share a parent.
-struct ParentRun {
+pub struct ParentRun {
     /// Index of the first entry of the run.
     start: u32,
     /// The parent, `None` for the root.
     parent: Option<NodeRef>,
 }
 
-/// Columns of entries. In a worker's sink `parent_runs` holds references into any sink; after
-/// [`Columns::merge`] `parent` holds global indices.
+/// Columns of entries. After [`Columns::merge`] `parent` holds global indices.
 #[derive(Default)]
 pub struct Columns {
     names: Vec<u8>,
     name_end: Vec<usize>,
-    /// The parents of a sink's entries. Entries of one directory are stored together, so there
-    /// are about as many runs as directories instead of one reference per entry.
-    parent_runs: Vec<ParentRun>,
     pub parent: Vec<u32>,
     /// After [`Columns::merge`], the runs of equal parents in `parent`, except those of the root.
     pub runs: Vec<Run>,
@@ -148,6 +144,23 @@ pub struct Columns {
     style: Vec<u16>,
     /// The distinct styles, with the default style first.
     style_table: Vec<Style>,
+    pub modified: Vec<Option<SystemTime>>,
+    pub accessed: Vec<Option<SystemTime>>,
+    pub created: Vec<Option<SystemTime>>,
+    #[cfg(unix)]
+    pub long: Vec<LongAttrs>,
+    /// Entries skipped by the walk in walked directories (`--report-ignored`).
+    pub ignored: usize,
+}
+
+/// Sink of one worker: the columns it fills, and the state only the walk needs.
+pub struct Collector {
+    cols: Columns,
+    probe: Probe,
+    /// The parents of the entries, as references into any sink. Entries of one directory are
+    /// stored together, so there are about as many runs as directories instead of one
+    /// reference per entry.
+    parent_runs: Vec<ParentRun>,
     /// Read buffer reused for every file of the line and word counts.
     scratch: Vec<u8>,
     /// Resolves styles; only with [`Probe::colors`].
@@ -156,44 +169,156 @@ pub struct Columns {
     style_index: HashMap<usize, u16>,
     /// The style address and index of the previous entry; neighbors mostly share a style.
     last_style: (usize, u16),
-    pub modified: Vec<Option<SystemTime>>,
-    pub accessed: Vec<Option<SystemTime>>,
-    pub created: Vec<Option<SystemTime>>,
-    #[cfg(unix)]
-    pub long: Vec<LongAttrs>,
-    /// Entries skipped by the walk in walked directories (`--report-ignored`).
-    pub ignored: usize,
-    probe: Option<Probe>,
-}
-
-/// Sink of one worker.
-pub struct Collector {
-    pub columns: Columns,
 }
 
 impl Collector {
     pub fn new(probe: Probe) -> Self {
         Self {
-            columns: Columns {
-                probe: Some(probe),
-                resolver: probe
-                    .colors
-                    .then(|| get_ls_colors().ok().map(Resolver::new))
-                    .flatten(),
+            cols: Columns {
                 style_table: vec![Style::default()],
                 ..Columns::default()
             },
+            probe,
+            parent_runs: vec![],
+            scratch: vec![],
+            resolver: probe
+                .colors
+                .then(|| get_ls_colors().ok().map(Resolver::new))
+                .flatten(),
+            style_index: HashMap::new(),
+            last_style: (0, 0),
         }
+    }
+
+    /// The collected columns and the parents of their entries, for [`Columns::merge`].
+    pub fn into_columns(self) -> (Columns, Vec<ParentRun>) {
+        (self.cols, self.parent_runs)
+    }
+
+    /// The index in `style_table` of `style`, which `lscolors` returned (`None` is the default
+    /// style).
+    fn intern_style(&mut self, style: Option<&'static LsStyle>) -> u16 {
+        let Some(style) = style else {
+            return 0;
+        };
+
+        let address = std::ptr::from_ref(style) as usize;
+        if self.last_style.0 == address {
+            return self.last_style.1;
+        }
+
+        let index = if let Some(&index) = self.style_index.get(&address) {
+            index
+        } else {
+            let table = &mut self.cols.style_table;
+            let index = u16::try_from(table.len()).unwrap_or(0);
+            if index != 0 {
+                table.push(style.to_nu_ansi_term_style());
+            }
+            self.style_index.insert(address, index);
+            index
+        };
+
+        self.last_style = (address, index);
+        index
     }
 }
 
 impl Sink for Collector {
     fn push(&mut self, record: &Record<'_>) -> Option<u32> {
-        self.columns.push(record)
+        let probe = self.probe;
+        let index = u32::try_from(self.cols.len()).ok().filter(|&i| i != NONE)?;
+        let name_end = self.cols.names.len() + record.name.len();
+        let stat = record.stat;
+        let path = record.path;
+        let file_type = stat.kind;
+
+        let size = size(probe, record, file_type, &mut self.scratch);
+
+        if record.is_symlink
+            && let Ok(target) = record.read_link()
+        {
+            self.cols.link_target.push((index, target));
+        }
+
+        let inode = Inode::try_new(path, stat, record.is_symlink).ok();
+
+        // A directory can be reached again through a followed symlink even with one link, as
+        // on btrfs, where directories always have one.
+        if let Some(inode) =
+            inode.filter(|inode| inode.nlink > 1 || probe.follow && file_type.is_dir())
+        {
+            self.cols.multi_linked.push((index, inode));
+        }
+
+        if probe.inodes {
+            self.cols.inode.push(inode);
+        }
+
+        if let Some(resolver) = self.resolver {
+            let style = resolver.style(record.name, stat, || !record.target_exists());
+            let style = self.intern_style(style);
+            self.cols.style.push(style);
+        }
+
+        let cols = &mut self.cols;
+
+        if probe.modified {
+            cols.modified.push(stat.modified);
+        }
+        if probe.accessed {
+            cols.accessed.push(stat.accessed);
+        }
+        if probe.created {
+            cols.created.push(stat.created);
+        }
+
+        #[cfg(unix)]
+        {
+            if probe.mode {
+                cols.mode.push(stat.mode);
+            }
+            if probe.blocks {
+                cols.blocks.push(stat.blocks);
+            }
+
+            if let Some(level) = probe.long_level {
+                let attrs = if record.depth <= level {
+                    LongAttrs {
+                        read: true,
+                        has_xattrs: record.has_xattrs(),
+                        uid: stat.uid,
+                        gid: stat.gid,
+                    }
+                } else {
+                    LongAttrs::default()
+                };
+                cols.long.push(attrs);
+            }
+        }
+
+        cols.names.extend_from_slice(record.name.as_encoded_bytes());
+        cols.name_end.push(name_end);
+        if self
+            .parent_runs
+            .last()
+            .is_none_or(|run| run.parent != record.parent)
+        {
+            self.parent_runs.push(ParentRun {
+                start: index,
+                parent: record.parent,
+            });
+        }
+        cols.depth
+            .push(u32::try_from(record.depth).unwrap_or(u32::MAX));
+        cols.file_type.push(file_type);
+        cols.size.push(size);
+
+        Some(index)
     }
 
     fn add_ignored(&mut self, count: usize) {
-        self.columns.ignored += count;
+        self.cols.ignored += count;
     }
 }
 
@@ -245,123 +370,6 @@ impl Columns {
         self.style.get(i).map(|&s| self.style_table[usize::from(s)])
     }
 
-    /// The index in `style_table` of `style`, which `lscolors` returned (`None` is the default
-    /// style).
-    fn intern_style(&mut self, style: Option<&'static LsStyle>) -> u16 {
-        let Some(style) = style else {
-            return 0;
-        };
-
-        let address = std::ptr::from_ref(style) as usize;
-        if self.last_style.0 == address {
-            return self.last_style.1;
-        }
-
-        let index = if let Some(&index) = self.style_index.get(&address) {
-            index
-        } else {
-            let index = u16::try_from(self.style_table.len()).unwrap_or(0);
-            if index != 0 {
-                self.style_table.push(style.to_nu_ansi_term_style());
-            }
-            self.style_index.insert(address, index);
-            index
-        };
-
-        self.last_style = (address, index);
-        index
-    }
-
-    fn push(&mut self, record: &Record<'_>) -> Option<u32> {
-        let probe = self.probe?;
-        let index = u32::try_from(self.len()).ok().filter(|&i| i != NONE)?;
-        let name_end = self.names.len() + record.name.len();
-        let stat = record.stat;
-        let path = record.path;
-        let file_type = stat.kind;
-
-        let size = size(probe, record, file_type, &mut self.scratch);
-
-        if record.is_symlink
-            && let Ok(target) = record.read_link()
-        {
-            self.link_target.push((index, target));
-        }
-
-        let inode = Inode::try_new(path, stat, record.is_symlink).ok();
-
-        // A directory can be reached again through a followed symlink even with one link, as
-        // on btrfs, where directories always have one.
-        if let Some(inode) =
-            inode.filter(|inode| inode.nlink > 1 || probe.follow && file_type.is_dir())
-        {
-            self.multi_linked.push((index, inode));
-        }
-
-        if probe.inodes {
-            self.inode.push(inode);
-        }
-
-        if let Some(resolver) = self.resolver {
-            let style = resolver.style(record.name, stat, || !record.target_exists());
-            let style = self.intern_style(style);
-            self.style.push(style);
-        }
-
-        if probe.modified {
-            self.modified.push(stat.modified);
-        }
-        if probe.accessed {
-            self.accessed.push(stat.accessed);
-        }
-        if probe.created {
-            self.created.push(stat.created);
-        }
-
-        #[cfg(unix)]
-        {
-            if probe.mode {
-                self.mode.push(stat.mode);
-            }
-            if probe.blocks {
-                self.blocks.push(stat.blocks);
-            }
-
-            if let Some(level) = probe.long_level {
-                let attrs = if record.depth <= level {
-                    LongAttrs {
-                        read: true,
-                        has_xattrs: record.has_xattrs(),
-                        uid: stat.uid,
-                        gid: stat.gid,
-                    }
-                } else {
-                    LongAttrs::default()
-                };
-                self.long.push(attrs);
-            }
-        }
-
-        self.names.extend_from_slice(record.name.as_encoded_bytes());
-        self.name_end.push(name_end);
-        if self
-            .parent_runs
-            .last()
-            .is_none_or(|run| run.parent != record.parent)
-        {
-            self.parent_runs.push(ParentRun {
-                start: index,
-                parent: record.parent,
-            });
-        }
-        self.depth
-            .push(u32::try_from(record.depth).unwrap_or(u32::MAX));
-        self.file_type.push(file_type);
-        self.size.push(size);
-
-        Some(index)
-    }
-
     /// The parents of all entries as global indices, and the runs of equal ones. `runs[k]` and
     /// `lens[k]` are the parent runs and the length of the `k`-th sink to be concatenated;
     /// `offsets` are indexed by sink id.
@@ -396,13 +404,16 @@ impl Columns {
         (parent, spans)
     }
 
-    /// Concatenates the sinks and resolves parent references to global indices. The largest sink
-    /// goes first and keeps its columns in place; the others are appended to them, in index
-    /// order, into space reserved for the exact total. Large merges copy independent groups of
-    /// columns on separate threads, which also spreads the page faults of the new memory.
+    /// Concatenates the sinks and resolves the parent references of their parent runs to global
+    /// indices. The largest sink goes first and keeps its columns in place; the others are
+    /// appended to them, in index order, into space reserved for the exact total. Large merges
+    /// copy independent groups of columns on separate threads, which also spreads the page
+    /// faults of the new memory.
     // One job per group of columns; the groups share the sinks' set-up, so they stay together.
     #[allow(clippy::too_many_lines)]
-    pub fn merge(mut sinks: Vec<Self>) -> Self {
+    pub fn merge(sinks: Vec<(Self, Vec<ParentRun>)>) -> Self {
+        let (mut sinks, mut parent_runs): (Vec<Self>, Vec<Vec<ParentRun>>) =
+            sinks.into_iter().unzip();
         let Some(base) = (0..sinks.len()).max_by_key(|&i| sinks[i].len()) else {
             return Self::default();
         };
@@ -424,7 +435,7 @@ impl Columns {
         let lens: Vec<usize> = order.iter().map(|&i| sinks[i].len()).collect();
         let runs: Vec<Vec<ParentRun>> = order
             .iter()
-            .map(|&i| std::mem::take(&mut sinks[i].parent_runs))
+            .map(|&i| std::mem::take(&mut parent_runs[i]))
             .collect();
         let name_offsets: Vec<usize> = order
             .iter()
@@ -435,9 +446,7 @@ impl Columns {
             })
             .collect();
 
-        let probe = sinks[base].probe;
         let mut merged = std::mem::take(&mut sinks[base]);
-        merged.probe = probe;
         let mut rest: Vec<Self> = order
             .iter()
             .skip(1)
@@ -660,17 +669,13 @@ mod test {
     }
 
     /// A sink of `len` entries below entry 0 of sink 0, each with its own number in the columns
-    /// that only some options fill.
-    fn sink(id: usize, len: usize) -> Columns {
-        Columns {
+    /// that only some options fill, with its parent runs.
+    fn sink(id: usize, len: usize) -> (Columns, Vec<ParentRun>) {
+        let cols = Columns {
             names: (0..len)
                 .map(|k| b'a' + u8::try_from(k % 26).unwrap_or(0))
                 .collect(),
             name_end: (1..=len).collect(),
-            parent_runs: vec![ParentRun {
-                start: 0,
-                parent: Some(NodeRef { sink: 0, index: 0 }),
-            }],
             depth: vec![1; len],
             file_type: vec![Kind::File; len],
             size: (0..len)
@@ -680,7 +685,12 @@ mod test {
             modified: (0..len).map(|k| Some(stamp(id, k))).collect(),
             style_table: vec![nu_ansi_term::Style::default()],
             ..Columns::default()
-        }
+        };
+        let runs = vec![ParentRun {
+            start: 0,
+            parent: Some(NodeRef { sink: 0, index: 0 }),
+        }];
+        (cols, runs)
     }
 
     /// Merging puts the sinks' columns one after the other, the largest first, whether it copies

@@ -125,7 +125,7 @@ impl Tree {
         walker.fields = probe.fields();
 
         let sinks = walker.run(|_| Collector::new(probe), progress);
-        let cols = Columns::merge(sinks.into_iter().map(|c| c.columns).collect());
+        let cols = Columns::merge(sinks.into_iter().map(Collector::into_columns).collect());
 
         let mut col_props = column::Properties::from(&ctx);
         let tree = Self::assemble(cols, &ctx, &mut col_props)?;
