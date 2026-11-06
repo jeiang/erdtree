@@ -99,13 +99,6 @@ impl Long {
     }
 }
 
-impl Theme {
-    /// Branches of the link theme if `link`, else of the tree theme.
-    pub const fn glyphs(&self, link: bool) -> &Glyphs {
-        if link { &self.link } else { &self.tree }
-    }
-}
-
 impl Glyphs {
     /// The pieces, each painted in `color` if given.
     fn new(color: Option<Color>) -> Self {

@@ -18,9 +18,8 @@
 )]
 
 use clap::CommandFactory;
-use context::{Context, layout};
+use context::Context;
 use progress::{Indicator, IndicatorHandle};
-use render::{Engine, Flat, FlatInverted, Inverted, Regular};
 use std::{
     error::Error,
     io::{self, BufWriter, ErrorKind, IsTerminal, Write, stdout},
@@ -137,7 +136,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         if k > 0 {
             out.write_all(separator.as_bytes())?;
         }
-        render(tree, ctx, &mut out, k + 1 == roots)?;
+        let written = render::write(&tree, &ctx, &mut out);
+
+        // The last tree is not freed: the process ends soon after, and returning its memory to
+        // the allocator page by page is wasted time.
+        if k + 1 == roots {
+            std::mem::forget(tree);
+        }
+        written?;
     }
 
     // The count is empty when no tree has any entries (only possible at level 0).
@@ -148,32 +154,4 @@ fn run() -> Result<(), Box<dyn Error>> {
     out.flush()?;
 
     Ok(())
-}
-
-/// Writes the rows of `tree` in the layout selected by `ctx`. With `last`, the tree is not
-/// freed: the process ends soon after, and returning its memory to the allocator page by page
-/// is wasted time.
-fn render(tree: Tree, ctx: Context, out: &mut impl Write, last: bool) -> io::Result<()> {
-    fn write<T: render::Layout>(
-        tree: Tree,
-        ctx: Context,
-        out: &mut impl Write,
-        last: bool,
-    ) -> io::Result<()> {
-        let engine = Engine::<T>::new(tree, ctx);
-        let written = engine.write(out);
-
-        if last {
-            std::mem::forget(engine);
-        }
-
-        written
-    }
-
-    match ctx.layout {
-        layout::Type::Flat => write::<Flat>(tree, ctx, out, last),
-        layout::Type::Iflat => write::<FlatInverted>(tree, ctx, out, last),
-        layout::Type::Inverted => write::<Inverted>(tree, ctx, out, last),
-        layout::Type::Regular => write::<Regular>(tree, ctx, out, last),
-    }
 }

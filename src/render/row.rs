@@ -118,7 +118,7 @@ impl Size {
 #[derive(Default)]
 pub struct Scratch {
     styles: StyleCache,
-    pub cursor: prefix::Cursor,
+    cursor: prefix::Cursor,
 
     #[cfg(unix)]
     long: long::State,
@@ -164,14 +164,14 @@ impl<'a> RowFmt<'a> {
         }
     }
 
-    /// Appends the row of node `id` of a tree layout. The prefix is appended by `prefix`, which
-    /// is given the cursor of `scratch`.
+    /// Appends the row of node `id` of a tree layout, which has the root on top if `inverted`.
     pub fn tree_row(
         &self,
         scratch: &mut Scratch,
         id: u32,
+        glyphs: &prefix::Glyphs,
+        inverted: bool,
         out: &mut Vec<u8>,
-        prefix: impl FnOnce(&mut prefix::Cursor, &mut Vec<u8>),
     ) {
         let start = out.len();
         let node = self.tree.node(id);
@@ -186,7 +186,9 @@ impl<'a> RowFmt<'a> {
             size.write(node, out);
         }
         out.push(b' ');
-        prefix(&mut scratch.cursor, out);
+        scratch
+            .cursor
+            .write(self.tree, id, node.depth(), glyphs, inverted, out);
 
         if self.icons {
             self.write_icon(scratch, node, out);
