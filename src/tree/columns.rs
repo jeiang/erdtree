@@ -653,75 +653,217 @@ fn size(probe: Probe, record: &Record<'_>, file_type: Kind, scratch: &mut Vec<u8
 
 #[cfg(test)]
 mod test {
-    use super::{Columns, ParentRun};
-    use crate::{fs::stat::Kind, walk::NodeRef};
-    use std::time::{Duration, SystemTime};
+    use super::{Columns, ParentRun, StyleIndex};
+    use crate::{
+        fs::{inode::Inode, stat::Kind},
+        walk::NodeRef,
+    };
+    use nu_ansi_term::{Color, Style};
+    use std::{
+        path::PathBuf,
+        time::{Duration, SystemTime},
+    };
 
-    /// The time recorded for entry `k` of sink `id`.
-    fn stamp(id: usize, k: usize) -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(id * 1_000_000 + k).unwrap_or(0))
+    /// A number unique to entry `k` of sink `id`.
+    fn tag(id: usize, k: usize) -> u64 {
+        u64::try_from(id * 1_000_000 + k).unwrap()
     }
 
-    /// A sink of `len` entries below entry 0 of sink 0, each with its own number in the columns
-    /// that only some options fill, with its parent runs.
+    fn stamp(id: usize, k: usize, which: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(tag(id, k) * 4 + which)
+    }
+
+    fn name(id: usize, k: usize) -> String {
+        // Names of different lengths, so name ends need the offsets of the sinks before.
+        format!("{id}-{}", "n".repeat(k % 5))
+    }
+
+    /// The styles of sink `id`: the default style, one every sink has, and one of its own.
+    fn style_table(id: usize) -> Vec<Style> {
+        vec![
+            Style::default(),
+            Style::new().fg(Color::Fixed(u8::try_from(id).unwrap())),
+            Style::new().bold(),
+        ]
+    }
+
+    /// The style of entry `k` in its sink's table.
+    const fn style_of(k: usize) -> usize {
+        k % 3
+    }
+
+    /// Where the second parent run of a sink of `len` entries starts.
+    const fn second_run(len: usize) -> usize {
+        len / 2
+    }
+
+    /// A sink of `len` entries with every column filled: a symlink target every 4th entry and a
+    /// multiply-linked inode every 3rd. Sink 0 starts with the root; every sink has a run
+    /// below entry 0 of sink 0, then one below its own entry 0.
     fn sink(id: usize, len: usize) -> (Columns, Vec<ParentRun>) {
-        let cols = Columns {
-            names: (0..len)
-                .map(|k| b'a' + u8::try_from(k % 26).unwrap_or(0))
+        let mut cols = Columns {
+            depth: (0..len).map(|k| u32::try_from(k % 7).unwrap()).collect(),
+            file_type: (0..len)
+                .map(|k| if k % 2 == 0 { Kind::File } else { Kind::Dir })
                 .collect(),
-            name_end: (1..=len).collect(),
-            depth: vec![1; len],
-            file_type: vec![Kind::File; len],
-            size: (0..len)
-                .map(|k| Some(u64::try_from(k).unwrap_or(0)))
+            size: (0..len).map(|k| Some(tag(id, k))).collect(),
+            #[cfg(unix)]
+            mode: (0..len)
+                .map(|k| u32::try_from(tag(id, k)).unwrap())
                 .collect(),
-            created: (0..len).map(|k| Some(stamp(id, k))).collect(),
-            modified: (0..len).map(|k| Some(stamp(id, k))).collect(),
-            style_table: vec![nu_ansi_term::Style::default()],
+            multi_linked: (0..len)
+                .step_by(3)
+                .map(|k| (u32::try_from(k).unwrap(), (tag(id, k), 1)))
+                .collect(),
+            inode: (0..len)
+                .map(|k| Some(Inode::new(tag(id, k), 2, 1)))
+                .collect(),
+            link_target: (0..len)
+                .step_by(4)
+                .map(|k| (u32::try_from(k).unwrap(), PathBuf::from(name(id, k))))
+                .collect(),
+            style: (0..len).map(|k| StyleIndex::new(style_of(k))).collect(),
+            style_table: style_table(id),
+            modified: (0..len).map(|k| Some(stamp(id, k, 0))).collect(),
+            accessed: (0..len).map(|k| Some(stamp(id, k, 1))).collect(),
+            created: (0..len).map(|k| Some(stamp(id, k, 2))).collect(),
+            #[cfg(unix)]
+            long: (0..len)
+                .map(|k| super::LongAttrs {
+                    read: k % 2 == 0,
+                    has_xattrs: k % 3 == 0,
+                    uid: u32::try_from(tag(id, k)).unwrap(),
+                    gid: u32::try_from(k).unwrap(),
+                })
+                .collect(),
+            ignored: id + 1,
             ..Columns::default()
         };
-        let runs = vec![ParentRun {
-            start: 0,
+        for k in 0..len {
+            cols.push_name(name(id, k).as_ref());
+        }
+
+        let below_root = u32::from(id == 0);
+        let mut runs = vec![];
+        if id == 0 {
+            runs.push(ParentRun {
+                start: 0,
+                parent: None,
+            });
+        }
+        runs.push(ParentRun {
+            start: below_root,
             parent: Some(NodeRef { sink: 0, index: 0 }),
-        }];
+        });
+        runs.push(ParentRun {
+            start: u32::try_from(second_run(len)).unwrap(),
+            parent: Some(NodeRef {
+                sink: u32::try_from(id).unwrap(),
+                index: 0,
+            }),
+        });
         (cols, runs)
     }
 
     /// Merging puts the sinks' columns one after the other, the largest first, whether it copies
-    /// on one thread or on several.
+    /// on one thread or on several: sparse columns move by the sinks' offsets and styles are
+    /// translated into one table of distinct styles.
     #[test]
     fn merge_concatenates_every_column() {
-        for lens in [[3, 5, 2], [40_000, 30_000, 50_000]] {
+        for lens in [[4, 9, 6], [40_000, 30_000, 50_000]] {
             let merged = Columns::merge((0..3).map(|id| sink(id, lens[id])).collect());
             let total: usize = lens.iter().sum();
 
-            assert_eq!(merged.len(), total);
-            assert_eq!(merged.parent.len(), total);
-            assert_eq!(merged.runs.len(), 3);
-
-            let first = (0..3).max_by_key(|&id| lens[id]).unwrap_or(0);
+            let first = (0..3).max_by_key(|&id| lens[id]).unwrap();
+            let order: Vec<usize> = std::iter::once(first)
+                .chain((0..3).filter(|&id| id != first))
+                .collect();
+            let mut offsets = [0; 3];
             let mut at = 0;
-            for id in std::iter::once(first).chain((0..3).filter(|&id| id != first)) {
-                for k in 0..lens[id] {
-                    assert_eq!(merged.created[at], Some(stamp(id, k)));
-                    assert_eq!(merged.modified[at], Some(stamp(id, k)));
-                    assert_eq!(merged.size[at], Some(u64::try_from(k).unwrap_or(0)));
+            for &id in &order {
+                offsets[id] = at;
+                at += lens[id];
+            }
+
+            assert_eq!(merged.len(), total);
+            assert_eq!(merged.ignored, 1 + 2 + 3);
+
+            // The default and bold styles every sink has, and each sink's own color, once.
+            assert_eq!(merged.style_table[0], Style::default());
+            assert_eq!(merged.style_table.len(), 2 + 3, "{:?}", merged.style_table);
+
+            let mut multi = vec![];
+            let mut links = vec![];
+            let mut runs = vec![];
+            for &id in &order {
+                let base = offsets[id];
+                let global = |k: usize| u32::try_from(base + k).unwrap();
+                let len = lens[id];
+                let below_root = usize::from(id == 0);
+                runs.push((global(below_root), global(second_run(len)), offsets[0]));
+                runs.push((global(second_run(len)), global(len), base));
+
+                for k in 0..len {
+                    let at = base + k;
+                    let parent = if id == 0 && k == 0 {
+                        super::NONE
+                    } else if k < second_run(len) {
+                        u32::try_from(offsets[0]).unwrap()
+                    } else {
+                        u32::try_from(base).unwrap()
+                    };
+                    assert_eq!(merged.parent[at], parent, "parent of {id}/{k}");
+                    assert_eq!(merged.name(at).to_str(), Some(name(id, k).as_str()));
+                    assert_eq!(merged.depth[at], u32::try_from(k % 7).unwrap());
+                    assert_eq!(merged.file_type[at].is_dir(), k % 2 == 1);
+                    assert_eq!(merged.size[at], Some(tag(id, k)));
+                    #[cfg(unix)]
+                    {
+                        assert_eq!(merged.mode[at], u32::try_from(tag(id, k)).unwrap());
+                        let long = merged.long[at];
+                        assert_eq!(
+                            (long.read, long.has_xattrs, long.uid, long.gid),
+                            (
+                                k % 2 == 0,
+                                k % 3 == 0,
+                                u32::try_from(tag(id, k)).unwrap(),
+                                u32::try_from(k).unwrap()
+                            )
+                        );
+                    }
+                    assert_eq!(merged.inode[at].map(Inode::id), Some((2, tag(id, k))));
+                    assert_eq!(merged.modified[at], Some(stamp(id, k, 0)));
+                    assert_eq!(merged.accessed[at], Some(stamp(id, k, 1)));
+                    assert_eq!(merged.created[at], Some(stamp(id, k, 2)));
+                    let style = merged.style_at(at).unwrap();
                     assert_eq!(
-                        merged.name(at).as_encoded_bytes(),
-                        [b'a' + u8::try_from(k % 26).unwrap_or(0)]
+                        merged.style_table[style.index()],
+                        style_table(id)[style_of(k)]
                     );
-                    at += 1;
+
+                    if k % 3 == 0 {
+                        multi.push((global(k), (tag(id, k), 1)));
+                    }
+                    if k % 4 == 0 {
+                        links.push((global(k), PathBuf::from(name(id, k))));
+                        assert_eq!(
+                            merged.link_target(global(k)),
+                            Some(PathBuf::from(name(id, k)).as_path())
+                        );
+                    } else {
+                        assert_eq!(merged.link_target(global(k)), None);
+                    }
                 }
             }
 
-            // Entry 0 of sink 0 is where that sink starts in the merged columns.
-            let start = if first == 0 { 0 } else { lens[first] };
-            assert!(
-                merged
-                    .parent
-                    .iter()
-                    .all(|&p| usize::try_from(p) == Ok(start))
-            );
+            assert_eq!(merged.multi_linked, multi);
+            assert_eq!(merged.link_target, links);
+            let got: Vec<_> = merged
+                .runs
+                .iter()
+                .map(|run| (run.start, run.end, usize::try_from(run.parent).unwrap()))
+                .collect();
+            assert_eq!(got, runs);
         }
     }
 }

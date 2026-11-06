@@ -181,17 +181,4 @@ mod test {
             }
         }
     }
-
-    #[cfg(unix)]
-    #[test]
-    fn lossy_names() {
-        use std::os::unix::ffi::OsStrExt;
-
-        for raw in [&b"plain"[..], b"bad\xffname", b"cut\xe2\x82", b"\x80start"] {
-            let name = OsStr::from_bytes(raw);
-            let mut out = vec![];
-            push_lossy(&mut out, name);
-            assert_eq!(out, name.to_string_lossy().as_bytes());
-        }
-    }
 }

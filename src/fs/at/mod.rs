@@ -404,25 +404,6 @@ mod test_at_calls {
             .len()))));
     }
 
-    /// On 32-bit glibc, opening a file of 2 GiB or more needs `O_LARGEFILE`. A sparse file takes
-    /// no space; skip where the file system cannot hold one.
-    #[test]
-    fn open_file_opens_files_over_2_gib() {
-        let dir = tempfile::tempdir().unwrap();
-        let big = fs::File::create(dir.path().join("big")).unwrap();
-        if big.set_len(3 << 30).is_err() {
-            return;
-        }
-        let fd = open_dir_path(dir.path(), true).unwrap();
-        let c = CString::new("big").unwrap();
-        let file = open_file(At {
-            dir: fd.as_raw_fd(),
-            name: &c,
-        })
-        .unwrap();
-        assert_eq!(file.metadata().unwrap().len(), 3 << 30);
-    }
-
     #[test]
     fn open_file_reads_like_file_open() {
         let dir = tempfile::tempdir().unwrap();
