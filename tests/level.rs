@@ -16,8 +16,7 @@ fn level() {
 1241 B data
 
 3 directories, 6 files"
-        ),
-        "Failed to print at max level of 1."
+        )
     )
 }
 
@@ -37,21 +36,17 @@ fn level_zero_counts_everything() {
 /// A directory at the level has no children shown, but the ones above keep their branches.
 #[test]
 fn level_two_regular() {
+    let (_tmp, root) = utils::three_levels();
     assert_eq!(
-        utils::run_cmd(&["--level", "2", "tests/data"]),
+        utils::run_cmd(&["--level", "2", &root]),
         indoc!(
-            "143 B    ┌─ cassildas_song.md
- 143 B ┌─ the_yellow_king
- 100 B ├─ nylarlathotep.txt
- 161 B ├─ nemesis.txt
-  83 B ├─ necronomicon.txt
- 446 B │  ┌─ lipsum.txt
- 446 B ├─ lipsum
- 308 B │  ┌─ polaris.txt
- 308 B ├─ dream_cycle
-1241 B data
+            "4 B ┌─ e.txt
+            2 B │  ┌─ d.txt
+            3 B │  ├─ b
+            5 B ├─ a
+            9 B t
 
-3 directories, 6 files"
+            2 directories, 3 files"
         )
     );
 }
@@ -76,51 +71,36 @@ fn level_one_inverted() {
 
 #[test]
 fn level_two_inverted() {
+    let (_tmp, root) = utils::three_levels();
     assert_eq!(
-        utils::run_cmd(&["--level", "2", "--layout", "inverted", "tests/data"]),
+        utils::run_cmd(&["--level", "2", "--layout", "inverted", &root]),
         indoc!(
-            "1241 B data
- 308 B ├─ dream_cycle
- 308 B │  └─ polaris.txt
- 446 B ├─ lipsum
- 446 B │  └─ lipsum.txt
-  83 B ├─ necronomicon.txt
- 161 B ├─ nemesis.txt
- 100 B ├─ nylarlathotep.txt
- 143 B └─ the_yellow_king
- 143 B    └─ cassildas_song.md
+            "9 B t
+            5 B ├─ a
+            3 B │  ├─ b
+            2 B │  └─ d.txt
+            4 B └─ e.txt
 
-3 directories, 6 files"
+            2 directories, 3 files"
         )
     );
 }
 
-/// Flat layouts sort only what the level shows, in the same order as sorting everything.
+/// Flat layouts sort only what the level shows, in the same order as sorting everything: by
+/// size across directories, so `e.txt` comes before `a/b`.
 #[test]
 fn level_two_flat_by_size() {
+    let (_tmp, root) = utils::three_levels();
     assert_eq!(
-        utils::run_cmd(&[
-            "--level",
-            "2",
-            "--layout",
-            "iflat",
-            "--sort",
-            "size",
-            "tests/data"
-        ]),
+        utils::run_cmd(&["--level", "2", "--layout", "iflat", "--sort", "size", &root]),
         indoc!(
-            "1241 B   data
- 446 B   lipsum
- 446 B   lipsum/lipsum.txt
- 308 B   dream_cycle
- 308 B   dream_cycle/polaris.txt
- 161 B   nemesis.txt
- 143 B   the_yellow_king
- 143 B   the_yellow_king/cassildas_song.md
- 100 B   nylarlathotep.txt
-  83 B   necronomicon.txt
+            "9 B   t
+            5 B   a
+            4 B   e.txt
+            3 B   a/b
+            2 B   a/d.txt
 
-3 directories, 6 files"
+            2 directories, 3 files"
         )
     );
 }

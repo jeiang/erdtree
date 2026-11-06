@@ -21,11 +21,12 @@ fn size_columns(args: &[&str]) -> Vec<String> {
         File::create(root.join(name)).unwrap().set_len(len).unwrap();
     }
 
-    let mut all = vec!["--color", "force"];
-    all.extend_from_slice(args);
-    all.push(root.to_str().unwrap());
-
-    let out = String::from_utf8(utils::run_cmd_raw(&all, &[])).unwrap();
+    let out = utils::Erd::new()
+        .args(["--color", "force"])
+        .args(args)
+        .arg(&root)
+        .ok()
+        .raw();
     out.lines()
         .take(6)
         .map(|l| l.split_once("\u{1b}[0m ").unwrap().0.to_string())

@@ -1,106 +1,83 @@
 //! `.erdtree.toml` discovery: a missing config is not an error, and the documented lookup order
 //! is honored.
 
-use std::{
-    path::Path,
-    process::{Command, Output},
-};
-use tempfile::TempDir;
+use std::{fs, path::Path};
+use utils::{Erd, Run};
 
-/// Runs `erd tests/data` with `HOME`/`XDG_CONFIG_HOME`/`APPDATA` pointed at `home`, `home/xdg`
-/// and `home/appdata`.
-fn run_in_home(home: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_erd"))
-        .env_remove("ERDTREE_TOML_PATH")
-        .env("HOME", home)
-        .env("XDG_CONFIG_HOME", home.join("xdg"))
-        .env("APPDATA", home.join("appdata"))
-        .args(["--threads", "1", "--color", "none", "tests/data"])
-        .output()
-        .unwrap()
+mod utils;
+
+fn write(path: &Path, contents: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, contents).unwrap();
 }
 
+/// Runs `erd tests/data` with the config files `files` (relative to the isolated home).
+fn discover(files: &[(&str, &str)]) -> Run {
+    let erd = Erd::new().discover_config().arg("tests/data");
+    for (path, contents) in files {
+        write(&erd.home().join(path), contents);
+    }
+    erd.run()
+}
+
+/// The output of `dirs-only = true`: directories only, and no file in the summary.
 #[cfg(unix)]
-fn write(path: &Path, contents: &str) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, contents).unwrap();
+#[track_caller]
+fn assert_dirs_only(run: &Run) {
+    assert!(run.status.success(), "{}", run.stderr());
+    let out = run.trimmed();
+    assert!(out.contains("─ lipsum\n"), "{out}");
+    assert!(!out.contains("nemesis.txt"), "{out}");
+    assert!(out.ends_with("3 directories"), "{out}");
 }
 
 #[test]
 fn no_config_file_is_not_an_error() {
-    let home = TempDir::new().unwrap();
-    let out = run_in_home(home.path());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{stderr}");
-    assert!(String::from_utf8_lossy(&out.stdout).contains("nemesis.txt"));
+    let run = discover(&[]);
+    assert!(run.status.success(), "{}", run.stderr());
+    assert!(run.stdout().contains("nemesis.txt"));
 }
 
 #[cfg(unix)]
 #[test]
 fn home_dotfile_is_found() {
-    let home = TempDir::new().unwrap();
-    write(&home.path().join(".erdtree.toml"), "dirs-only = true\n");
-
-    let out = run_in_home(home.path());
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(!String::from_utf8_lossy(&out.stdout).contains("nemesis.txt"));
+    assert_dirs_only(&discover(&[(".erdtree.toml", "dirs-only = true\n")]));
 }
 
 #[cfg(unix)]
 #[test]
 fn xdg_takes_precedence_over_home() {
-    let home = TempDir::new().unwrap();
-    write(
-        &home.path().join("xdg/erdtree/.erdtree.toml"),
-        "dirs-only = true\n",
-    );
-    // Would fail to parse if it were read.
-    write(&home.path().join(".erdtree.toml"), "sort = \"bogus\"\n");
-
-    let out = run_in_home(home.path());
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(!String::from_utf8_lossy(&out.stdout).contains("nemesis.txt"));
+    assert_dirs_only(&discover(&[
+        ("xdg/erdtree/.erdtree.toml", "dirs-only = true\n"),
+        // Would fail to parse if it were read.
+        (".erdtree.toml", "sort = \"bogus\"\n"),
+    ]));
 }
 
 #[cfg(unix)]
 #[test]
 fn malformed_config_is_an_error() {
-    let home = TempDir::new().unwrap();
-    write(&home.path().join(".erdtree.toml"), "dirs-only = [[\n");
-
-    let out = run_in_home(home.path());
-    assert!(!out.status.success());
+    let run = discover(&[(".erdtree.toml", "dirs-only = [[\n")]);
+    assert_eq!(run.code(), Some(1));
+    let err = run.stderr();
+    assert!(
+        err.starts_with("erd: The configuration file is improperly formatted"),
+        "{err}"
+    );
+    assert!(err.contains(".erdtree.toml"), "{err}");
 }
 
 #[cfg(unix)]
 #[test]
 fn erdtree_dir_accepts_undotted_names_in_order() {
-    let home = TempDir::new().unwrap();
-    let dir = home.path().join(".config/erdtree");
-    write(&dir.join("config.toml"), "sort = \"bogus\"\n");
-    write(&dir.join("erdtree.toml"), "dirs-only = true\n");
-
     // `erdtree.toml` wins over `config.toml`, which would fail to parse if it were read.
-    let out = run_in_home(home.path());
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(!String::from_utf8_lossy(&out.stdout).contains("nemesis.txt"));
+    assert_dirs_only(&discover(&[
+        (".config/erdtree/config.toml", "sort = \"bogus\"\n"),
+        (".config/erdtree/erdtree.toml", "dirs-only = true\n"),
+    ]));
 
-    // `config.toml` alone is found.
-    std::fs::remove_file(dir.join("erdtree.toml")).unwrap();
-    write(&dir.join("config.toml"), "dirs-only = true\n");
-    let out = run_in_home(home.path());
-    assert!(out.status.success());
-    assert!(!String::from_utf8_lossy(&out.stdout).contains("nemesis.txt"));
+    assert_dirs_only(&discover(&[(
+        ".config/erdtree/config.toml",
+        "dirs-only = true\n",
+    )]));
 }

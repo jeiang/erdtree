@@ -4,7 +4,6 @@
 #[cfg(unix)]
 mod utils;
 
-/// The fixture sets a setuid bit, which the Nix sandbox forbids; `flake.nix` skips `colored::`.
 #[cfg(unix)]
 mod colored {
     use super::utils;
@@ -21,9 +20,16 @@ mod colored {
     const STAMP: u64 = 1_705_320_000;
 
     /// A tree with every unit color among its sizes (sparse files have logical sizes without
-    /// blocks), a setuid file and a sticky, world-writable directory. Every entry and the root
+    /// blocks), a file `f` and a sticky, world-writable directory. Every entry and the root
     /// share one modification time.
-    fn fixture() -> Result<(TempDir, String), Box<dyn std::error::Error>> {
+    pub(super) fn fixture() -> Result<(TempDir, String), Box<dyn std::error::Error>> {
+        fixture_with_f_mode(0o644)
+    }
+
+    /// [`fixture`] with `f` in `f_mode`.
+    pub(super) fn fixture_with_f_mode(
+        f_mode: u32,
+    ) -> Result<(TempDir, String), Box<dyn std::error::Error>> {
         let tmp = TempDir::new()?;
         let root = tmp.path().join("t");
         let mode = |path: &Path, mode| fs::set_permissions(path, fs::Permissions::from_mode(mode));
@@ -35,7 +41,7 @@ mod colored {
         mode(&root.join("s"), 0o1777)?;
         fs::write(root.join("e"), "")?;
         fs::write(root.join("f"), "abc")?;
-        mode(&root.join("f"), 0o4755)?;
+        mode(&root.join("f"), f_mode)?;
         fs::write(root.join("m"), vec![0u8; 2 << 20])?;
         File::create(root.join("k"))?.set_len(1_500)?;
         File::create(root.join("g"))?.set_len(3 << 30)?;
@@ -52,8 +58,8 @@ mod colored {
         Ok((tmp, root))
     }
 
-    fn run(args: &[&str]) -> String {
-        String::from_utf8(utils::run_cmd_raw(args, &[("TZ", "UTC")])).unwrap()
+    pub(super) fn run(args: &[&str]) -> String {
+        utils::Erd::new().args(args).env("TZ", "UTC").ok().raw()
     }
 
     /// The owner and group names of `path`, which vary between machines.
@@ -82,7 +88,7 @@ mod colored {
 
     /// Replaces what varies between machines: owner and group names, and the extended-attribute
     /// cell, which is `@` or a space depending on the file system; both styles are matched exactly.
-    fn normalize(out: &str, root: &str) -> String {
+    pub(super) fn normalize(out: &str, root: &str) -> String {
         let (owner, group) = names(root);
         // By style too: owner and group often share a name (runner/runner on CI).
         out.replace(
@@ -99,7 +105,7 @@ mod colored {
 
     /// Replaces the digits and padding of every cell opened by `pre` that holds only those with
     /// `#`: inode numbers and link counts, which vary between machines and file systems.
-    fn mask(out: &str, pre: &str) -> String {
+    pub(super) fn mask(out: &str, pre: &str) -> String {
         let mut masked = String::with_capacity(out.len());
         let mut rest = out;
 
@@ -133,7 +139,7 @@ mod colored {
             "\x1b[35m.\x1b[0m\x1b[1;32mr\x1b[0m\x1b[1;33mw\x1b[0m\x1b[35m-\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[35m-\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[35m-\x1b[0m<x> \x1b[1;36mOWNER\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;33m         1500 B\x1b[0m \x1b[35m├─ \x1b[0mk\n",
             "\x1b[35m.\x1b[0m\x1b[1;32mr\x1b[0m\x1b[1;33mw\x1b[0m\x1b[35m-\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[35m-\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[35m-\x1b[0m<x> \x1b[1;36mOWNER\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;34m1100000000000 B\x1b[0m \x1b[35m├─ \x1b[0mh\n",
             "\x1b[35m.\x1b[0m\x1b[1;32mr\x1b[0m\x1b[1;33mw\x1b[0m\x1b[35m-\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[35m-\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[35m-\x1b[0m<x> \x1b[1;36mOWNER\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;31m   3221225472 B\x1b[0m \x1b[35m├─ \x1b[0mg\n",
-            "\x1b[35m.\x1b[0m\x1b[1;32mr\x1b[0m\x1b[1;33mw\x1b[0m\x1b[1;31ms\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[1;31mx\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[1;31mx\x1b[0m<x> \x1b[1;36mOWNER\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;36m            3 B\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;41;37mf\x1b[0m\n",
+            "\x1b[35m.\x1b[0m\x1b[1;32mr\x1b[0m\x1b[1;33mw\x1b[0m\x1b[35m-\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[35m-\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[35m-\x1b[0m<x> \x1b[1;36mOWNER\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;36m            3 B\x1b[0m \x1b[35m├─ \x1b[0mf\n",
             "\x1b[35m.\x1b[0m\x1b[1;32mr\x1b[0m\x1b[1;33mw\x1b[0m\x1b[35m-\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[35m-\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[35m-\x1b[0m<x> \x1b[1;36mOWNER\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;36m            0 B\x1b[0m \x1b[35m├─ \x1b[0me\n",
             "\x1b[1;34md\x1b[0m\x1b[1;32mr\x1b[0m\x1b[1;33mw\x1b[0m\x1b[1;31mx\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[1;31mx\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[1;31mx\x1b[0m<x> \x1b[1;36mOWNER\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[35m              -\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;34md\x1b[0m\n",
             "\x1b[1;34md\x1b[0m\x1b[1;32mr\x1b[0m\x1b[1;33mw\x1b[0m\x1b[1;31mx\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[1;31mx\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[1;31mx\x1b[0m<x> \x1b[1;36mOWNER\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;34m1103223324127 B\x1b[0m \x1b[1;34mt\x1b[0m\n",
@@ -167,7 +173,7 @@ mod colored {
             "\x1b[1;36m#\x1b[0m \x1b[1;35m0644\x1b[0m \x1b[1;31m#\x1b[0m \x1b[1;36mOWNER\x1b[0m \x1b[1;32mGROUP\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;33m         1500 B\x1b[0m \x1b[35m├─ \x1b[0mk\n",
             "\x1b[1;36m#\x1b[0m \x1b[1;35m0644\x1b[0m \x1b[1;31m#\x1b[0m \x1b[1;36mOWNER\x1b[0m \x1b[1;32mGROUP\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;34m1100000000000 B\x1b[0m \x1b[35m├─ \x1b[0mh\n",
             "\x1b[1;36m#\x1b[0m \x1b[1;35m0644\x1b[0m \x1b[1;31m#\x1b[0m \x1b[1;36mOWNER\x1b[0m \x1b[1;32mGROUP\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;31m   3221225472 B\x1b[0m \x1b[35m├─ \x1b[0mg\n",
-            "\x1b[1;36m#\x1b[0m \x1b[1;35m4755\x1b[0m \x1b[1;31m#\x1b[0m \x1b[1;36mOWNER\x1b[0m \x1b[1;32mGROUP\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;36m            3 B\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;41;37mf\x1b[0m\n",
+            "\x1b[1;36m#\x1b[0m \x1b[1;35m0644\x1b[0m \x1b[1;31m#\x1b[0m \x1b[1;36mOWNER\x1b[0m \x1b[1;32mGROUP\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;36m            3 B\x1b[0m \x1b[35m├─ \x1b[0mf\n",
             "\x1b[1;36m#\x1b[0m \x1b[1;35m0644\x1b[0m \x1b[1;31m#\x1b[0m \x1b[1;36mOWNER\x1b[0m \x1b[1;32mGROUP\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;36m            0 B\x1b[0m \x1b[35m├─ \x1b[0me\n",
             "\x1b[1;36m#\x1b[0m \x1b[1;35m0755\x1b[0m \x1b[1;31m#\x1b[0m \x1b[1;36mOWNER\x1b[0m \x1b[1;32mGROUP\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[35m              -\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;34md\x1b[0m\n",
             "\x1b[1;36m#\x1b[0m \x1b[1;35m0755\x1b[0m \x1b[1;31m#\x1b[0m \x1b[1;36mOWNER\x1b[0m \x1b[1;32mGROUP\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;34m1103223324127 B\x1b[0m \x1b[1;34mt\x1b[0m\n",
@@ -191,7 +197,7 @@ mod colored {
             "\x1b[1;33m         1500 B\x1b[0m \x1b[35m├─ \x1b[0mk\n",
             "\x1b[1;34m1100000000000 B\x1b[0m \x1b[35m├─ \x1b[0mh\n",
             "\x1b[1;31m   3221225472 B\x1b[0m \x1b[35m├─ \x1b[0mg\n",
-            "\x1b[1;36m            3 B\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;41;37mf\x1b[0m\n",
+            "\x1b[1;36m            3 B\x1b[0m \x1b[35m├─ \x1b[0mf\n",
             "\x1b[1;36m            0 B\x1b[0m \x1b[35m├─ \x1b[0me\n",
             "\x1b[35m              -\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;34md\x1b[0m\n",
             "\x1b[1;34m1103223324127 B\x1b[0m \x1b[1;34mt\x1b[0m\n",
@@ -214,7 +220,7 @@ mod colored {
             "\x1b[1;33m1.5 KB\x1b[0m \x1b[35m├─ \x1b[0mk\n",
             "\x1b[1;34m1.1 TB\x1b[0m \x1b[35m├─ \x1b[0mh\n",
             "\x1b[1;31m3.2 GB\x1b[0m \x1b[35m├─ \x1b[0mg\n",
-            "\x1b[1;36m  3  B\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;41;37mf\x1b[0m\n",
+            "\x1b[1;36m  3  B\x1b[0m \x1b[35m├─ \x1b[0mf\n",
             "\x1b[1;36m  0  B\x1b[0m \x1b[35m├─ \x1b[0me\n",
             "\x1b[35m     -\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;34md\x1b[0m\n",
             "\x1b[1;34m1.1 TB\x1b[0m \x1b[1;34mt\x1b[0m\n",
@@ -237,7 +243,7 @@ mod colored {
             "\x1b[1;33m1.5 KiB\x1b[0m \x1b[35m├─ \x1b[0mk\n",
             "\x1b[1;34m1.0 TiB\x1b[0m \x1b[35m├─ \x1b[0mh\n",
             "\x1b[1;31m3.0 GiB\x1b[0m \x1b[35m├─ \x1b[0mg\n",
-            "\x1b[1;36m  3   B\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;41;37mf\x1b[0m\n",
+            "\x1b[1;36m  3   B\x1b[0m \x1b[35m├─ \x1b[0mf\n",
             "\x1b[1;36m  0   B\x1b[0m \x1b[35m├─ \x1b[0me\n",
             "\x1b[35m      -\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;34md\x1b[0m\n",
             "\x1b[1;34m1.0 TiB\x1b[0m \x1b[1;34mt\x1b[0m\n",
@@ -260,7 +266,7 @@ mod colored {
             "\x1b[1;36m   0\x1b[0m \x1b[35m├─ \x1b[0mk\n",
             "\x1b[1;36m   0\x1b[0m \x1b[35m├─ \x1b[0mh\n",
             "\x1b[1;36m   0\x1b[0m \x1b[35m├─ \x1b[0mg\n",
-            "\x1b[1;33m   8\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;41;37mf\x1b[0m\n",
+            "\x1b[1;33m   8\x1b[0m \x1b[35m├─ \x1b[0mf\n",
             "\x1b[1;36m   0\x1b[0m \x1b[35m├─ \x1b[0me\n",
             "\x1b[35m   -\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;34md\x1b[0m\n",
             "\x1b[1;32m4104\x1b[0m \x1b[1;34mt\x1b[0m\n",
@@ -268,6 +274,46 @@ mod colored {
             "2 directories, 6 files\n",
         );
         assert_eq!(out, expected, "{out}");
+        Ok(())
+    }
+}
+
+/// The setuid bit, which the Nix sandbox forbids setting; `flake.nix` skips `setuid_bit::`.
+#[cfg(unix)]
+mod setuid_bit {
+    use super::colored::{fixture_with_f_mode, mask, normalize, run};
+
+    /// The row of `f` in `out`.
+    fn f_row(out: &str) -> &str {
+        out.lines()
+            .find(|l| l.ends_with("f\x1b[0m"))
+            .unwrap_or_else(|| panic!("no row f: {out}"))
+    }
+
+    #[test]
+    fn long_symbolic() -> Result<(), Box<dyn std::error::Error>> {
+        let (_tmp, root) = fixture_with_f_mode(0o4755)?;
+        let out = normalize(&run(&["--long", "-C", "force", &root]), &root);
+
+        assert_eq!(
+            f_row(&out),
+            "\x1b[35m.\x1b[0m\x1b[1;32mr\x1b[0m\x1b[1;33mw\x1b[0m\x1b[1;31ms\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[1;31mx\x1b[0m\x1b[1;32mr\x1b[0m\x1b[35m-\x1b[0m\x1b[1;31mx\x1b[0m<x> \x1b[1;36mOWNER\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;36m            3 B\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;41;37mf\x1b[0m"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn long_octal() -> Result<(), Box<dyn std::error::Error>> {
+        let (_tmp, root) = fixture_with_f_mode(0o4755)?;
+        let out = run(&[
+            "--long", "--octal", "--ino", "--nlink", "--group", "-C", "force", &root,
+        ]);
+        let out = mask(&mask(&normalize(&out, &root), "\x1b[1;36m"), "\x1b[1;31m");
+
+        assert_eq!(
+            f_row(&out),
+            "\x1b[1;36m#\x1b[0m \x1b[1;35m4755\x1b[0m \x1b[1;31m#\x1b[0m \x1b[1;36mOWNER\x1b[0m \x1b[1;32mGROUP\x1b[0m \x1b[1;35m15 Jan 12:00 24\x1b[0m \x1b[1;36m            3 B\x1b[0m \x1b[35m├─ \x1b[0m\x1b[1;41;37mf\x1b[0m"
+        );
         Ok(())
     }
 }
@@ -300,10 +346,14 @@ fn long_special_file_types() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let root = root.to_str().unwrap();
-    let args = ["--long", "--follow", root];
-    let plain = String::from_utf8(utils::run_cmd_raw(&args, &[]))?;
-    let colored = utils::run_cmd_raw(&["--long", "--follow", "-C", "force", root], &[]);
-    let colored = String::from_utf8(colored)?;
+    let plain = utils::Erd::new()
+        .args(["--long", "--follow", root])
+        .ok()
+        .raw();
+    let colored = utils::Erd::new()
+        .args(["--long", "--follow", "-C", "force", root])
+        .ok()
+        .raw();
 
     assert_eq!(
         String::from_utf8(strip_ansi_escapes::strip(&colored))?,

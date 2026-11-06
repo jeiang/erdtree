@@ -18,16 +18,9 @@ fn fixture() -> TempDir {
 
 /// Entry rows (without the root and the summary), with the tree prefix removed.
 fn rows(dir: &TempDir, args: &[&str]) -> Vec<String> {
-    let mut all = vec!["--suppress-size"];
-    all.extend_from_slice(args);
-    all.push(dir.path().to_str().unwrap());
-
-    let out = utils::run_cmd(&all);
-    let (rows, _summary) = out.split_once("\n\n").unwrap();
-    let mut rows = rows
-        .lines()
-        .map(|l| l.trim_start_matches([' ', '┌', '├', '─']).to_string())
-        .collect::<Vec<_>>();
+    let out =
+        utils::run_cmd(&[&["--suppress-size"], args, &[dir.path().to_str().unwrap()]].concat());
+    let mut rows: Vec<String> = utils::rows(&out).into_iter().map(str::to_owned).collect();
     rows.pop(); // root
     rows
 }

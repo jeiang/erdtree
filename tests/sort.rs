@@ -19,15 +19,14 @@ fn sort_name() {
 1241 B data
 
 3 directories, 6 files"
-        ),
-        "Failed to sort alphabetically by file name"
+        )
     )
 }
 
 #[test]
 fn sort_name_dir_order() {
     assert_eq!(
-        utils::run_cmd(&["--sort", "name", "--dir-order", "first", "tests/data"]),
+        utils::run_cmd(&["--dir-order", "first", "tests/data"]),
         indoc!(
             "143 B    ┌─ cassildas_song.md
  143 B ┌─ the_yellow_king
@@ -45,7 +44,7 @@ fn sort_name_dir_order() {
     );
 
     assert_eq!(
-        utils::run_cmd(&["--sort", "name", "--dir-order", "last", "tests/data"]),
+        utils::run_cmd(&["--dir-order", "last", "tests/data"]),
         indoc!(
             "100 B ┌─ nylarlathotep.txt
  161 B ├─ nemesis.txt
@@ -80,7 +79,6 @@ fn sort_size() {
 1241 B data
 
 3 directories, 6 files"
-        ),
-        "Failed to sort by descending size"
+        )
     )
 }

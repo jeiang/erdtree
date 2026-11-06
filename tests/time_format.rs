@@ -66,8 +66,8 @@ fn iso_strict_offsets() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let out = utils::run_cmd_raw(
-            &[
+        let out = utils::Erd::new()
+            .args([
                 "-l",
                 "--time-format",
                 "iso-strict",
@@ -75,10 +75,10 @@ fn iso_strict_offsets() -> Result<(), Box<dyn std::error::Error>> {
                 "none",
                 "--no-report",
                 &root,
-            ],
-            &[("TZ", zone)],
-        );
-        let out = String::from_utf8(out)?;
+            ])
+            .env("TZ", zone)
+            .ok()
+            .raw();
 
         for (i, (case_zone, _, expected)) in cases.iter().enumerate() {
             if *case_zone != zone {

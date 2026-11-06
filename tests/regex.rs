@@ -1,6 +1,7 @@
 use indoc::indoc;
 use std::fs;
 use tempfile::TempDir;
+use utils::Erd;
 
 mod utils;
 
@@ -15,21 +16,10 @@ fn regex_file_type_ignores_ancestors_of_root() {
         fs::write(path, "").unwrap();
     }
 
-    let out = utils::run_cmd(&[
-        "--layout",
-        "iflat",
-        "--suppress-size",
-        "--no-report",
-        "--pattern",
-        r"^dream.",
-        "--file-type",
-        "dir",
-        root.to_str().unwrap(),
-    ]);
-    let mut paths = out.lines().skip(1).collect::<Vec<_>>();
-    paths.sort_unstable();
-
-    assert_eq!(paths, ["dreamy", "dreamy/c.txt"]);
+    assert_eq!(
+        utils::paths(&root, &["--pattern", r"^dream.", "--file-type", "dir"]),
+        ["dreamy", "dreamy/c.txt"]
+    );
 }
 
 /// `--file-type link` keeps symlinks whose name matches, plus the directories leading to them.
@@ -48,22 +38,13 @@ fn regex_file_type_link() {
     symlink("../a.txt", root.join("d/m.txt")).unwrap();
     symlink("a.txt", root.join("n.md")).unwrap();
 
-    let out = utils::run_cmd(&[
-        "--layout",
-        "iflat",
-        "--suppress-size",
-        "--no-report",
-        "--prune",
-        "--pattern",
-        r"\.txt$",
-        "--file-type",
-        "link",
-        root.to_str().unwrap(),
-    ]);
-    let mut paths = out.lines().skip(1).collect::<Vec<_>>();
-    paths.sort_unstable();
-
-    assert_eq!(paths, ["d", "d/m.txt", "l.txt"]);
+    assert_eq!(
+        utils::paths(
+            &root,
+            &["--prune", "--pattern", r"\.txt$", "--file-type", "link"]
+        ),
+        ["d", "d/m.txt", "l.txt"]
+    );
 }
 
 #[test]
@@ -110,24 +91,31 @@ fn regex_file_type() {
     );
 }
 
-#[should_panic]
+/// A file pattern with `--file-type dir` leaves nothing to show.
 #[test]
 fn regex_empty_set_dir() {
-    // Trying to look for a regular file when file type is specified to be directory should result
-    // in an empty set which causes `main` to return an error.
-    utils::run_cmd(&["--pattern", r"\.md$", "--file-type", "dir", "tests/data"]);
+    let err = Erd::new()
+        .args(["--pattern", r"\.md$", "--file-type", "dir", "tests/data"])
+        .fails(1);
+    assert_eq!(err, "erd: No entries to show with given arguments.\n");
 }
 
-#[should_panic]
 #[test]
 fn regex_empty_set_file() {
-    // Trying to look for a regular file when file type is specified to be directory should result
-    // in an empty set which causes `main` to return an error.
-    utils::run_cmd(&["--pattern", "weewoo", "tests/data"]);
+    let err = Erd::new()
+        .args(["--pattern", "weewoo", "tests/data"])
+        .fails(1);
+    assert_eq!(err, "erd: No entries to show with given arguments.\n");
 }
 
-#[should_panic]
 #[test]
 fn invalid_regex() {
-    utils::run_cmd(&["--pattern", "*.txt", "tests/data"]);
+    let err = Erd::new()
+        .args(["--pattern", "*.txt", "tests/data"])
+        .fails(1);
+    assert!(err.starts_with("erd: "), "{err}");
+    assert!(
+        err.contains("repetition operator missing expression"),
+        "{err}"
+    );
 }

@@ -1,40 +1,27 @@
 #[cfg(unix)]
 mod utils;
 
+/// A root that is a link to a directory is walked, without `--follow`, as its target.
 #[cfg(unix)]
-mod test {
+#[test]
+fn link() -> Result<(), Box<dyn std::error::Error>> {
     use indoc::indoc;
-    use std::os::unix::fs::symlink;
-    use std::path::Path;
+    use std::{os::unix::fs::symlink, path::Path};
     use tempfile::TempDir;
 
-    #[test]
-    fn link() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = TempDir::new()?;
-        let target = Path::new("./tests/data/the_yellow_king").canonicalize()?;
-        let link = tmp.path().join("the_yellow_link");
+    let tmp = TempDir::new()?;
+    let target = Path::new("./tests/data/the_yellow_king").canonicalize()?;
+    let link = tmp.path().join("the_yellow_link");
+    symlink(target, &link)?;
 
-        symlink(target, &link)?;
+    assert_eq!(
+        utils::run_cmd(&[link.to_str().unwrap()]),
+        indoc!(
+            "143 B ┌─ cassildas_song.md
+            143 B the_yellow_king
 
-        let link_canonical = link
-            .canonicalize()
-            .map(|c| c.to_string_lossy().into_owned())?;
-
-        let out = super::utils::run_cmd(&["--sort", "name", "--follow", &link_canonical]);
-
-        println!("{}", out);
-
-        assert_eq!(
-            out,
-            indoc!(
-                "143 B ┌─ cassildas_song.md
-                143 B the_yellow_king
-
-                1 file"
-            ),
-            "Failed to print symlink"
-        );
-
-        Ok(())
-    }
+            1 file"
+        )
+    );
+    Ok(())
 }

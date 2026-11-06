@@ -9,41 +9,20 @@ use std::{
     fs::File,
     io::Write,
     os::fd::{AsRawFd, FromRawFd, RawFd},
-    path::Path,
+    path::PathBuf,
 };
-use utils::run_cmd;
+use tempfile::TempDir;
 
-/// Creates a chain of `levels` directories named `name` below `root`, and a file in the deepest
-/// one, without ever using a path longer than one name. `fill` adds more to the deepest one.
-fn chain(root: &Path, name: &str, levels: usize, fill: impl FnOnce(RawFd)) {
-    let mut dir = File::open(root).unwrap();
-    let name = CString::new(name).unwrap();
-
-    for _ in 0..levels {
-        // SAFETY: `dir` is an open descriptor and `name` is NUL-terminated.
-        unsafe {
-            assert_eq!(libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o755), 0);
-            let fd = libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY);
-            assert!(fd >= 0);
-            dir = File::from_raw_fd(fd);
-        }
-    }
-
-    let leaf = CString::new("leaf.txt").unwrap();
-
-    // SAFETY: as above.
-    unsafe {
-        let fd = libc::openat(
-            dir.as_raw_fd(),
-            leaf.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT,
-            0o644,
-        );
-        assert!(fd >= 0);
-        libc::close(fd);
-    }
-
-    fill(dir.as_raw_fd());
+/// A tree `deep` of 60 directories of 100 bytes, so that the deepest path is above `PATH_MAX`
+/// (4096), holding `leaf.txt` and what `fill` adds in the deepest directory.
+fn deep_tree(fill: impl FnOnce(RawFd)) -> (TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("deep");
+    std::fs::create_dir(&root).unwrap();
+    let deepest = utils::chain(&root, &"d".repeat(100), 60, |_| {});
+    write_file(deepest.as_raw_fd(), "leaf.txt", "");
+    fill(deepest.as_raw_fd());
+    (tmp, root)
 }
 
 /// Creates the file `name` with `contents` in the directory open as `dir`.
@@ -67,7 +46,7 @@ fn write_file(dir: RawFd, name: &str, contents: &str) {
         .unwrap();
 }
 
-/// Creates the directory `name` and the symlink `link` to `target` in the directory open as `dir`.
+/// Creates the directory `name` in the directory open as `dir`.
 fn make_dir(dir: RawFd, name: &str) {
     let name = CString::new(name).unwrap();
 
@@ -75,6 +54,7 @@ fn make_dir(dir: RawFd, name: &str) {
     assert_eq!(unsafe { libc::mkdirat(dir, name.as_ptr(), 0o755) }, 0);
 }
 
+/// Creates the symlink `link` to `target` in the directory open as `dir`.
 fn make_link(dir: RawFd, link: &str, target: &str) {
     let link = CString::new(link).unwrap();
     let target = CString::new(target).unwrap();
@@ -86,51 +66,23 @@ fn make_link(dir: RawFd, link: &str, target: &str) {
     );
 }
 
-/// The names in the flat listing of a tree whose deepest path is above `PATH_MAX` (60 levels of
-/// 100 bytes), built by `fill`.
+/// The names below the root of [`deep_tree`], the chain left out, `--hidden` and `args` given.
 fn deep_listing(args: &[&str], fill: impl FnOnce(RawFd)) -> Vec<String> {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("deep");
-    std::fs::create_dir(&root).unwrap();
-    chain(&root, &"d".repeat(100), 60, fill);
-
-    let root = root.to_str().unwrap();
-    let mut all = vec![
-        "--no-report",
-        "--suppress-size",
-        "--layout",
-        "flat",
-        "--hidden",
-    ];
-    all.extend_from_slice(args);
-    all.push(root);
-
-    run_cmd(&all)
-        .lines()
-        .filter_map(|line| Some(line.rsplit('/').next()?.to_string()))
+    let (_tmp, root) = deep_tree(fill);
+    utils::paths(&root, &[&["--hidden"], args].concat())
+        .into_iter()
+        .map(|path| path.rsplit('/').next().unwrap().to_owned())
         .filter(|name| !name.starts_with("dd"))
         .collect()
 }
 
 #[test]
 fn walks_paths_longer_than_path_max() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("deep");
-    std::fs::create_dir(&root).unwrap();
+    let (_tmp, root) = deep_tree(|_| {});
+    let paths = utils::paths(&root, &[]);
 
-    // 60 levels of 100 bytes: the deepest path is above PATH_MAX (4096).
-    chain(&root, &"d".repeat(100), 60, |_| {});
-
-    let out = run_cmd(&[
-        "--no-report",
-        "--suppress-size",
-        "--layout",
-        "flat",
-        root.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.lines().count(), 62, "{out}");
-    assert!(out.lines().any(|l| l.ends_with("leaf.txt")));
+    assert_eq!(paths.len(), 61, "{paths:?}");
+    assert!(paths.iter().any(|p| p.ends_with("leaf.txt")));
 }
 
 #[test]

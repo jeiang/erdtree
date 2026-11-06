@@ -3,47 +3,17 @@
 
 #![cfg(target_os = "linux")]
 
-use std::{
-    ffi::CString,
-    fs::File,
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::process::CommandExt,
-    },
-    process::Command,
-};
+use std::{ffi::CString, os::unix::process::CommandExt};
 
-/// Creates `levels` nested directories `d`, each also holding a sibling directory `s`, so that
-/// every level has a subdirectory waiting while the chain is followed.
-fn chain_with_siblings(root: &std::path::Path, levels: usize) {
-    let mut dir = File::open(root).unwrap();
-    let (d, s) = (CString::new("d").unwrap(), CString::new("s").unwrap());
-
-    for _ in 0..levels {
-        // SAFETY: `dir` is an open descriptor and the names are NUL-terminated.
-        unsafe {
-            assert_eq!(libc::mkdirat(dir.as_raw_fd(), s.as_ptr(), 0o755), 0);
-            assert_eq!(libc::mkdirat(dir.as_raw_fd(), d.as_ptr(), 0o755), 0);
-            let fd = libc::openat(dir.as_raw_fd(), d.as_ptr(), libc::O_RDONLY);
-            assert!(fd >= 0);
-            dir = File::from_raw_fd(fd);
-        }
-    }
-}
+mod utils;
 
 /// Number of lines `erd` prints for `root` with at most `limit` open files (soft and hard).
-fn lines_under_limit(root: &std::path::Path, threads: &str, limit: libc::rlim_t) -> usize {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_erd"));
-    cmd.args([
-        "--no-config",
-        "--no-report",
-        "--suppress-size",
-        "--layout",
-        "flat",
-        "--threads",
-        threads,
-    ])
-    .arg(root);
+fn lines_under_limit(root: &std::path::Path, threads: usize, limit: libc::rlim_t) -> usize {
+    let (mut cmd, _home) = utils::Erd::new()
+        .threads(threads)
+        .args(["--no-report", "--suppress-size", "--layout", "flat"])
+        .arg(root)
+        .command();
 
     // SAFETY: `setrlimit` is async-signal-safe.
     unsafe {
@@ -74,11 +44,16 @@ fn deep_trees_are_complete_under_a_low_file_limit() {
     let root = tmp.path().join("deep");
     std::fs::create_dir(&root).unwrap();
 
-    // More levels than the limit has files, so holding a parent per level would run out.
-    chain_with_siblings(&root, 300);
+    // More levels than the limit has files, so holding a parent per level would run out. A
+    // sibling `s` per level has to wait while the chain is followed.
+    let s = CString::new("s").unwrap();
+    utils::chain(&root, "d", 300, |dir| {
+        // SAFETY: `dir` is an open descriptor and `s` is NUL-terminated.
+        assert_eq!(unsafe { libc::mkdirat(dir, s.as_ptr(), 0o755) }, 0);
+    });
 
     // The root, and a `d` and an `s` per level.
-    for threads in ["1", "4"] {
+    for threads in [1, 4] {
         assert_eq!(
             lines_under_limit(&root, threads, 256),
             1 + 2 * 300,

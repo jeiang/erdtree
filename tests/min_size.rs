@@ -1,38 +1,9 @@
 use indoc::indoc;
-use std::{fs, process::Command};
+use std::fs;
 use tempfile::TempDir;
+use utils::Erd;
 
 mod utils;
-
-/// Runs `erd` directly (not through cargo) with an arbitrary config and arguments.
-fn run_erd(config: Option<&str>, args: &[&str]) -> std::process::Output {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join(".erdtree.toml");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_erd"));
-
-    cmd.env_remove("ERDTREE_TOML_PATH")
-        .env("HOME", dir.path())
-        .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
-        .env("APPDATA", dir.path().join("appdata"));
-
-    if let Some(config) = config {
-        fs::write(&path, config).unwrap();
-        cmd.env("ERDTREE_TOML_PATH", &path);
-    }
-
-    cmd.args(["--threads", "1", "--color", "none", "--sort", "name"])
-        .args(args)
-        .output()
-        .unwrap()
-}
-
-fn stdout(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
 
 #[test]
 fn hides_small_files_and_keeps_totals() {
@@ -88,52 +59,13 @@ fn zero_hides_nothing() {
 fn unit_suffixes_are_applied() {
     // 1 KB = 1000 bytes hides everything below the 1241 B root; 1 KiB = 1024 likewise.
     for size in ["1KB", "1kb", "1KiB", "1000B", "1000"] {
-        let out = run_erd(
-            None,
-            &[
-                "--no-config",
-                "--disk-usage",
-                "logical",
-                "--min-size",
-                size,
-                "tests/data",
-            ],
-        );
-        assert!(!out.status.success(), "{size}");
-        assert!(
-            stderr(&out).contains("No entries to show"),
-            "{size}: {}",
-            stderr(&out)
-        );
+        let err = Erd::new().args(["--min-size", size, "tests/data"]).fails(1);
+        assert!(err.contains("No entries to show"), "{size}: {err}");
     }
 
-    let out = run_erd(
-        None,
-        &[
-            "--no-config",
-            "--disk-usage",
-            "logical",
-            "--min-size",
-            "0.3KB",
-            "tests/data",
-        ],
-    );
-    assert!(!out.status.success());
-
-    let out = run_erd(
-        None,
-        &[
-            "--no-config",
-            "--disk-usage",
-            "logical",
-            "--min-size",
-            "300B",
-            "tests/data",
-        ],
-    );
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(stdout(&out).contains("lipsum.txt"));
-    assert!(!stdout(&out).contains("nemesis.txt"));
+    let out = utils::run_cmd(&["--min-size", "300B", "tests/data"]);
+    assert!(out.contains("lipsum.txt"), "{out}");
+    assert!(!out.contains("nemesis.txt"), "{out}");
 }
 
 #[test]
@@ -210,97 +142,51 @@ fn inverted_layout() {
 
 #[test]
 fn nothing_to_show_is_an_error() {
-    let out = run_erd(None, &["--no-config", "--min-size", "1PB", "tests/data"]);
-    assert!(!out.status.success());
-    assert!(stderr(&out).contains("No entries to show"));
+    let err = Erd::new()
+        .args(["--min-size", "1PB", "tests/data"])
+        .fails(1);
+    assert!(err.contains("No entries to show"), "{err}");
 }
 
 #[test]
 fn rejects_invalid_values() {
     for bad in ["abc", "KB", "1.5KB", "5XB", ""] {
-        let out = run_erd(None, &["--no-config", "--min-size", bad, "tests/data"]);
-        assert_eq!(out.status.code(), Some(2), "{bad:?}");
-        assert!(
-            stderr(&out).contains("--min-size"),
-            "{bad:?}: {}",
-            stderr(&out)
-        );
+        let err = Erd::new().args(["--min-size", bad, "tests/data"]).fails(2);
+        assert!(err.contains("--min-size"), "{bad:?}: {err}");
     }
 }
 
 #[test]
 fn conflicts_with_suppress_size() {
-    let out = run_erd(
-        None,
-        &[
-            "--no-config",
-            "--min-size",
-            "1",
-            "--suppress-size",
-            "tests/data",
-        ],
-    );
-    assert_eq!(out.status.code(), Some(2));
-    assert!(
-        stderr(&out).contains("cannot be used with"),
-        "{}",
-        stderr(&out)
-    );
+    let err = Erd::new()
+        .args(["--min-size", "1", "--suppress-size", "tests/data"])
+        .fails(2);
+    assert!(err.contains("cannot be used with"), "{err}");
 }
 
 #[test]
 fn conflicts_with_suppress_size_across_config() {
-    let out = run_erd(
-        Some("min-size = \"1\"\n"),
-        &["--suppress-size", "tests/data"],
-    );
-    assert_eq!(out.status.code(), Some(2));
-    assert!(
-        stderr(&out).contains("cannot be used with"),
-        "{}",
-        stderr(&out)
-    );
+    let err = Erd::new()
+        .config("min-size = \"1\"\n")
+        .args(["--suppress-size", "tests/data"])
+        .fails(2);
+    assert!(err.contains("cannot be used with"), "{err}");
 }
 
 #[test]
 fn units_rejected_for_non_byte_metrics() {
     for metric in ["line", "word"] {
-        let out = run_erd(
-            None,
-            &[
-                "--no-config",
-                "--disk-usage",
-                metric,
-                "--min-size",
-                "1KB",
-                "tests/data",
-            ],
-        );
-        assert_eq!(out.status.code(), Some(2), "{metric}");
-        assert!(
-            stderr(&out).contains("units are only supported"),
-            "{metric}: {}",
-            stderr(&out)
-        );
+        let err = Erd::new()
+            .args(["--disk-usage", metric, "--min-size", "1KB", "tests/data"])
+            .fails(2);
+        assert!(err.contains("units are only supported"), "{metric}: {err}");
     }
 }
 
 #[test]
 fn bare_number_applies_to_line_count() {
-    let out = run_erd(
-        None,
-        &[
-            "--no-config",
-            "--disk-usage",
-            "line",
-            "--min-size",
-            "5",
-            "tests/data",
-        ],
-    );
-    assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(
-        stdout(&out),
+        utils::run_cmd(&["--disk-usage", "line", "--min-size", "5", "tests/data"]),
         indoc!(
             "
              6    ┌─ cassildas_song.md
@@ -317,25 +203,19 @@ fn bare_number_applies_to_line_count() {
 
 #[test]
 fn config_key() {
-    let out = run_erd(
-        Some("min-size = \"300B\"\ndisk-usage = \"logical\"\n"),
-        &["tests/data"],
-    );
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(stdout(&out).contains("lipsum.txt"));
-    assert!(!stdout(&out).contains("nemesis.txt"));
-    assert!(
-        stdout(&out).ends_with("3 directories, 6 files"),
-        "{}",
-        stdout(&out)
-    );
+    let config = "min-size = \"300B\"\ndisk-usage = \"logical\"\n";
+    let out = Erd::new().config(config).arg("tests/data").ok().trimmed();
+    assert!(out.contains("lipsum.txt"), "{out}");
+    assert!(!out.contains("nemesis.txt"), "{out}");
+    assert!(out.ends_with("3 directories, 6 files"), "{out}");
 
     // The command line wins over the config.
-    let out = run_erd(
-        Some("min-size = \"300B\"\ndisk-usage = \"logical\"\n"),
-        &["--min-size", "0", "tests/data"],
-    );
-    assert!(stdout(&out).contains("nemesis.txt"));
+    let out = Erd::new()
+        .config(config)
+        .args(["--min-size", "0", "tests/data"])
+        .ok()
+        .stdout();
+    assert!(out.contains("nemesis.txt"), "{out}");
 }
 
 /// The hidden entry has the widest size (`1023 B` against `1.0 KiB`), so it must not widen the
