@@ -1,4 +1,4 @@
-use crate::{context::error::Error as CtxError, styles::error::Error as StyleError};
+use crate::context::error::Error as CtxError;
 use ignore::Error as IgnoreError;
 use std::io::Error as IoError;
 
@@ -24,7 +24,4 @@ pub enum Error {
 
     #[error("{0}")]
     PathCanonicalization(#[from] IoError),
-
-    #[error("{0}")]
-    UninitializedTheme(#[from] StyleError<'static>),
 }

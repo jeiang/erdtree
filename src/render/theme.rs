@@ -1,7 +1,4 @@
-use crate::{
-    styles::{self, ThemesMap},
-    tree::node::Node,
-};
+use crate::{styles, tree::node::Node};
 use nu_ansi_term::Style;
 
 /// Tracks whether a node lies below a followed symlink, whose branches use the link theme.
@@ -9,56 +6,16 @@ pub struct LinkTracker {
     depth: Option<usize>,
 }
 
-/// Box-drawing pieces of a theme, looked up once instead of per row.
-pub struct Glyphs {
-    pub vt: &'static str,
-    pub vtrt: &'static str,
-    pub uprt: &'static str,
-    pub drt: &'static str,
-}
+/// The pieces of the prefixes of the tree theme; `inverted` selects the glyph of a last sibling
+/// of the layout with the root on top.
+pub fn prefix_glyphs(inverted: bool) -> super::prefix::Glyphs {
+    let glyphs = &styles::theme().tree;
+    let bytes = |s: &str| s.as_bytes().into();
 
-impl Glyphs {
-    fn of(theme: &'static ThemesMap) -> Self {
-        let get = |key| theme.get(key).map_or("", String::as_str);
-        Self {
-            vt: get("vt"),
-            vtrt: get("vtrt"),
-            uprt: get("uprt"),
-            drt: get("drt"),
-        }
-    }
-}
-
-/// [`Glyphs`] of the regular and the link theme.
-pub struct GlyphCache {
-    tree: Glyphs,
-    link: Glyphs,
-}
-
-impl GlyphCache {
-    pub fn new() -> Self {
-        Self {
-            tree: Glyphs::of(styles::get_tree_theme().unwrap()),
-            link: Glyphs::of(styles::get_link_theme().unwrap()),
-        }
-    }
-
-    /// The pieces of the prefixes of the regular theme; `inverted` selects the glyph of a last
-    /// sibling of the layout with the root on top.
-    pub fn prefix_glyphs(&self, inverted: bool) -> super::prefix::Glyphs {
-        let glyphs = &self.tree;
-        let bytes = |s: &str| s.as_bytes().into();
-
-        super::prefix::Glyphs {
-            vt: bytes(glyphs.vt),
-            vtrt: bytes(glyphs.vtrt),
-            last: bytes(if inverted { glyphs.uprt } else { glyphs.drt }),
-        }
-    }
-
-    /// Glyphs of the link theme if `link`, else of the regular theme.
-    pub const fn get(&self, link: bool) -> &Glyphs {
-        if link { &self.link } else { &self.tree }
+    super::prefix::Glyphs {
+        vt: bytes(&glyphs.vt),
+        vtrt: bytes(&glyphs.vtrt),
+        last: bytes(if inverted { &glyphs.uprt } else { &glyphs.drt }),
     }
 }
 
@@ -160,13 +117,10 @@ pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
         .chain([if has_xattrs { '@' } else { ' ' }])
         .collect();
 
-    if let Ok(theme) = styles::get_permissions_theme() {
+    if styles::colors().is_some() {
         symb.chars()
             .filter_map(|ch| {
-                theme.get(&ch).map(|color| {
-                    let chstr = ch.to_string();
-                    color.paint(chstr).to_string()
-                })
+                styles::Long::permission(ch).map(|color| color.paint(ch.to_string()).to_string())
             })
             .collect()
     } else {
@@ -179,8 +133,8 @@ pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
 pub fn style_oct_permissions(mode: u32) -> String {
     let oct = crate::fs::permissions::octal(mode);
 
-    if let Ok(style) = styles::get_octal_permissions_style() {
-        style.paint(oct).to_string()
+    if let Some(colors) = styles::colors() {
+        colors.long.octal.paint(oct).to_string()
     } else {
         oct
     }

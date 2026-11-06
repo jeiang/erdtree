@@ -14,7 +14,7 @@ use crate::{
         inode::Inode,
         stat::{Fields, Kind, Stat},
     },
-    styles::{entry::Resolver, get_ls_colors},
+    styles::{self, entry::Resolver},
     walk::{NodeRef, Record, Sink},
 };
 use lscolors::Style as LsStyle;
@@ -32,7 +32,6 @@ pub struct Probe {
     pub disk_usage: DiskUsage,
     pub suppress_size: bool,
     pub follow: bool,
-    pub colors: bool,
     pub modified: bool,
     pub accessed: bool,
     pub created: bool,
@@ -76,7 +75,6 @@ impl Probe {
             disk_usage: ctx.disk_usage,
             suppress_size: ctx.suppress_size,
             follow: ctx.follow,
-            colors: get_ls_colors().is_ok(),
             modified: long_mod || sorted_by(sort::Type::Mod, sort::Type::Rmod),
             accessed: long_access || sorted_by(sort::Type::Access, sort::Type::Raccess),
             created: long_create || sorted_by(sort::Type::Create, sort::Type::Rcreate),
@@ -132,7 +130,7 @@ pub struct Columns {
     pub inode: Vec<Option<Inode>>,
     /// Symlink targets.
     pub link_target: Vec<(u32, PathBuf)>,
-    /// Index into `style_table` of the `LS_COLORS` style; only with [`Probe::colors`].
+    /// Index into `style_table` of the `LS_COLORS` style; only with color.
     style: Vec<u16>,
     /// The distinct styles, with the default style first.
     style_table: Vec<Style>,
@@ -155,7 +153,7 @@ pub struct Collector {
     parent_runs: Vec<ParentRun>,
     /// Read buffer reused for every file of the line and word counts.
     scratch: Vec<u8>,
-    /// Resolves styles; only with [`Probe::colors`].
+    /// Resolves styles; only with color.
     resolver: Option<Resolver>,
     /// Index in `style_table` per `lscolors` style, by address, for the styles seen so far.
     style_index: HashMap<usize, u16>,
@@ -173,10 +171,7 @@ impl Collector {
             probe,
             parent_runs: vec![],
             scratch: vec![],
-            resolver: probe
-                .colors
-                .then(|| get_ls_colors().ok().map(Resolver::new))
-                .flatten(),
+            resolver: styles::colors().map(|colors| Resolver::new(&colors.ls)),
             style_index: HashMap::new(),
             last_style: (0, 0),
         }

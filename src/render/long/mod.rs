@@ -67,9 +67,9 @@ fn painted(out: &mut Vec<u8>, esc: Option<&Esc>, body: impl FnOnce(&mut Vec<u8>)
     }
 }
 
-/// The sequences of a style the theme may not have (without color).
-fn esc(style: Result<&'static Style, styles::error::Error<'static>>) -> Option<Esc> {
-    style.ok().map(|style| Esc::new(*style))
+/// The sequences of a long-view style, `None` without color.
+fn esc(style: impl Fn(&styles::Long) -> Style) -> Option<Esc> {
+    styles::colors().map(|colors| Esc::new(style(&colors.long)))
 }
 
 impl Long {
@@ -86,11 +86,11 @@ impl Long {
             nlink_width: widths.max_nlink_width,
             stamp: ctx.time(),
             format: ctx.time_format(),
-            ino_esc: esc(styles::get_ino_style()),
-            nlink_esc: esc(styles::get_nlink_style()),
-            owner_esc: esc(styles::get_owner_style()),
-            group_esc: esc(styles::get_group_style()),
-            time_esc: esc(styles::get_datetime_style()),
+            ino_esc: esc(|long| long.ino),
+            nlink_esc: esc(|long| long.nlink),
+            owner_esc: esc(|long| long.owner),
+            group_esc: esc(|long| long.group),
+            time_esc: esc(|long| long.datetime),
         }
     }
 
