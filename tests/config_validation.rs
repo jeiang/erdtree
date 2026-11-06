@@ -169,6 +169,17 @@ fn cli_exclude_overrides_config_exclude() {
 fn config_exclude_non_string_element_errors() {
     let out = run_with_toml("exclude = [1]\n", &["tests/data"]);
     assert!(!out.status.success());
+    assert_eq!(stderr(&out), "erd: 'exclude' has a type that is invalid\n");
+}
+
+#[test]
+fn config_negative_integer_errors() {
+    let out = run_with_toml("level = -1\n", &["tests/data"]);
+    assert!(!out.status.success());
+    assert_eq!(
+        stderr(&out),
+        "erd: 'level' is required to be a pointer-sized unsigned integer type\n"
+    );
 }
 
 #[test]
