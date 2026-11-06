@@ -44,10 +44,10 @@ pub struct Theme {
 
 /// Box-drawing pieces of a theme, colored or not.
 pub struct Glyphs {
-    pub vt: String,
-    pub vtrt: String,
-    pub uprt: String,
-    pub drt: String,
+    pub vt: Box<[u8]>,
+    pub vtrt: Box<[u8]>,
+    pub uprt: Box<[u8]>,
+    pub drt: Box<[u8]>,
 }
 
 /// The styles of colored output.
@@ -65,6 +65,8 @@ pub struct Colors {
 
     /// Style of the general use placeholder [`PLACEHOLDER`].
     pub placeholder: Style,
+
+    pub link_arrow: Style,
 
     #[cfg(unix)]
     pub long: Long,
@@ -102,7 +104,12 @@ impl Long {
 impl Glyphs {
     /// The pieces, each painted in `color` if given.
     fn new(color: Option<Color>) -> Self {
-        let paint = |s: &str| color.map_or_else(|| s.to_owned(), |c| c.paint(s).to_string());
+        let paint = |s: &str| {
+            color
+                .map_or_else(|| s.to_owned(), |c| c.paint(s).to_string())
+                .into_bytes()
+                .into_boxed_slice()
+        };
 
         Self {
             vt: paint(VT),
@@ -138,6 +145,7 @@ pub fn init(plain: bool) {
                     Color::Blue.bold(),
                 ],
                 placeholder: Color::Purple.normal(),
+                link_arrow: Color::Red.normal(),
                 #[cfg(unix)]
                 long: Long {
                     octal: Color::Purple.bold(),

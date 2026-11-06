@@ -26,6 +26,20 @@ use std::{
     time::SystemTime,
 };
 
+/// An index into a tree's interned style table.
+#[derive(Clone, Copy, Default)]
+pub struct StyleIndex(u16);
+
+impl StyleIndex {
+    fn new(index: usize) -> Self {
+        Self(u16::try_from(index).expect("too many distinct LS_COLORS styles"))
+    }
+
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// What to collect per entry, derived once from [`Context`].
 #[derive(Clone, Copy)]
 pub struct Probe {
@@ -131,9 +145,9 @@ pub struct Columns {
     /// Symlink targets.
     pub link_target: Vec<(u32, PathBuf)>,
     /// Index into `style_table` of the `LS_COLORS` style; only with color.
-    style: Vec<u16>,
+    style: Vec<StyleIndex>,
     /// The distinct styles, with the default style first.
-    style_table: Vec<Style>,
+    pub style_table: Vec<Style>,
     pub modified: Vec<Option<SystemTime>>,
     pub accessed: Vec<Option<SystemTime>>,
     pub created: Vec<Option<SystemTime>>,
@@ -156,9 +170,9 @@ pub struct Collector {
     /// Resolves styles; only with color.
     resolver: Option<Resolver>,
     /// Index in `style_table` per `lscolors` style, by address, for the styles seen so far.
-    style_index: HashMap<usize, u16>,
+    style_index: HashMap<usize, StyleIndex>,
     /// The style address and index of the previous entry; neighbors mostly share a style.
-    last_style: (usize, u16),
+    last_style: (usize, StyleIndex),
 }
 
 impl Collector {
@@ -173,7 +187,7 @@ impl Collector {
             scratch: vec![],
             resolver: styles::colors().map(|colors| Resolver::new(&colors.ls)),
             style_index: HashMap::new(),
-            last_style: (0, 0),
+            last_style: (0, StyleIndex::default()),
         }
     }
 
@@ -184,9 +198,9 @@ impl Collector {
 
     /// The index in `style_table` of `style`, which `lscolors` returned (`None` is the default
     /// style).
-    fn intern_style(&mut self, style: Option<&'static LsStyle>) -> u16 {
+    fn intern_style(&mut self, style: Option<&'static LsStyle>) -> StyleIndex {
         let Some(style) = style else {
-            return 0;
+            return StyleIndex::default();
         };
 
         let address = std::ptr::from_ref(style) as usize;
@@ -198,10 +212,8 @@ impl Collector {
             index
         } else {
             let table = &mut self.cols.style_table;
-            let index = u16::try_from(table.len()).unwrap_or(0);
-            if index != 0 {
-                table.push(style.to_nu_ansi_term_style());
-            }
+            let index = StyleIndex::new(table.len());
+            table.push(style.to_nu_ansi_term_style());
             self.style_index.insert(address, index);
             index
         };
@@ -357,8 +369,8 @@ impl Columns {
     }
 
     /// The `LS_COLORS` style of entry `i`, if styles were collected.
-    pub fn style_at(&self, i: usize) -> Option<Style> {
-        self.style.get(i).map(|&s| self.style_table[usize::from(s)])
+    pub fn style_at(&self, i: usize) -> Option<StyleIndex> {
+        self.style.get(i).copied()
     }
 
     /// The parents of all entries as global indices, and the runs of equal ones. `runs[k]` and
@@ -527,7 +539,7 @@ impl Columns {
         // into the merged table.
         {
             let (style, table) = (&mut merged.style, &mut merged.style_table);
-            let styles: Vec<(Vec<u16>, Vec<Style>)> = rest
+            let styles: Vec<(Vec<StyleIndex>, Vec<Style>)> = rest
                 .iter_mut()
                 .map(|sink| {
                     (
@@ -557,7 +569,7 @@ impl Columns {
                     multi.extend(m.into_iter().map(|(i, inode)| (i + offset, inode)));
                     links.extend(l.into_iter().map(|(i, target)| (i + offset, target)));
 
-                    let remap: Vec<u16> = t
+                    let remap: Vec<StyleIndex> = t
                         .iter()
                         .map(|style| {
                             let found = table.iter().position(|x| x == style);
@@ -565,10 +577,10 @@ impl Columns {
                                 table.push(*style);
                                 table.len() - 1
                             });
-                            u16::try_from(index).unwrap_or(0)
+                            StyleIndex::new(index)
                         })
                         .collect();
-                    style.extend(s.iter().map(|&s| remap[usize::from(s)]));
+                    style.extend(s.iter().map(|&s| remap[s.index()]));
                 }
             }));
         }

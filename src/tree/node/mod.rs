@@ -1,6 +1,5 @@
-use super::{Tree, topo::ix};
+use super::{Tree, columns::StyleIndex, topo::ix};
 use crate::fs::stat::Kind;
-use nu_ansi_term::Style;
 use std::{ffi::OsStr, path::Path, time::SystemTime};
 
 #[cfg(unix)]
@@ -156,7 +155,7 @@ impl<'a> Node<'a> {
     }
 
     /// `LS_COLORS` style, if colors are enabled.
-    pub fn style(self) -> Option<Style> {
+    pub fn style(self) -> Option<StyleIndex> {
         self.tree.cols.style_at(ix(self.i))
     }
 }
