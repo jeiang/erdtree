@@ -373,42 +373,10 @@ On Windows:
 %APPDATA%\erdtree\config.toml
 ```
 
-[Here](example/.erdtree.toml) and below is an example of a valid `.erdtree.toml`:
-
-```toml
-icons = true
-human = true
-
-# Compute file sizes like `du`
-# e.g. `erd --config du`
-[du]
-disk_usage = "block"
-icons = true
-layout = "flat"
-no-ignore = true
-no-git = true
-hidden = true
-level = 1
-
-# Do as `ls -l`
-# e.g. `erd --config ls`
-[ls]
-icons = true
-human = true
-level = 1
-suppress-size = true
-long = true
-
-# How many lines of Rust are in this code base?
-# e.g. `erd --config rs`
-[rs]
-disk-usage = "line"
-level = 1
-pattern = "\\.rs$"
-```
+See [`example/.erdtree.toml`](example/.erdtree.toml) for an example of a valid `.erdtree.toml`.
 
 `.erdtree.toml` supports multiple configurations. The top-level table is the main config that will be applied without additional arguments.
-If you wish to use a separate configuration, create a named table like `du` above, set your arguments, and invoke it like so:
+If you wish to use a separate configuration, create a named table like `du` in the example, set your arguments, and invoke it like so:
 
 ```
 $ erd --config du
