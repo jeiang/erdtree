@@ -59,7 +59,6 @@ First release of the [jeiang/erdtree](https://github.com/jeiang/erdtree) fork of
 - Several directories can be given (`erd a b`, or a shell glob such as `erd tmp*`); each is shown as its own tree in argument order, separated by a blank line, followed by one combined summary line ([upstream #235](https://github.com/solidiquis/erdtree/issues/235), [#248](https://github.com/solidiquis/erdtree/issues/248)). With `--summarize` each directory gets one line. "No entries to show" is reported only when no tree has entries.
 
 ### Bug Fixes
-- Directories whose path is longer than `PATH_MAX` are now walked (on Linux), including their ignore files and `--follow` loop checks; before, they were silently left out.
 - A missing directory argument is named in the error (`erd: tests/missing: No such file or directory`) instead of only the OS error, and a file argument fails with `erd: <path>: Not a directory` instead of `Failed to compute root node.`
 - `--level 0` and `--summarize` print the root even when it has no visible entries (e.g. everything in it is hidden or gitignored) instead of failing with "No entries to show"; this may explain [upstream #263](https://github.com/solidiquis/erdtree/issues/263) (`erd -H -L0 ~/~/`).
 - A directory reported twice by the filesystem walk now fails with an error naming the directory instead of panicking in tree assembly ([upstream #260](https://github.com/solidiquis/erdtree/issues/260)); the underlying trigger is still unknown.
@@ -97,7 +96,6 @@ First release of the [jeiang/erdtree](https://github.com/jeiang/erdtree) fork of
 ## [3.1.2] - 2023-07-02
 
 ### Bug Fixes
-- Directories whose path is longer than `PATH_MAX` are now walked (on Linux), including their ignore files and `--follow` loop checks; before, they were silently left out.
 - [Fix loading .erdtree.toml on Windows](https://github.com/solidiquis/erdtree/issues/217) [#218](https://github.com/solidiquis/erdtree/pull/218)
 - [Fix race to print to stdout/stderr which made error messages not appear at times](https://github.com/solidiquis/erdtree/issues/219) [#220](https://github.com/solidiquis/erdtree/pull/220)
 
@@ -348,13 +346,11 @@ For a more comprehensive overview of `erdtree` v2.0.0, please refer to the [READ
 ## [1.5.2] - 2023-03-15
 
 ### Bug Fixes
-- Directories whose path is longer than `PATH_MAX` are now walked (on Linux), including their ignore files and `--follow` loop checks; before, they were silently left out.
 - Stray print
 
 ## [1.5.1] - 2023-03-15
 
 ### Bug Fixes
-- Directories whose path is longer than `PATH_MAX` are now walked (on Linux), including their ignore files and `--follow` loop checks; before, they were silently left out.
 - Fixed issue where globbing didn't work when user uses a config file https://github.com/solidiquis/erdtree/pull/75
 
 ## [1.5.0] - 2023-03-14
@@ -364,7 +360,6 @@ For a more comprehensive overview of `erdtree` v2.0.0, please refer to the [READ
 - Added more paths the `erdtree` config could be placed at https://github.com/solidiquis/erdtree/pull/70
 
 ### Bug Fixes
-- Directories whose path is longer than `PATH_MAX` are now walked (on Linux), including their ignore files and `--follow` loop checks; before, they were silently left out.
 - Fixed issue where `--dirs-first` wouldn't work unless `-s, --sort` was specified https://github.com/solidiquis/erdtree/pull/67
 - Fixed isse where arguments from the `erdtree` config were being completely disregarded https://github.com/solidiquis/erdtree/pull/74
 
@@ -376,13 +371,11 @@ For a more comprehensive overview of `erdtree` v2.0.0, please refer to the [READ
 ## [1.4.1] - 2023-03-12
 
 ### Bug Fixes
-- Directories whose path is longer than `PATH_MAX` are now walked (on Linux), including their ignore files and `--follow` loop checks; before, they were silently left out.
 - [config file boolean options not working](https://github.com/solidiquis/erdtree/pull/60)
 
 ## [1.4.0] - 2023-03-12
 
 ### Bug Fixes
-- Directories whose path is longer than `PATH_MAX` are now walked (on Linux), including their ignore files and `--follow` loop checks; before, they were silently left out.
 - [--ignore-git didn't ignore .git](https://github.com/solidiquis/erdtree/pull/59)
 
 ### Additions
@@ -397,7 +390,6 @@ For a more comprehensive overview of `erdtree` v2.0.0, please refer to the [READ
 ## [1.3.0] - 2023-03-04
 
 ### Bug Fixes
-- Directories whose path is longer than `PATH_MAX` are now walked (on Linux), including their ignore files and `--follow` loop checks; before, they were silently left out.
 - [Fixed panic when file names contain non Unicode sequences](https://github.com/solidiquis/erdtree/pull/32)
 - [Fixed panic when running from root directory](https://github.com/solidiquis/erdtree/pull/33)
 

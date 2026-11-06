@@ -50,6 +50,7 @@ Pitfalls:
 | `example/` | `.erdtree.toml` (with `du`/`ls`/`rs` profiles) |
 | `assets/` | README screenshots only |
 | `scripts/performance_metrics.sh` | macOS-only, needs root, purges disk cache, times `target/release/erd <args>` |
+| `bench/` | Performance ratchet harness: `corpus.py` builds the frozen corpora (in `~/.cache/erd-bench`, outside any git checkout), `cases.json` lists the cases, `run.py` checks output byte-identical to a reference binary and times both interleaved |
 
 ## Development Commands
 
@@ -83,7 +84,7 @@ nix build                       # crane release build (result/bin/erd); `nix run
 - `src/main.rs`: entry point, lint policy, renderer selection.
 - `src/context/mod.rs`: all CLI options and defaults (threads default: `available_parallelism`, fallback 3).
 - `src/context/args.rs`: CLI/config reconciliation.
-- `src/context/config/toml/mod.rs`: TOML discovery. Unix order: `$ERDTREE_TOML_PATH`, `$XDG_CONFIG_HOME/erdtree/.erdtree.toml`, `$XDG_CONFIG_HOME/.erdtree.toml`, `$HOME/.config/erdtree/.erdtree.toml`, `$HOME/.erdtree.toml`. Windows: `%APPDATA%\erdtree\.erdtree.toml`.
+- `src/context/config/toml/mod.rs`: TOML discovery; inside an `erdtree` config directory the names `.erdtree.toml`, `erdtree.toml` and `config.toml` are tried in that order (`{…}` below). Unix order: `$ERDTREE_TOML_PATH`, `$XDG_CONFIG_HOME/erdtree/{…}`, `$XDG_CONFIG_HOME/.erdtree.toml`, `$HOME/.config/erdtree/{…}`, `$HOME/.erdtree.toml`. Windows: `$ERDTREE_TOML_PATH`, `%APPDATA%\erdtree\{…}`.
 - `src/walk/mod.rs`, `src/tree/mod.rs`: walk and tree assembly.
 - `.github/workflows/ci.yml`: fmt, clippy, tests on Linux/macOS/Windows, clippy for the release targets no other job builds (aarch64 and musl Linux, x86-64 macOS, plus i686 Linux; `cross` job), MSRV `cargo check` on 1.88.0, `cargo deny check` (`deny` job, config in `deny.toml`: advisories, licenses allowlist, bans warn on duplicates/wildcards, crates.io-only sources), aggregated into the `ci-pass` job (the required check for `master`; it reads the conclusion of every job of the run through the API, since `needs.*.result` missed cancelled matrix legs).
 - `.github/workflows/nix.yml`: builds the x86_64-linux flake checks (`erdtree`, `clippy`, `fmt`, `test`) with the garret binary cache (`https://cache.jeiang.dev`) as a substituter. On pushes to `master` it also pushes every path built during the job to garret through `.ci/garret.sh` (`hook` writes the post-build hook, `watch` starts the client, `drain` pushes what is left; config in `.ci/garret.toml`), authenticated by GitHub OIDC (`id-token: write`, no secrets); the client is built from garret at `GARRET_CLIENT_REV`. Pushing fails unless the garret server allow-lists this repo and workflow. Push failures do not fail the job. Not part of `ci-pass`.
