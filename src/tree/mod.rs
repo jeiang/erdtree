@@ -5,7 +5,10 @@ use crate::{
 use columns::{Collector, Columns, Probe};
 use count::FileCount;
 use error::Error;
-use node::{Node, cmp::SortKeys};
+use node::{
+    Node,
+    cmp::{Sorter, Ties},
+};
 use std::{cmp::Ordering, convert::TryFrom, result::Result as StdResult, sync::atomic::AtomicU64};
 use topo::{Children, NONE, ix};
 use widths::{Scope, Stats};
@@ -289,8 +292,7 @@ impl Tree {
         threads: usize,
     ) -> Option<Stats> {
         let cap = self.shown_depth;
-        let comparator = node::cmp::comparator(ctx);
-        let keys = SortKeys::new(self, ctx, true);
+        let sorter = Sorter::new(self, ctx.sort, ctx.dir_order, Ties::Name);
         let overlap = scan && self.cols.len() >= OVERLAP_MIN && threads > 1;
 
         std::thread::scope(|s| {
@@ -299,11 +301,8 @@ impl Tree {
             children.sort_each(
                 threads,
                 |p| self.cols.depth[ix(p)] < cap,
-                |i| keys.key(i),
-                |a, b| {
-                    let (a, b) = (self.node(a), self.node(b));
-                    comparator(a, b).then_with(|| a.file_name().cmp(b.file_name()))
-                },
+                |i| sorter.key(i),
+                |a, b| sorter.cmp(a, b),
             );
 
             job.map_or_else(
@@ -495,26 +494,14 @@ impl Tree {
             .collect();
 
         // Sort positions in `rest`, breaking ties by position to keep the stable order.
-        let comparator = node::cmp::comparator(ctx);
-        let keys = SortKeys::new(self, ctx, false);
-        let node = |k: u32| self.node(rest[ix(k)]);
+        let sorter = Sorter::new(self, ctx.sort, ctx.dir_order, Ties::Position(&rest));
         let mut positions: Vec<u32> = (0..rest.len())
             .map(|k| u32::try_from(k).unwrap_or(NONE))
             .collect();
 
-        topo::sort_keyed(
-            &mut positions,
-            ctx.threads,
-            &|k| keys.key(rest[ix(k)]),
-            // Names are not in the keys: unless a key was clamped, equal keys are ties.
-            &|a, b| {
-                if keys.is_exact() {
-                    a.cmp(&b)
-                } else {
-                    comparator(node(a), node(b)).then_with(|| a.cmp(&b))
-                }
-            },
-        );
+        topo::sort_keyed(&mut positions, ctx.threads, &|k| sorter.key(k), &|a, b| {
+            sorter.cmp(a, b)
+        });
 
         let mut ids = Vec::with_capacity(rest.len() + 1);
         ids.push(self.order[0]);

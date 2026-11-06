@@ -69,15 +69,15 @@ impl Probe {
         #[cfg(not(unix))]
         let (long_mod, long_access, long_create) = (false, false, false);
 
-        let sorted_by = |a, b| ctx.sort == a || ctx.sort == b;
+        let (by, _) = ctx.sort.spec();
 
         Self {
             disk_usage: ctx.disk_usage,
             suppress_size: ctx.suppress_size,
             follow: ctx.follow,
-            modified: long_mod || sorted_by(sort::Type::Mod, sort::Type::Rmod),
-            accessed: long_access || sorted_by(sort::Type::Access, sort::Type::Raccess),
-            created: long_create || sorted_by(sort::Type::Create, sort::Type::Rcreate),
+            modified: long_mod || by == sort::By::Modified,
+            accessed: long_access || by == sort::By::Accessed,
+            created: long_create || by == sort::By::Created,
             #[cfg(unix)]
             long_level: ctx.long.then(|| ctx.level()),
             #[cfg(unix)]
@@ -328,6 +328,13 @@ impl Columns {
         if let Some(&end) = self.name_end.get(i) {
             crate::render::bytes::prefetch(self.names.get(end - 1));
         }
+    }
+
+    /// Appends the name of a new entry, for tests that fill the other columns themselves.
+    #[cfg(test)]
+    pub fn push_name(&mut self, name: &OsStr) {
+        self.names.extend_from_slice(name.as_encoded_bytes());
+        self.name_end.push(self.names.len());
     }
 
     /// Name of entry `i`.

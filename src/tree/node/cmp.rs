@@ -1,183 +1,187 @@
+//! The order of `--sort` and `--dir-order`. Orders are in the frame of
+//! [`Direction`](sort::Direction): the sorted lists hold nodes in the order the inverted and
+//! iflat layouts print top to bottom.
+
 use super::Node;
 use crate::{
-    context::{Context, dir, sort},
-    tree::{Tree, topo::Key},
+    context::{
+        dir,
+        sort::{self, By, Direction},
+    },
+    tree::{
+        Tree,
+        topo::{Key, ix},
+    },
 };
 use std::{
     cmp::Ordering,
     sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
 };
 
-/// Comparator type used to sort [Node]s.
-pub type NodeComparator = dyn for<'a, 'b> Fn(Node<'a>, Node<'b>) -> Ordering + Send + Sync;
+/// Compares two nodes by the sort type and `--dir-order`, without a tie-break.
+type NodeComparator = dyn for<'a, 'b> Fn(Node<'a>, Node<'b>) -> Ordering + Send + Sync;
 
-/// Yields function pointer to the appropriate `Node` comparator.
-pub fn comparator(ctx: &Context) -> Box<NodeComparator> {
-    let base = base_comparator(ctx.sort);
-
-    match ctx.dir_order {
-        dir::Order::First => {
-            Box::new(move |a: Node<'_>, b: Node<'_>| dir_first_comparator(a, b, &*base))
-        },
-        dir::Order::Last => {
-            Box::new(move |a: Node<'_>, b: Node<'_>| dir_last_comparator(a, b, &*base))
-        },
-        dir::Order::None => base,
-    }
-}
-
-/// Packed sort keys for the order of [`comparator`], to sort by cheap integer compares first.
-///
-/// The key of a node is a pair of integers such that a smaller key never belongs to a node that
-/// the comparator puts later: wherever keys differ they agree with the comparator, and only
-/// nodes with equal keys need the comparator itself. The high word holds the directory class
-/// (`--dir-order`) and the size or timestamp (clamped to 63 bits, so extremes tie and fall back
-/// to the comparator); the low word holds the first 8 bytes of the name, case-folded and
-/// reversed as the sort type requires.
-pub struct SortKeys<'a> {
-    tree: &'a Tree,
-    sort: sort::Type,
-    dir_order: dir::Order,
-
-    /// Set when a key had to clamp its value, so that unequal nodes may share a key.
-    clamped: AtomicBool,
-
-    /// Whether ties of the sort type are broken by name, as in the order of child lists. Flat
-    /// layouts compare by the sort type alone, where a name in the key would break ties wrongly.
-    by_name: bool,
+/// How a [`Sorter`] orders nodes that the sort type and `--dir-order` leave equal, and what
+/// the items it sorts are.
+#[derive(Clone, Copy)]
+pub enum Ties<'a> {
+    /// Items are nodes, ordered by name on ties: the order of child lists.
+    Name,
+    /// Items are positions in this list of nodes, ordered by position on ties: a stable sort
+    /// of the list, as the flat layouts need.
+    Position(&'a [u32]),
 }
 
 /// Largest value of the 63 bits below the directory class.
 const MAX63: u64 = u64::MAX >> 1;
 
-impl<'a> SortKeys<'a> {
-    /// Keys for the sort of `ctx`. With `by_name`, nodes that tie are ordered by name.
-    pub const fn new(tree: &'a Tree, ctx: &Context, by_name: bool) -> Self {
+/// The order of a sort type with `--dir-order` and [`Ties`]: packed integer keys that order
+/// most items with cheap compares, and [`Self::cmp`] for items with equal keys.
+///
+/// A smaller key never belongs to an item that the order puts later, so only items with
+/// equal keys need [`Self::cmp`]. The high word of a key holds the directory class at bit 63
+/// and below it the size or timestamp, clamped to 63 bits (extremes share a key and fall back
+/// to the comparator). The low word holds the first 8 bytes of the name (case-folded for
+/// [`By::NameCi`]) for name sorts, the name prefix that breaks ties for other sorts with
+/// [`Ties::Name`], and 0 otherwise. Descending sorts flip the value and the name bytes.
+pub struct Sorter<'a> {
+    tree: &'a Tree,
+    by: By,
+    direction: Direction,
+    dir_order: dir::Order,
+    ties: Ties<'a>,
+
+    /// Compares by the sort type and `--dir-order`, built once.
+    cmp: Box<NodeComparator>,
+
+    /// Set when a key had to clamp its value, so that unequal nodes may share a key.
+    clamped: AtomicBool,
+}
+
+impl<'a> Sorter<'a> {
+    /// The order of `sort` and `dir_order` on the nodes of `tree`.
+    pub fn new(tree: &'a Tree, sort: sort::Type, dir_order: dir::Order, ties: Ties<'a>) -> Self {
+        let (by, direction) = sort.spec();
+
         Self {
             tree,
-            sort: ctx.sort,
-            dir_order: ctx.dir_order,
+            by,
+            direction,
+            dir_order,
+            ties,
+            cmp: comparator(by, direction, dir_order),
             clamped: AtomicBool::new(false),
-            by_name,
         }
     }
 
-    /// Whether nodes with the same key (of a sort type that does not look at names) tie in the
-    /// comparator, for all keys computed so far.
-    pub fn is_exact(&self) -> bool {
-        !self.clamped.load(AtomicOrdering::Relaxed)
+    /// Node of `item`.
+    const fn node(&self, item: u32) -> Node<'a> {
+        let i = match self.ties {
+            Ties::Name => item,
+            Ties::Position(list) => list[ix(item)],
+        };
+        Node::new(self.tree, i)
     }
 
-    /// Key of node `i`.
-    pub fn key(&self, i: u32) -> Key {
-        let node = Node::new(self.tree, i);
+    /// Key of `item`.
+    pub fn key(&self, item: u32) -> Key {
+        let node = self.node(item);
+        let class = dir_class(self.dir_order, node) << 63;
+        let ascending = self.direction == Direction::Ascending;
+        let flip = |bytes: u64| if ascending { bytes } else { !bytes };
 
-        let class = match self.dir_order {
-            dir::Order::First => u64::from(node.is_dir()),
-            dir::Order::Last => u64::from(!node.is_dir()),
-            dir::Order::None => 0,
+        let (value, exact) = match self.by {
+            By::Name => return (class, flip(naming::prefix(node.file_name()))),
+            By::NameCi => return (class, flip(naming::ci_prefix(node.file_name()))),
+            By::Size => {
+                let size = sizing::value(node);
+                (size.min(MAX63), size < MAX63)
+            },
+            By::Accessed => time_stamping::key(time_stamping::accessed(node)),
+            By::Created => time_stamping::key(time_stamping::created(node)),
+            By::Modified => time_stamping::key(time_stamping::modified(node)),
         };
-
-        let name = || node.file_name();
-        let plain = || naming::prefix(name());
-
-        let sized = |value: Option<u64>| {
-            let value = value.unwrap_or(0);
-            (value.min(MAX63), value < MAX63)
-        };
-
-        // `ascending` keys grow with the value, the others shrink.
-        let (value, ascending) = match self.sort {
-            sort::Type::Name => return (class << 63, plain()),
-            sort::Type::Rname => return (class << 63, !plain()),
-            sort::Type::Nameci => return (class << 63, naming::ci_prefix(name())),
-            sort::Type::Rnameci => return (class << 63, !naming::ci_prefix(name())),
-            sort::Type::Size => (sized(node.size_value()), false),
-            sort::Type::Rsize => (sized(node.size_value()), true),
-            sort::Type::Access => (time_stamping::key(node.accessed()), false),
-            sort::Type::Raccess => (time_stamping::key(node.accessed()), true),
-            sort::Type::Create => (time_stamping::key(node.created()), false),
-            sort::Type::Rcreate => (time_stamping::key(node.created()), true),
-            sort::Type::Mod => (time_stamping::key(node.modified()), false),
-            sort::Type::Rmod => (time_stamping::key(node.modified()), true),
-        };
-        let (primary, lo, exact) = value_key(value, ascending, || self.tie(name));
 
         if !exact {
             self.clamped.store(true, AtomicOrdering::Relaxed);
         }
 
-        (class << 63 | primary, lo)
+        let primary = if ascending { value } else { MAX63 - value };
+
+        // A clamped value ties with every value clamped to the same number, so its key leaves
+        // the tie-break to the comparator.
+        let lo = match self.ties {
+            Ties::Name if exact => naming::prefix(node.file_name()),
+            _ => 0,
+        };
+
+        (class | primary, lo)
     }
 
-    /// Low word for sort types that break ties by name.
-    fn tie<'n>(&self, name: impl FnOnce() -> &'n std::ffi::OsStr) -> u64 {
-        if self.by_name {
-            naming::prefix(name())
+    /// Orders items `a` and `b`, whose keys must be equal.
+    pub fn cmp(&self, a: u32, b: u32) -> Ordering {
+        let (node_a, node_b) = (self.node(a), self.node(b));
+
+        // Equal keys of a size or time sort hold the same directory class and value unless a
+        // key was clamped, so the comparator would find them equal.
+        let exact = !matches!(self.by, By::Name | By::NameCi)
+            && !self.clamped.load(AtomicOrdering::Relaxed);
+        let by_sort = if exact {
+            Ordering::Equal
         } else {
-            0
+            (self.cmp)(node_a, node_b)
+        };
+
+        match self.ties {
+            Ties::Name => by_sort.then_with(|| node_a.file_name().cmp(node_b.file_name())),
+            Ties::Position(_) => by_sort.then_with(|| a.cmp(&b)),
         }
     }
 }
 
-/// Key words for a value that the sort type orders by, ascending or descending. `value` is a
-/// number of at most 63 bits with a flag that tells whether it is exact, as opposed to clamped.
-/// `tie` gives the low word that breaks ties between exact values.
-///
-/// A clamped value ties with every other value clamped to the same number, so the tie-break
-/// stays out of its key: only the comparator can order those nodes. The flag of the result
-/// tells whether the key is exact.
-fn value_key(
-    (value, exact): (u64, bool),
-    ascending: bool,
-    tie: impl FnOnce() -> u64,
-) -> (u64, u64, bool) {
-    let primary = if ascending { value } else { MAX63 - value };
-    (primary, if exact { tie() } else { 0 }, exact)
-}
-
-/// Orders directories first. Provides a fallback if inputs are not directories.
-fn dir_first_comparator(
-    a: Node<'_>,
-    b: Node<'_>,
-    fallback: impl for<'a, 'b> Fn(Node<'a>, Node<'b>) -> Ordering + Send + Sync,
-) -> Ordering {
-    match (a.is_dir(), b.is_dir()) {
-        (true, false) => Ordering::Greater,
-        (false, true) => Ordering::Less,
-        _ => fallback(a, b),
+/// The first thing nodes are ordered by under `--dir-order`: with `first` directories come
+/// after files in the sorted lists, with `last` before them.
+fn dir_class(order: dir::Order, node: Node<'_>) -> u64 {
+    match order {
+        dir::Order::None => 0,
+        dir::Order::First => u64::from(node.is_dir()),
+        dir::Order::Last => u64::from(!node.is_dir()),
     }
 }
 
-/// Orders directories last. Provides a fallback if inputs are not directories.
-fn dir_last_comparator(
-    a: Node<'_>,
-    b: Node<'_>,
-    fallback: impl for<'a, 'b> Fn(Node<'a>, Node<'b>) -> Ordering + Send + Sync,
-) -> Ordering {
-    match (a.is_dir(), b.is_dir()) {
-        (true, false) => Ordering::Less,
-        (false, true) => Ordering::Greater,
-        _ => fallback(a, b),
+/// Compares by what `by` orders, in `direction`, after the directory class of `dir_order`.
+fn comparator(by: By, direction: Direction, dir_order: dir::Order) -> Box<NodeComparator> {
+    match by {
+        By::Name => ordered(naming::comparator, direction, dir_order),
+        By::NameCi => ordered(naming::ci_comparator, direction, dir_order),
+        By::Size => ordered(sizing::comparator, direction, dir_order),
+        By::Accessed => ordered(time_stamping::by_accessed, direction, dir_order),
+        By::Created => ordered(time_stamping::by_created, direction, dir_order),
+        By::Modified => ordered(time_stamping::by_modified, direction, dir_order),
     }
 }
 
-/// Grabs the comparator for two non-dir type [Node]s.
-fn base_comparator(sort_type: sort::Type) -> Box<NodeComparator> {
-    Box::new(match sort_type {
-        sort::Type::Name => naming::comparator,
-        sort::Type::Rname => naming::rev_comparator,
-        sort::Type::Nameci => naming::ci_comparator,
-        sort::Type::Rnameci => naming::rev_ci_comparator,
-        sort::Type::Size => sizing::comparator,
-        sort::Type::Rsize => sizing::rev_comparator,
-        sort::Type::Access => time_stamping::accessed::comparator,
-        sort::Type::Raccess => time_stamping::accessed::rev_comparator,
-        sort::Type::Create => time_stamping::created::comparator,
-        sort::Type::Rcreate => time_stamping::created::rev_comparator,
-        sort::Type::Mod => time_stamping::modified::comparator,
-        sort::Type::Rmod => time_stamping::modified::rev_comparator,
-    })
+/// `ascending`, the ascending comparator of a sort, turned to `direction` behind the
+/// directory class of `dir_order`, as one closure.
+fn ordered<F>(ascending: F, direction: Direction, dir_order: dir::Order) -> Box<NodeComparator>
+where
+    F: for<'a, 'b> Fn(Node<'a>, Node<'b>) -> Ordering + Copy + Send + Sync + 'static,
+{
+    let class =
+        move |a: Node<'_>, b: Node<'_>| dir_class(dir_order, a).cmp(&dir_class(dir_order, b));
+
+    match (dir_order, direction) {
+        (dir::Order::None, Direction::Ascending) => Box::new(ascending),
+        (dir::Order::None, Direction::Descending) => {
+            Box::new(move |a: Node<'_>, b: Node<'_>| ascending(b, a))
+        },
+        (_, Direction::Ascending) => {
+            Box::new(move |a: Node<'_>, b: Node<'_>| class(a, b).then_with(|| ascending(a, b)))
+        },
+        (_, Direction::Descending) => {
+            Box::new(move |a: Node<'_>, b: Node<'_>| class(a, b).then_with(|| ascending(b, a)))
+        },
+    }
 }
 
 mod time_stamping {
@@ -193,15 +197,42 @@ mod time_stamping {
         stamp.unwrap_or(*NOW)
     }
 
-    /// A 63-bit key that grows with the timestamp (a missing one counts as now): nanoseconds
-    /// around the epoch, clamped, so about the years 1824 to 2116 are distinct and timestamps
-    /// outside tie. The flag tells whether the key is exact, as opposed to clamped.
-    pub fn key(stamp: Option<SystemTime>) -> (u64, bool) {
+    /// The access time a sort compares.
+    pub fn accessed(node: Node<'_>) -> SystemTime {
+        or_now(node.accessed())
+    }
+
+    /// The creation time a sort compares.
+    pub fn created(node: Node<'_>) -> SystemTime {
+        or_now(node.created())
+    }
+
+    /// The modification time a sort compares.
+    pub fn modified(node: Node<'_>) -> SystemTime {
+        or_now(node.modified())
+    }
+
+    pub fn by_accessed(a: Node<'_>, b: Node<'_>) -> Ordering {
+        accessed(a).cmp(&accessed(b))
+    }
+
+    pub fn by_created(a: Node<'_>, b: Node<'_>) -> Ordering {
+        created(a).cmp(&created(b))
+    }
+
+    pub fn by_modified(a: Node<'_>, b: Node<'_>) -> Ordering {
+        modified(a).cmp(&modified(b))
+    }
+
+    /// A 63-bit key that grows with the timestamp: nanoseconds around the epoch, clamped, so
+    /// about the years 1824 to 2116 are distinct and timestamps outside tie. The flag tells
+    /// whether the key is exact, as opposed to clamped.
+    pub fn key(stamp: SystemTime) -> (u64, bool) {
         const ZERO: i128 = 1 << 62;
         let max63 = i128::from(u64::MAX >> 1);
 
         let nanos = |d: std::time::Duration| i128::try_from(d.as_nanos()).unwrap_or(i128::MAX);
-        let since_epoch = match or_now(stamp).duration_since(std::time::UNIX_EPOCH) {
+        let since_epoch = match stamp.duration_since(std::time::UNIX_EPOCH) {
             Ok(d) => nanos(d),
             Err(e) => -nanos(e.duration()),
         };
@@ -210,69 +241,19 @@ mod time_stamping {
         let key = u64::try_from(shifted.clamp(0, max63)).unwrap_or(0);
         (key, 0 < shifted && shifted < max63)
     }
-
-    pub mod accessed {
-        use super::*;
-
-        /// Comparator that sorts [Node]s by Last Access timestamp, newer to older.
-        pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-            let a_stamp = or_now(a.accessed());
-            let b_stamp = or_now(b.accessed());
-            b_stamp.cmp(&a_stamp)
-        }
-
-        /// Comparator that sorts [Node]s by Access timestamp, older to newer.
-        pub fn rev_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-            comparator(b, a)
-        }
-    }
-
-    pub mod created {
-        use super::*;
-
-        /// Comparator that sorts [Node]s by Creation timestamp, newer to older.
-        pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-            let a_stamp = or_now(a.created());
-            let b_stamp = or_now(b.created());
-            b_stamp.cmp(&a_stamp)
-        }
-
-        /// Comparator that sorts [Node]s by Creation timestamp, older to newer.
-        pub fn rev_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-            comparator(b, a)
-        }
-    }
-
-    pub mod modified {
-        use super::*;
-
-        /// Comparator that sorts [Node]s by Alteration timestamp, newer to older.
-        pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-            let a_stamp = or_now(a.modified());
-            let b_stamp = or_now(b.modified());
-            b_stamp.cmp(&a_stamp)
-        }
-
-        /// Comparator that sorts [Node]s by Alteration timestamp, older to newer.
-        pub fn rev_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-            comparator(b, a)
-        }
-    }
 }
 
 mod sizing {
     use crate::tree::node::Node;
     use core::cmp::Ordering;
 
-    /// Comparator that sorts [Node]s by size, largest to smallest.
-    pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-        let a_size = a.size_value().unwrap_or(0);
-        let b_size = b.size_value().unwrap_or(0);
-        b_size.cmp(&a_size)
+    /// The size a sort compares; a missing size counts as 0.
+    pub fn value(node: Node<'_>) -> u64 {
+        node.size_value().unwrap_or(0)
     }
-    /// Comparator that sorts [Node]s by size, smallest to largest.
-    pub fn rev_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-        comparator(b, a)
+
+    pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
+        value(a).cmp(&value(b))
     }
 }
 
@@ -281,23 +262,14 @@ mod naming {
     use core::cmp::Ordering;
     use std::ffi::OsStr;
 
-    /// Comparator based on [Node] file names in lexicographical order.
+    /// Orders file names lexicographically, as [`OsStr`] orders them.
     pub fn comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
         a.file_name().cmp(b.file_name())
     }
 
-    /// Comparator based on [Node] file names in reversed lexicographical order.
-    pub fn rev_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-        comparator(b, a)
-    }
-
-    /// The first 8 bytes of `name`, as a number that orders like the bytes: the order of names
-    /// on Unix. Other platforms have no such prefix and give 0, which only costs speed.
+    /// The first 8 bytes of `name`, as a number that orders like the bytes: the order of
+    /// [`comparator`], as [`OsStr`] compares its encoded bytes on every platform.
     pub fn prefix(name: &OsStr) -> u64 {
-        if cfg!(not(unix)) {
-            return 0;
-        }
-
         let bytes = name.as_encoded_bytes();
         let mut head = [0_u8; 8];
         let len = bytes.len().min(8);
@@ -338,9 +310,9 @@ mod naming {
         u64::from_be_bytes(head)
     }
 
-    /// Comparator based on [Node] file names in case-insensitive lexicographical order. Names
-    /// are lowercased with full Unicode case mapping (lossily, for non-UTF-8 names) and ties
-    /// are broken by the case-sensitive [`comparator`] so the order is deterministic.
+    /// Orders file names case-insensitively. Names are lowercased with full Unicode case
+    /// mapping (lossily, for non-UTF-8 names) and ties are broken by the case-sensitive
+    /// [`comparator`] so the order is deterministic.
     pub fn ci_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
         // ASCII lowercases byte by byte, to the same order as the general path below.
         let (a_bytes, b_bytes) = (
@@ -362,97 +334,176 @@ mod naming {
 
         a_folded.cmp(b_folded).then_with(|| comparator(a, b))
     }
-
-    /// Exact reverse of [`ci_comparator`].
-    pub fn rev_ci_comparator(a: Node<'_>, b: Node<'_>) -> Ordering {
-        ci_comparator(b, a)
-    }
 }
 
 #[cfg(test)]
 mod test {
-    use super::{MAX63, time_stamping, value_key};
+    use super::{MAX63, Sorter, Ties};
+    use crate::{
+        context::{column, dir, sort},
+        fs::stat::Kind,
+        tree::{Tree, columns::Columns, count::FileCount, node::Node, topo::ix},
+    };
+    use clap::ValueEnum;
     use std::{
-        cmp::Ordering,
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        ffi::OsStr,
+        time::{Duration, UNIX_EPOCH},
     };
 
-    /// A value and the name that breaks its ties, as the comparator sees them.
-    type Entry = (Option<SystemTime>, u64, u64);
+    /// Names with shared and case-folded 8-byte prefixes, non-ASCII case mappings that change
+    /// lengths, and on Unix bytes that are not UTF-8.
+    fn names() -> Vec<&'static OsStr> {
+        let names = [
+            "a",
+            "A",
+            "b",
+            "B",
+            "z",
+            "abcdefgh",
+            "abcdefghi",
+            "abcdefghj",
+            "ABCDEFGHI",
+            "Abcdefghi",
+            "abcdefgH",
+            "é",
+            "É",
+            "éa",
+            "Ea",
+            "eb",
+            "straße",
+            "STRASSE",
+            "strasse",
+            "\u{212a}elvin",
+            "kelvin",
+            "KELVIN",
+            "\u{130}x",
+            "ix",
+            "i\u{307}x",
+            "~",
+            "0",
+        ]
+        .map(OsStr::new)
+        .into_iter();
 
-    /// Whether `key` ever puts a before b although the comparator `cmp` puts a after b.
-    fn contradicts(entries: &[Entry], ascending: bool, by_time: bool) -> bool {
-        let key = |&(t, size, name): &Entry| {
-            let value = if by_time {
-                time_stamping::key(t)
-            } else {
-                (size.min(MAX63), size < MAX63)
-            };
-            let (hi, lo, _) = value_key(value, ascending, || name);
-            (hi, lo)
-        };
-        let cmp = |a: &Entry, b: &Entry| {
-            let by_value = if by_time {
-                a.0.cmp(&b.0)
-            } else {
-                a.1.cmp(&b.1)
-            };
-            let by_value = if ascending {
-                by_value
-            } else {
-                by_value.reverse()
-            };
-            by_value.then(a.2.cmp(&b.2))
+        #[cfg(unix)]
+        let names = {
+            use std::os::unix::ffi::OsStrExt;
+            names.chain([b"ab\xffcd".as_slice(), b"AB\xffcdefgh", b"\xfe"].map(OsStr::from_bytes))
         };
 
-        entries.iter().any(|a| {
-            entries
-                .iter()
-                .any(|b| key(a).cmp(&key(b)) == Ordering::Less && cmp(a, b) == Ordering::Greater)
-        })
+        names.collect()
     }
 
-    /// Keys of times and sizes, including extremes that clamp, never order nodes against the
-    /// comparator, which breaks ties by name.
-    #[test]
-    fn keys_agree_with_comparator() {
-        let mut seed = 0x9e37_79b9_u64;
-        let mut next = || {
-            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-            seed >> 11
-        };
-        let times = [
-            Duration::from_secs(0),
-            Duration::from_secs(1),
-            Duration::from_secs(4_000_000_000),
-            Duration::from_secs(5_000_000_000),
-            Duration::from_secs(9_000_000_000),
-            Duration::from_secs(10_000_000_000),
-            Duration::from_secs(11_000_000_000),
+    /// A tree of nodes that combine the names with sizes, timestamps and kinds; with
+    /// `extremes`, also sizes and times that clamp in the keys.
+    fn tree(extremes: bool) -> Tree {
+        let secs = Duration::from_secs;
+        let mut sizes = vec![None, Some(0), Some(1), Some(2), Some(1 << 40)];
+        let mut times = vec![
+            None,
+            Some(UNIX_EPOCH),
+            UNIX_EPOCH.checked_add(Duration::from_nanos(1)),
+            UNIX_EPOCH.checked_sub(Duration::from_nanos(1)),
+            UNIX_EPOCH.checked_add(secs(4_000_000_000)),
+            UNIX_EPOCH.checked_sub(secs(4_000_000_000)),
         ];
-        let sizes = [0, 1, MAX63 - 1, MAX63, MAX63 + 1, u64::MAX];
+        if extremes {
+            sizes.extend([MAX63 - 1, MAX63, MAX63 + 1, u64::MAX].map(Some));
+            times.extend(
+                [
+                    secs(5_000_000_000),
+                    secs(9_000_000_000),
+                    secs(10_000_000_000),
+                ]
+                .into_iter()
+                .flat_map(|d| [UNIX_EPOCH.checked_add(d), UNIX_EPOCH.checked_sub(d)]),
+            );
+        }
 
-        for round in 0..2000 {
-            let entries: Vec<Entry> = (0..6)
-                .map(|_| {
-                    let base = times[usize::try_from(next()).unwrap_or(0) % times.len()];
-                    let jitter = Duration::from_nanos(next() % 3);
-                    let t = match next() % 3 {
-                        0 => UNIX_EPOCH.checked_add(base + jitter),
-                        1 => UNIX_EPOCH.checked_sub(base + jitter),
-                        _ => UNIX_EPOCH.checked_add(Duration::from_nanos(next() % 5)),
-                    };
-                    let size = sizes[usize::try_from(next()).unwrap_or(0) % sizes.len()];
-                    (t, size.saturating_sub(next() % 2), next() % 3)
-                })
-                .collect();
+        let mut cols = Columns::default();
+        let mut k = 0_usize;
+        for name in names() {
+            for variant in 0..4 {
+                cols.push_name(name);
+                cols.depth.push(1);
+                cols.file_type.push(if (k + variant).is_multiple_of(3) {
+                    Kind::Dir
+                } else {
+                    Kind::File
+                });
+                cols.size.push(sizes[(k * 7 + variant) % sizes.len()]);
+                cols.accessed.push(times[(k * 5 + variant) % times.len()]);
+                cols.created
+                    .push(times[(k * 3 + variant * 2) % times.len()]);
+                cols.modified.push(times[(k + variant * 3) % times.len()]);
+                k += 1;
+            }
+        }
 
-            for ascending in [false, true] {
-                for by_time in [false, true] {
-                    assert!(
-                        !contradicts(&entries, ascending, by_time),
-                        "round {round}: {entries:?}"
-                    );
+        Tree {
+            link: vec![0; cols.len().div_ceil(64)],
+            cols,
+            root: 0,
+            order: vec![],
+            last: vec![],
+            shown_depth: u32::MAX,
+            stump: false,
+            widths: column::Properties::default(),
+            #[cfg(unix)]
+            users: vec![],
+            #[cfg(unix)]
+            groups: vec![],
+            count: FileCount::default(),
+        }
+    }
+
+    /// For every sort type, `--dir-order` and kind of ties, keys followed by [`Sorter::cmp`]
+    /// on equal keys order every pair of items as the comparator followed by the tie-break,
+    /// with and without clamped keys.
+    #[test]
+    fn keys_agree_with_comparators() {
+        for extremes in [false, true] {
+            let tree = tree(extremes);
+            let n = u32::try_from(tree.cols.len()).unwrap_or(0);
+            let reversed: Vec<u32> = (0..n).rev().collect();
+
+            for &sort in sort::Type::value_variants() {
+                for &dir_order in dir::Order::value_variants() {
+                    for ties in [Ties::Name, Ties::Position(&reversed)] {
+                        let sorter = Sorter::new(&tree, sort, dir_order, ties);
+                        let keys: Vec<_> = (0..n).map(|item| sorter.key(item)).collect();
+                        let node = |item: u32| match ties {
+                            Ties::Name => Node::new(&tree, item),
+                            Ties::Position(list) => Node::new(&tree, list[ix(item)]),
+                        };
+                        let expected = |a: u32, b: u32| {
+                            let (node_a, node_b) = (node(a), node(b));
+                            (sorter.cmp)(node_a, node_b).then_with(|| match ties {
+                                Ties::Name => node_a.file_name().cmp(node_b.file_name()),
+                                Ties::Position(_) => a.cmp(&b),
+                            })
+                        };
+
+                        for a in 0..n {
+                            for b in 0..n {
+                                let (ka, kb) = (keys[ix(a)], keys[ix(b)]);
+                                let got = ka.cmp(&kb).then_with(|| sorter.cmp(a, b));
+                                assert_eq!(
+                                    got,
+                                    expected(a, b),
+                                    "{sort:?} {dir_order:?} extremes {extremes}: {:?} vs {:?}",
+                                    node(a).file_name(),
+                                    node(b).file_name(),
+                                );
+                            }
+                        }
+
+                        let clamped = !sort.is_name() && extremes;
+                        assert_eq!(
+                            sorter.clamped.load(std::sync::atomic::Ordering::Relaxed),
+                            clamped
+                        );
+                    }
                 }
             }
         }
