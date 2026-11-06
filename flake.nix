@@ -89,8 +89,8 @@
               commonArgs
               // {
                 inherit cargoArtifacts;
-                # The Nix sandbox forbids setting setuid/setgid bits (EPERM), which this test needs.
-                cargoTestExtraArgs = "-- --skip styles::entry::test::matches_lscolors_for_every_kind_of_entry";
+                # The Nix sandbox forbids setting setuid/setgid bits (EPERM), which these tests need.
+                cargoTestExtraArgs = "-- --skip styles::entry::test::matches_lscolors_for_every_kind_of_entry --skip colored::";
               }
             );
           };
