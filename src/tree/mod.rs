@@ -24,11 +24,8 @@ use std::{
 use topo::Children;
 use widths::{Scope, Stats, Widths};
 
-/// Struct-of-arrays storage for walked entries.
 pub mod columns;
 pub mod id;
-
-/// Pure algorithms over the tree topology, with Kani proofs.
 pub mod topo;
 
 /// Operations to handle and display aggregate file counts based on their type.
@@ -40,10 +37,7 @@ pub mod error;
 /// A borrowed view of one entry of a [`Tree`].
 pub mod node;
 
-/// Parallel sorting of keyed items.
 mod psort;
-
-/// Column widths from maxima over columns.
 pub mod widths;
 
 /// Trees with at least this many nodes compute column widths while the child lists are sorted.

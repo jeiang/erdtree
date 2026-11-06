@@ -7,10 +7,10 @@ use std::{cmp::Ordering, mem::MaybeUninit};
 pub type Key = (u64, u64);
 
 /// Sorts of at least this many items use several threads.
-pub(super) const PAR_SORT_MIN: usize = 1 << 15;
+const PAR_SORT_MIN: usize = 1 << 15;
 
 /// A sort key with the node it belongs to.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub(super) struct Item {
     hi: u64,
     lo: u64,
@@ -44,9 +44,9 @@ pub(super) fn sort_keyed_seq(
     }
 }
 
-/// Like [`sort_keyed_seq`] with up to `threads` threads when `ids` has at least `par_min`
-/// entries: keys are computed and chunks sorted in parallel, then merged.
-pub(super) fn sort_keyed_par(
+/// [`sort_keyed`] with the length from which several threads are used as a parameter: keys
+/// are computed and chunks sorted in parallel, then merged.
+fn sort_keyed_with(
     ids: &mut [u32],
     threads: usize,
     par_min: usize,
@@ -100,13 +100,22 @@ pub fn sort_keyed(
     key: &(impl Fn(u32) -> Key + Sync),
     cmp: &(impl Fn(u32, u32) -> Ordering + Sync),
 ) {
-    sort_keyed_par(ids, threads, PAR_SORT_MIN, key, cmp);
+    sort_keyed_with(ids, threads, PAR_SORT_MIN, key, cmp);
 }
 
 /// Sorts `items` by `cmp` (an unstable sort: equal items may swap) with up to `threads` threads.
-/// Inputs shorter than `min_len`, and calls with one thread, sort on the calling thread without
-/// spawning anything.
-pub fn sort_by<T, F>(items: &mut [T], threads: usize, min_len: usize, cmp: F)
+/// Short inputs, and calls with one thread, sort on the calling thread without spawning
+/// anything.
+pub fn sort_by<T, F>(items: &mut [T], threads: usize, cmp: F)
+where
+    T: Copy + Send + Sync,
+    F: Fn(&T, &T) -> Ordering + Sync,
+{
+    sort_by_with(items, threads, PAR_SORT_MIN, cmp);
+}
+
+/// [`sort_by`] that uses several threads from `min_len` items on.
+fn sort_by_with<T, F>(items: &mut [T], threads: usize, min_len: usize, cmp: F)
 where
     T: Copy + Send + Sync,
     F: Fn(&T, &T) -> Ordering + Sync,
@@ -129,7 +138,7 @@ where
 
 /// Merges the sorted runs of `items`, each `run` long but the last, into one sorted slice, with
 /// up to `threads` threads. Equal items from an earlier run come first.
-pub fn merge_runs<T, F>(items: &mut [T], run: usize, threads: usize, cmp: &F)
+fn merge_runs<T, F>(items: &mut [T], run: usize, threads: usize, cmp: &F)
 where
     T: Copy + Send + Sync,
     F: Fn(&T, &T) -> Ordering + Sync,
@@ -261,7 +270,7 @@ fn merge_piece<T: Copy, F: Fn(&T, &T) -> Ordering>(
 
 #[cfg(test)]
 mod test {
-    use super::sort_by;
+    use super::{sort_by_with, sort_keyed_with};
 
     /// Every length and thread count gives the same result as the standard sort, with the
     /// parallel path forced by `min_len == 0`.
@@ -279,7 +288,7 @@ mod test {
                 let mut items: Vec<(u64, u64)> = (0..len).map(|i| (next() % 7, i)).collect();
                 let mut expected = items.clone();
                 expected.sort_unstable();
-                sort_by(&mut items, threads, 0, Ord::cmp);
+                sort_by_with(&mut items, threads, 0, Ord::cmp);
                 assert_eq!(items, expected, "len {len}, threads {threads}");
             }
         }
@@ -292,7 +301,7 @@ mod test {
             let expected: Vec<u32> = (0..len).collect();
             for threads in 1..=5 {
                 let mut ids: Vec<u32> = (0..len).rev().collect();
-                super::sort_keyed_par(&mut ids, threads, 0, &|i| (u64::from(i / 7), 0), &cmp);
+                sort_keyed_with(&mut ids, threads, 0, &|i| (u64::from(i / 7), 0), &cmp);
                 assert_eq!(ids, expected, "len {len}, threads {threads}");
             }
         }
