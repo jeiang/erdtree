@@ -1,13 +1,10 @@
-use super::{SizeFormat, Tree, topo::ix};
-use crate::{
-    disk_usage::file_size::{DiskUsage, FileSize, byte, line_count, word_count},
-    fs::stat::Kind,
-};
+use super::{Tree, topo::ix};
+use crate::fs::stat::Kind;
 use nu_ansi_term::Style;
 use std::{ffi::OsStr, path::Path, time::SystemTime};
 
 #[cfg(unix)]
-use crate::{disk_usage::file_size::block, tree::widths::lookup};
+use crate::tree::widths::lookup;
 
 /// Ordering and sorting rules for [Node].
 pub mod cmp;
@@ -136,35 +133,6 @@ impl<'a> Node<'a> {
     /// Raw size in the configured metric.
     pub fn size_value(self) -> Option<u64> {
         self.tree.cols.size[ix(self.i)]
-    }
-
-    /// Size in the configured metric and display format.
-    pub fn file_size(self) -> Option<FileSize> {
-        let value = self.size_value()?;
-        let SizeFormat {
-            disk_usage,
-            human,
-            unit,
-        } = self.tree.size_format;
-
-        Some(match disk_usage {
-            DiskUsage::Logical => FileSize::Byte(byte::Metric::new(
-                value,
-                byte::MetricKind::Logical,
-                unit,
-                human,
-            )),
-            DiskUsage::Physical => FileSize::Byte(byte::Metric::new(
-                value,
-                byte::MetricKind::Physical,
-                unit,
-                human,
-            )),
-            DiskUsage::Line => FileSize::Line(line_count::Metric::from(value)),
-            DiskUsage::Word => FileSize::Word(word_count::Metric::from(value)),
-            #[cfg(unix)]
-            DiskUsage::Block => FileSize::Block(block::Metric { value }),
-        })
     }
 
     /// Raw `st_mode` of the entry (long view).

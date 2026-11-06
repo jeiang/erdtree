@@ -1,60 +1,28 @@
 use super::super::units::PrefixKind;
 use crate::render::bytes::u64_into;
-use std::{
-    fmt::{self, Display},
-    io::{Cursor, Write},
-};
+use std::io::{Cursor, Write};
 
-/// Concerned with measuring file size in bytes, whether logical or physical determined by `kind`.
-/// Binary or SI units used for reporting determined by `prefix_kind`.
+/// Formats sizes in bytes, in binary or SI units as `prefix_kind` says, human-readable or as
+/// plain bytes.
+#[derive(Clone, Copy)]
 pub struct Metric {
-    pub value: u64,
-    pub human_readable: bool,
-    #[allow(dead_code)]
-    kind: MetricKind,
     prefix_kind: PrefixKind,
-}
-
-/// Represents the appropriate method in which to compute bytes. `Logical` represent the total amount
-/// of bytes in a file; `Physical` represents how many bytes are actually used to store the file on
-/// disk.
-pub enum MetricKind {
-    Logical,
-    Physical,
+    human_readable: bool,
 }
 
 impl Metric {
-    /// A [Metric] of `value` bytes.
-    pub const fn new(
-        value: u64,
-        kind: MetricKind,
-        prefix_kind: PrefixKind,
-        human_readable: bool,
-    ) -> Self {
+    pub const fn new(prefix_kind: PrefixKind, human_readable: bool) -> Self {
         Self {
-            value,
-            human_readable,
-            kind,
             prefix_kind,
+            human_readable,
         }
     }
 
-    /// Initializes an empty [Metric] used to represent the total amount of bytes of a file.
-    pub const fn init_empty_logical(human_readable: bool, prefix_kind: PrefixKind) -> Self {
-        Self::new(0, MetricKind::Logical, prefix_kind, human_readable)
-    }
-
-    /// Initializes an empty [Metric] used to represent the total disk space of a file in bytes.
-    pub const fn init_empty_physical(human_readable: bool, prefix_kind: PrefixKind) -> Self {
-        Self::new(0, MetricKind::Physical, prefix_kind, human_readable)
-    }
-
-    /// The number and the unit as displayed, e.g. `("1.0", "KiB")`, and the prefix index of the
-    /// value, which picks its color. Without human-readable units the unit is bytes, but the
-    /// index is still that of the closest prefix. The number is formatted into `buf`, so nothing
-    /// is allocated.
-    pub fn parts<'b>(&self, buf: &'b mut [u8; 32]) -> (&'b str, &'static str, usize) {
-        let value = self.value;
+    /// The number and the unit of `value` bytes as displayed, e.g. `("1.0", "KiB")`, and the
+    /// prefix index of the value, which picks its color. Without human-readable units the unit
+    /// is bytes, but the index is still that of the closest prefix. The number is formatted into
+    /// `buf`, so nothing is allocated.
+    pub fn parts(self, value: u64, buf: &mut [u8; 32]) -> (&str, &'static str, usize) {
         let index = self.prefix_kind.index_of(value);
         let shown = if self.human_readable { index } else { 0 };
 
@@ -73,6 +41,13 @@ impl Metric {
             self.prefix_kind.names()[shown],
             index,
         )
+    }
+
+    /// Widths of the number and the unit of `value` bytes as displayed.
+    pub fn widths(self, value: u64) -> (usize, usize) {
+        let mut buf = [0; 32];
+        let (number, unit, _) = self.parts(value, &mut buf);
+        (number.len(), unit.len())
     }
 }
 
@@ -111,63 +86,20 @@ fn tenths(buf: &mut [u8; 32], value: u64, base: u64) -> usize {
     usize::try_from(cursor.position()).unwrap_or(0)
 }
 
-impl Display for Metric {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buf = [0; 32];
-        let (number, unit, _) = self.parts(&mut buf);
-        write!(f, "{number} {unit}")
-    }
-}
-
 #[test]
 fn test_metric() {
-    let metric = Metric {
-        value: 100,
-        kind: MetricKind::Logical,
-        human_readable: false,
-        prefix_kind: PrefixKind::Bin,
+    let shown = |value, prefix_kind, human_readable| {
+        let mut buf = [0; 32];
+        let (number, unit, _) = Metric::new(prefix_kind, human_readable).parts(value, &mut buf);
+        format!("{number} {unit}")
     };
-    assert_eq!(format!("{metric}"), "100 B");
 
-    let metric = Metric {
-        value: 1000,
-        kind: MetricKind::Logical,
-        human_readable: true,
-        prefix_kind: PrefixKind::Si,
-    };
-    assert_eq!(format!("{metric}"), "1.0 KB");
-
-    let metric = Metric {
-        value: 1000,
-        kind: MetricKind::Logical,
-        human_readable: true,
-        prefix_kind: PrefixKind::Bin,
-    };
-    assert_eq!(format!("{metric}"), "1000 B");
-
-    let metric = Metric {
-        value: 1024,
-        kind: MetricKind::Logical,
-        human_readable: true,
-        prefix_kind: PrefixKind::Bin,
-    };
-    assert_eq!(format!("{metric}"), "1.0 KiB");
-
-    let metric = Metric {
-        value: 2_u64.pow(20),
-        kind: MetricKind::Logical,
-        human_readable: true,
-        prefix_kind: PrefixKind::Bin,
-    };
-    assert_eq!(format!("{metric}"), "1.0 MiB");
-
-    let metric = Metric {
-        value: 123_454,
-        kind: MetricKind::Logical,
-        human_readable: false,
-        prefix_kind: PrefixKind::Bin,
-    };
-    assert_eq!(format!("{metric}"), "123454 B");
+    assert_eq!(shown(100, PrefixKind::Bin, false), "100 B");
+    assert_eq!(shown(1000, PrefixKind::Si, true), "1.0 KB");
+    assert_eq!(shown(1000, PrefixKind::Bin, true), "1000 B");
+    assert_eq!(shown(1024, PrefixKind::Bin, true), "1.0 KiB");
+    assert_eq!(shown(2_u64.pow(20), PrefixKind::Bin, true), "1.0 MiB");
+    assert_eq!(shown(123_454, PrefixKind::Bin, false), "123454 B");
 }
 
 #[test]

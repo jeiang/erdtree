@@ -1,83 +1,70 @@
 #[cfg(test)]
 use std::path::Path;
-use std::{
-    convert::From,
-    fmt::{self, Display},
-    fs::File,
-    io::Read,
-};
+use std::{fs::File, io::Read};
 
 #[cfg(test)]
 use super::utf8_stream::for_each_chunk;
 use super::utf8_stream::{BUF_SIZE, for_each_chunk_in};
 
-/// Concerned with measuring file size using word count as a metric.
-#[derive(Default)]
-pub struct Metric {
-    pub value: u64,
+/// Streams the contents of a file given by `path` through a fixed-size buffer and computes
+/// the total number of words in that file. If a file is not UTF-8 encoded as in the case of
+/// a binary jpeg file then `None` will be returned.
+///
+/// Words are UTF-8 encoded byte sequences delimited by Unicode Derived Core Property `White_Space`.
+#[cfg(test)]
+fn init(path: impl AsRef<Path>) -> Option<u64> {
+    from_reader(File::open(path.as_ref()).ok()?, BUF_SIZE)
 }
 
-impl Metric {
-    /// Streams the contents of a file given by `path` through a fixed-size buffer and computes
-    /// the total number of words in that file. If a file is not UTF-8 encoded as in the case of
-    /// a binary jpeg file then `None` will be returned.
-    ///
-    /// Words are UTF-8 encoded byte sequences delimited by Unicode Derived Core Property `White_Space`.
-    #[cfg(test)]
-    pub fn init(path: impl AsRef<Path>) -> Option<Self> {
-        Self::from_reader(File::open(path.as_ref()).ok()?, BUF_SIZE)
+/// Counts the words of an open file, reading through `scratch`, which is grown to the read
+/// size when it is smaller. One buffer can serve many files. `size` is what the file system
+/// reports for the file, or 0 when unknown.
+pub fn from_file(file: File, size: u64, scratch: &mut Vec<u8>) -> Option<u64> {
+    if scratch.len() < BUF_SIZE {
+        scratch.resize(BUF_SIZE, 0);
     }
 
-    /// Counts the words of an open file, reading through `scratch`, which is grown to the read
-    /// size when it is smaller. One buffer can serve many files. `size` is what the file system
-    /// reports for the file, or 0 when unknown.
-    pub fn from_file(file: File, size: u64, scratch: &mut Vec<u8>) -> Option<Self> {
-        if scratch.len() < BUF_SIZE {
-            scratch.resize(BUF_SIZE, 0);
+    count(file, size, &mut scratch[..BUF_SIZE])
+}
+
+/// Counts words in `reader` using a buffer of `buf_size` bytes.
+///
+/// Equivalent to `str::split_whitespace().count()`: a word starts at each non-whitespace
+/// character that follows whitespace (or the start of input). The "inside a word" state is
+/// carried across chunks, and chunks never split a character.
+#[cfg(test)]
+fn from_reader(reader: impl Read, buf_size: usize) -> Option<u64> {
+    tally(|f| for_each_chunk(reader, buf_size, f))
+}
+
+/// Like [`from_reader`], reading through `buf`, from a file the file system reports as
+/// `size` bytes long (0 if unknown).
+fn count(reader: impl Read, size: u64, buf: &mut [u8]) -> Option<u64> {
+    tally(|f| for_each_chunk_in(reader, buf, size, f))
+}
+
+/// Counts the words of the chunks `run` produces.
+fn tally(run: impl FnOnce(&mut dyn FnMut(&str)) -> Option<()>) -> Option<u64> {
+    let mut words = 0_u64;
+    let mut in_word = false;
+
+    run(&mut |chunk: &str| {
+        if chunk.is_ascii() {
+            words += ascii_words(chunk.as_bytes(), &mut in_word);
+            return;
         }
 
-        Self::count(file, size, &mut scratch[..BUF_SIZE])
-    }
-
-    /// Counts words in `reader` using a buffer of `buf_size` bytes.
-    ///
-    /// Equivalent to `str::split_whitespace().count()`: a word starts at each non-whitespace
-    /// character that follows whitespace (or the start of input). The "inside a word" state is
-    /// carried across chunks, and chunks never split a character.
-    #[cfg(test)]
-    fn from_reader(reader: impl Read, buf_size: usize) -> Option<Self> {
-        Self::tally(|f| for_each_chunk(reader, buf_size, f))
-    }
-
-    /// Like [`Self::from_reader`], reading through `buf`, from a file the file system reports as
-    /// `size` bytes long (0 if unknown).
-    fn count(reader: impl Read, size: u64, buf: &mut [u8]) -> Option<Self> {
-        Self::tally(|f| for_each_chunk_in(reader, buf, size, f))
-    }
-
-    /// Counts the words of the chunks `run` produces.
-    fn tally(run: impl FnOnce(&mut dyn FnMut(&str)) -> Option<()>) -> Option<Self> {
-        let mut words = 0_u64;
-        let mut in_word = false;
-
-        run(&mut |chunk: &str| {
-            if chunk.is_ascii() {
-                words += ascii_words(chunk.as_bytes(), &mut in_word);
-                return;
+        for c in chunk.chars() {
+            if c.is_whitespace() {
+                in_word = false;
+            } else if !in_word {
+                in_word = true;
+                words += 1;
             }
+        }
+    })?;
 
-            for c in chunk.chars() {
-                if c.is_whitespace() {
-                    in_word = false;
-                } else if !in_word {
-                    in_word = true;
-                    words += 1;
-                }
-            }
-        })?;
-
-        Some(Self { value: words })
-    }
+    Some(words)
 }
 
 /// Counts the words that start in the ASCII `chunk`, given whether a word is open before it, and
@@ -107,24 +94,11 @@ fn ascii_words(chunk: &[u8], in_word: &mut bool) -> u64 {
     words
 }
 
-impl From<u64> for Metric {
-    fn from(value: u64) -> Self {
-        Self { value }
-    }
-}
-
-impl Display for Metric {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <u64 as Display>::fmt(&self.value, f)
-    }
-}
-
 #[test]
 fn test_line_count() {
-    let metric =
-        Metric::init("tests/data/nemesis.txt").expect("Expected 'tests/data/nemesis.txt' to exist");
+    let count = init("tests/data/nemesis.txt").expect("Expected 'tests/data/nemesis.txt' to exist");
 
-    assert_eq!(metric.value, 27);
+    assert_eq!(count, 27);
 }
 
 #[cfg(test)]
@@ -137,7 +111,7 @@ mod tests {
     }
 
     fn streamed(data: &[u8], buf_size: usize) -> Option<u64> {
-        Metric::from_reader(data, buf_size).map(|m| m.value)
+        from_reader(data, buf_size)
     }
 
     #[test]

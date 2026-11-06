@@ -1,6 +1,5 @@
 use crate::{
     context::{Context, column},
-    disk_usage::file_size::FileSize,
     fs::inode::Inode,
     walk::{Walker, rules},
 };
@@ -67,9 +66,6 @@ pub struct Tree {
     /// Whether there is nothing to show below the root.
     stump: bool,
 
-    /// Byte-metric display settings, to rebuild [`FileSize`] values.
-    size_format: SizeFormat,
-
     /// Column widths that fit the shown nodes (all nodes unless `--min-size` hid some).
     widths: column::Properties,
 
@@ -106,14 +102,6 @@ impl Filters {
     const fn any(self) -> bool {
         self.prune || self.dirs_only || self.min_size.is_some()
     }
-}
-
-/// How sizes are displayed.
-#[derive(Clone, Copy)]
-struct SizeFormat {
-    disk_usage: crate::disk_usage::file_size::DiskUsage,
-    human: bool,
-    unit: crate::disk_usage::units::PrefixKind,
 }
 
 pub type Result<T> = StdResult<T, Error>;
@@ -184,11 +172,6 @@ impl Tree {
             link,
             shown_depth: cap,
             stump: false,
-            size_format: SizeFormat {
-                disk_usage: ctx.disk_usage,
-                human: ctx.human,
-                unit: ctx.unit,
-            },
             widths: column::Properties::from(ctx),
             #[cfg(unix)]
             users: vec![],
@@ -539,21 +522,6 @@ impl Tree {
         ids.extend(positions.iter().map(|&k| rest[ix(k)]));
         ids
     }
-}
-
-/// Widths of the number and the unit of a human-readable size, formatted without allocating.
-fn human_widths(file_size: &FileSize) -> (usize, usize) {
-    use std::io::Write;
-
-    let mut buf = [0_u8; 64];
-    let mut cursor = std::io::Cursor::new(&mut buf[..]);
-    let _ = write!(cursor, "{file_size}");
-    let len = usize::try_from(cursor.position()).unwrap_or(0);
-    let text = &buf[..len];
-
-    text.iter()
-        .position(|&b| b == b' ')
-        .map_or((len, 0), |space| (space, len - space - 1))
 }
 
 /// Configures the walk from `ctx`.

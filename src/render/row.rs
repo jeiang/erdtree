@@ -10,7 +10,10 @@ use super::{
 use crate::{
     ansi::Escaped,
     context::{Context, column},
-    disk_usage::file_size::{DiskUsage, FileSize},
+    disk_usage::{
+        file_size::{DiskUsage, byte},
+        units::PrefixKind,
+    },
     icons::{self, fs::Paint},
     styles,
     tree::{Tree, node::Node},
@@ -19,16 +22,17 @@ use crate::{
 #[cfg(unix)]
 use super::long;
 #[cfg(unix)]
-use crate::disk_usage::{file_size::BLOCK_SIZE_BYTES, units::PrefixKind};
+use crate::disk_usage::file_size::BLOCK_SIZE_BYTES;
 
 /// How the size column is written.
 struct Size {
     width: usize,
     unit_width: usize,
-    /// Picks the color of block counts, by the prefix of their size in bytes.
-    #[cfg(unix)]
-    unit: PrefixKind,
     disk_usage: DiskUsage,
+    human: bool,
+    /// The unit of byte sizes; also picks the color of block counts, by the prefix of their
+    /// size in bytes.
+    unit: PrefixKind,
 
     /// Whether rows without a size still get a size column, holding the placeholder.
     placeholder: bool,
@@ -46,9 +50,9 @@ impl Size {
         Self {
             width: widths.max_size_width,
             unit_width: widths.max_size_unit_width,
-            #[cfg(unix)]
-            unit: ctx.unit,
             disk_usage: ctx.disk_usage,
+            human: ctx.human,
+            unit: ctx.unit,
             placeholder,
             placeholder_esc: colors.map(|colors| Esc::new(colors.placeholder)),
             du: colors.map(|colors| colors.du.map(Esc::new)),
@@ -305,7 +309,7 @@ impl<'a> RowFmt<'a> {
     fn write_size(&self, node: Node<'_>, out: &mut Vec<u8>) {
         let size = &self.size;
 
-        let Some(file_size) = node.file_size() else {
+        let Some(value) = node.size_value() else {
             if size.placeholder {
                 let esc = size.placeholder_esc.as_ref();
                 out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
@@ -319,10 +323,11 @@ impl<'a> RowFmt<'a> {
         // The unit colors are present exactly with color.
         let paint = |index: usize| size.du.as_ref().map(|du| &du[index]);
 
-        match &file_size {
-            FileSize::Byte(metric) => {
+        match size.disk_usage {
+            DiskUsage::Logical | DiskUsage::Physical => {
                 let mut buf = [0; 32];
-                let (number, unit, index) = metric.parts(&mut buf);
+                let (number, unit, index) =
+                    byte::Metric::new(size.unit, size.human).parts(value, &mut buf);
                 let esc = paint(index);
 
                 out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
@@ -331,14 +336,14 @@ impl<'a> RowFmt<'a> {
                 push_str_padded(out, unit, size.unit_width);
                 out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
             },
-            FileSize::Line(_) | FileSize::Word(_) => {
-                self.write_unitless(file_size.value(), paint(0), out);
+            DiskUsage::Line | DiskUsage::Word => {
+                self.write_unitless(value, paint(0), out);
             },
 
             #[cfg(unix)]
-            FileSize::Block(metric) => {
-                let bytes = metric.value * u64::from(BLOCK_SIZE_BYTES);
-                self.write_unitless(metric.value, paint(size.unit.index_of(bytes)), out);
+            DiskUsage::Block => {
+                let bytes = value * u64::from(BLOCK_SIZE_BYTES);
+                self.write_unitless(value, paint(size.unit.index_of(bytes)), out);
             },
         }
     }
