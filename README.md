@@ -180,21 +180,21 @@ Options:
           Remove empty directories from output
 
   -s, --sort <SORT>
-          How to sort entries
+          How to sort entries; orders read outward from the root: bottom to top in the 'regular' and 'flat' layouts, top to bottom in 'inverted' and 'iflat'
 
           Possible values:
-          - name:    Sort entries by file name in lexicographical order
-          - rname:   Sort entries by file name in reversed lexicographical order
-          - nameci:  Sort entries by file name in case-insensitive lexicographical order
-          - rnameci: Sort entries by file name in reversed case-insensitive lexicographical order
-          - size:    Sort entries by size smallest to largest, top to bottom
-          - rsize:   Sort entries by size largest to smallest, bottom to top
-          - access:  Sort entries by newer to older Accessing Date
-          - raccess: Sort entries by older to newer Accessing Date
-          - create:  Sort entries by newer to older Creation Date
-          - rcreate: Sort entries by older to newer Creation Date
-          - mod:     Sort entries by newer to older Alteration Date
-          - rmod:    Sort entries by older to newer Alteration Date
+          - name:    File name in lexicographical order
+          - rname:   File name in reversed lexicographical order
+          - nameci:  File name in case-insensitive lexicographical order
+          - rnameci: File name in reversed case-insensitive lexicographical order
+          - size:    Size, largest first
+          - rsize:   Size, smallest first
+          - access:  Last access time, newest first
+          - raccess: Last access time, oldest first
+          - create:  Creation time, newest first
+          - rcreate: Creation time, oldest first
+          - mod:     Last modification time, newest first
+          - rmod:    Last modification time, oldest first
           
           [default: size]
 
@@ -209,7 +209,7 @@ Options:
           [default: none]
 
   -T, --threads <THREADS>
-          Number of threads to use; defaults to the number of available CPU cores (performance cores on macOS), as does 0; without this option the walk adds threads while it waits on the file system
+          Number of threads to use; defaults to the number of available CPU cores (performance cores on macOS), as does 0; on Linux, without this option the walk adds threads while it waits on the file system
 
   -u, --unit <UNIT>
           Report disk usage in binary or SI units
@@ -267,7 +267,7 @@ Options:
           Add the number of entries skipped by hidden, gitignore, '--exclude' and '--no-git' rules to the summary; an ignored directory counts once. Reads each walked directory again
 
       --summarize
-          Print only the root and its total disk usage, like 'du -s'; same as '--level 0 --no-report' and overrides '--level'
+          Print only one line per root with its total disk usage, like 'du -s'; overrides '--level'
 
       --suppress-size
           Omit disk usage from output
@@ -504,7 +504,7 @@ $ erd -y flat -d block -i -.
   <img src="https://github.com/solidiquis/erdtree/blob/master/assets/du_match.png?raw=true" alt="failed to load png" />
 </p>
 
-For a single line with the total, like `du -s`, add `--summarize` (the same as `--level 0 --no-report`):
+For a single line with the total, like `du -s`, add `--summarize` (with one root, the same as `--level 0 --no-report`):
 
 ```
 $ erd --disk-usage block --no-ignore --hidden --summarize
@@ -672,23 +672,23 @@ Various sorting methods are provided (`nameci`/`rnameci` fold case with full Uni
 
 ```
 -s, --sort <SORT>
-      How to sort entries
+      How to sort entries; orders read outward from the root: bottom to top in the 'regular' and 'flat' layouts, top to bottom in 'inverted' and 'iflat'
       
       [default: size]
 
       Possible values:
-      - name:    Sort entries by file name in lexicographical order
-      - rname:   Sort entries by file name in reversed lexicographical order
-      - nameci:  Sort entries by file name in case-insensitive lexicographical order
-      - rnameci: Sort entries by file name in reversed case-insensitive lexicographical order
-      - size:    Sort entries by size smallest to largest, top to bottom
-      - rsize:   Sort entries by size largest to smallest, bottom to top
-      - access:  Sort entries by newer to older Accessing Date
-      - raccess: Sort entries by older to newer Accessing Date
-      - create:  Sort entries by newer to older Creation Date
-      - rcreate: Sort entries by older to newer Creation Date
-      - mod:     Sort entries by newer to older Alteration Date
-      - rmod:    Sort entries by older to newer Alteration Date
+      - name:    File name in lexicographical order
+      - rname:   File name in reversed lexicographical order
+      - nameci:  File name in case-insensitive lexicographical order
+      - rnameci: File name in reversed case-insensitive lexicographical order
+      - size:    Size, largest first
+      - rsize:   Size, smallest first
+      - access:  Last access time, newest first
+      - raccess: Last access time, oldest first
+      - create:  Creation time, newest first
+      - rcreate: Creation time, oldest first
+      - mod:     Last modification time, newest first
+      - rmod:    Last modification time, oldest first
 
   --dir-order <DIR_ORDER>
       Sort directories before or after all other file types
@@ -848,7 +848,7 @@ If, however, the default behavior doesn't suit your needs you have control over 
 The amount of threads used by `erdtree` can be adjusted with the following:
 
 ```
--T, --threads <THREADS>          Number of threads to use; defaults to the number of available CPU cores (performance cores on macOS), as does 0; without this option the walk adds threads while it waits on the file system
+-T, --threads <THREADS>          Number of threads to use; defaults to the number of available CPU cores (performance cores on macOS), as does 0; on Linux, without this option the walk adds threads while it waits on the file system
 ```
 
 #### Why parallelism

@@ -3,45 +3,46 @@ use clap::ValueEnum;
 /// Order in which to print nodes.
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Type {
-    /// Sort entries by file name in lexicographical order.
+    /// File name in lexicographical order
     Name,
-    /// Sort entries by file name in reversed lexicographical order.
+
+    /// File name in reversed lexicographical order
     Rname,
 
-    /// Sort entries by file name in case-insensitive lexicographical order
+    /// File name in case-insensitive lexicographical order
     Nameci,
 
-    /// Sort entries by file name in reversed case-insensitive lexicographical order
+    /// File name in reversed case-insensitive lexicographical order
     Rnameci,
 
-    /// Sort entries by size smallest to largest, top to bottom
+    /// Size, largest first
     #[default]
     Size,
 
-    /// Sort entries by size largest to smallest, bottom to top
+    /// Size, smallest first
     Rsize,
 
-    /// Sort entries by newer to older Accessing Date
+    /// Last access time, newest first
     #[value(alias("atime"))]
     Access,
 
-    /// Sort entries by older to newer Accessing Date
+    /// Last access time, oldest first
     #[value(alias("ratime"))]
     Raccess,
 
-    /// Sort entries by newer to older Creation Date
+    /// Creation time, newest first
     #[value(alias("ctime"))]
     Create,
 
-    /// Sort entries by older to newer Creation Date
+    /// Creation time, oldest first
     #[value(alias("rctime"))]
     Rcreate,
 
-    /// Sort entries by newer to older Alteration Date
+    /// Last modification time, newest first
     #[value(alias("mtime"))]
     Mod,
 
-    /// Sort entries by older to newer Alteration Date
+    /// Last modification time, oldest first
     #[value(alias("rmtime"))]
     Rmod,
 }
