@@ -2,9 +2,6 @@ use crate::{context::error::Error as CtxError, styles::error::Error as StyleErro
 use ignore::Error as IgnoreError;
 use std::io::Error as IoError;
 
-#[cfg(unix)]
-use crate::fs::permissions::error::Error as PermissionsError;
-
 /// Errors that may occur while traversing or construction of [`Tree`].
 ///
 /// [`Tree`]: super::Tree
@@ -27,10 +24,6 @@ pub enum Error {
 
     #[error("{0}")]
     PathCanonicalization(#[from] IoError),
-
-    #[cfg(unix)]
-    #[error("{0}")]
-    Permissions(#[from] PermissionsError),
 
     #[error("{0}")]
     UninitializedTheme(#[from] StyleError<'static>),

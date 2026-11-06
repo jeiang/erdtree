@@ -1,139 +1,46 @@
-use error::Error;
-use file_type::FileType;
-use std::{
-    convert::TryFrom,
-    fmt::{self, Display, Octal},
-    os::unix::fs::PermissionsExt,
-};
-
-/// For working with permissions for a particular class i.e. user, group, or other.
-pub mod class;
-
-/// File permission related errors.
-pub mod error;
-
-/// For working with Unix file identifiers.
-pub mod file_type;
-
 #[cfg(test)]
 mod test;
 
-impl SymbolicNotation for std::fs::Permissions {}
+/// Symbolic notation of `mode` as `ls -l` prints it: the file type (`?` when unknown) and the
+/// `rwx` triads of user, group and other, with setuid, setgid and the sticky bit shown as `s`/`S`
+/// and `t`/`T` in the execute slot.
+pub const fn symbolic(mode: u32) -> [u8; 10] {
+    let file_type = match mode & 0o170_000 {
+        0o040_000 => b'd',
+        0o100_000 => b'.',
+        0o120_000 => b'l',
+        0o010_000 => b'p',
+        0o140_000 => b's',
+        0o020_000 => b'c',
+        0o060_000 => b'b',
+        _ => b'?',
+    };
+    let [ur, uw, ux] = triad(mode >> 6, mode & 0o4000 != 0, b's');
+    let [gr, gw, gx] = triad(mode >> 3, mode & 0o2000 != 0, b's');
+    let [or, ow, ox] = triad(mode, mode & 0o1000 != 0, b't');
 
-/// Trait that is used to extend [`std::fs::Permissions`] behavior such that it allows for `mode` to
-/// be expressed in Unix's symbolic notation for file permissions.
-pub trait SymbolicNotation: PermissionsExt {
-    /// Attempts to return a [`FileMode`] which implements [Display] allowing it to be presented in
-    /// symbolic notation for file permissions.
-    fn try_mode_symbolic_notation(&self) -> Result<FileMode, Error> {
-        let mode = self.mode();
-        FileMode::try_from(mode)
-    }
+    [file_type, ur, uw, ux, gr, gw, gx, or, ow, ox]
 }
 
-/// A struct which holds information about the permissions of a particular file. [`FileMode`]
-/// implements [Display] which allows it to be conveniently presented in symbolic notation when
-/// expressing file permissions.
-pub struct FileMode {
-    pub st_mode: u32,
-    file_type: FileType,
-    user_permissions: class::Permissions,
-    group_permissions: class::Permissions,
-    other_permissions: class::Permissions,
+/// The `rwx` triad in the low three bits of `bits`; `special` replaces the execute slot with
+/// `mark` when executable and its uppercase otherwise.
+const fn triad(bits: u32, special: bool, mark: u8) -> [u8; 3] {
+    let exec = bits & 0o1 != 0;
+    let x = match (exec, special) {
+        (false, false) => b'-',
+        (true, false) => b'x',
+        (false, true) => mark.to_ascii_uppercase(),
+        (true, true) => mark,
+    };
+
+    [
+        if bits & 0o4 == 0 { b'-' } else { b'r' },
+        if bits & 0o2 == 0 { b'-' } else { b'w' },
+        x,
+    ]
 }
 
-/// Implements [Display] which presents symbolic notation of file permissions with the extended
-/// attributes.
-pub struct FileModeXAttrs<'a>(pub &'a FileMode);
-
-impl FileMode {
-    /// Constructor for [`FileMode`].
-    pub const fn new(
-        st_mode: u32,
-        file_type: FileType,
-        user_permissions: class::Permissions,
-        group_permissions: class::Permissions,
-        other_permissions: class::Permissions,
-    ) -> Self {
-        Self {
-            st_mode,
-            file_type,
-            user_permissions,
-            group_permissions,
-            other_permissions,
-        }
-    }
-
-    /// Returns a reference to `file_type`.
-    pub const fn file_type(&self) -> &FileType {
-        &self.file_type
-    }
-
-    /// Returns a reference to a [`class::Permissions`] which represents the permissions of the user class.
-    pub const fn user_permissions(&self) -> &class::Permissions {
-        &self.user_permissions
-    }
-
-    /// Returns a reference to a [`class::Permissions`] which represents the permissions of the group class.
-    pub const fn group_permissions(&self) -> &class::Permissions {
-        &self.group_permissions
-    }
-
-    /// Returns a reference to a [`class::Permissions`] which represents the permissions of the other class.
-    pub const fn other_permissions(&self) -> &class::Permissions {
-        &self.other_permissions
-    }
-}
-
-/// For representing [`FileMode`] in symbolic notation.
-impl Display for FileMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let file_iden = self.file_type().identifier();
-        let user_permissions = self.user_permissions();
-        let group_permissions = self.group_permissions();
-        let other_permissions = self.other_permissions();
-
-        write!(
-            f,
-            "{file_iden}{user_permissions}{group_permissions}{other_permissions}"
-        )
-    }
-}
-
-/// For representing file permissions with extended attributes in symbolic notation.
-impl Display for FileModeXAttrs<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mode = self.0;
-        write!(f, "{mode}@")
-    }
-}
-
-/// For the octal representation of permissions
-impl Octal for FileMode {
-    // `libc::mode_t` is `u16` on macOS and `u32` on Linux.
-    #[allow(clippy::useless_conversion)]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let modes_mask = self.st_mode & !u32::from(libc::S_IFMT);
-        fmt::Octal::fmt(&modes_mask, f)
-    }
-}
-
-/// The argument `st_mode` is meant to come from the `mode` method of [`std::fs::Permissions`].
-impl TryFrom<u32> for FileMode {
-    type Error = Error;
-
-    fn try_from(st_mode: u32) -> Result<Self, Self::Error> {
-        let file_type = FileType::try_from(st_mode)?;
-        let user_permissions = class::Permissions::user_permissions_from(st_mode);
-        let group_permissions = class::Permissions::group_permissions_from(st_mode);
-        let other_permissions = class::Permissions::other_permissions_from(st_mode);
-
-        Ok(Self::new(
-            st_mode,
-            file_type,
-            user_permissions,
-            group_permissions,
-            other_permissions,
-        ))
-    }
+/// Octal notation of the permission bits of `mode`, zero-padded to four digits.
+pub fn octal(mode: u32) -> String {
+    format!("{:04o}", mode & 0o7777)
 }

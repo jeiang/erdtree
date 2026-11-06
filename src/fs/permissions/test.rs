@@ -1,96 +1,68 @@
-use super::{SymbolicNotation, class::PermissionsTriad, file_type::FileType};
-use std::{error::Error, fs::File, os::unix::fs::PermissionsExt};
+use super::{octal, symbolic};
 
-#[test]
-fn test_symbolic_notation() -> Result<(), Box<dyn Error>> {
-    let temp = std::env::temp_dir().join("yogsothoth.hpl");
-
-    // File is created with read + write for user and read-only for all others.
-    let file = File::create(temp)?;
-    let metadata = file.metadata()?;
-
-    let permissions = metadata.permissions();
-
-    let file_mode = permissions.try_mode_symbolic_notation()?;
-
-    let file_type = file_mode.file_type();
-    let user = file_mode.user_permissions();
-    let group = file_mode.group_permissions();
-    let other = file_mode.other_permissions();
-
-    assert_eq!(file_type, &FileType::File);
-    assert_eq!(&user.triad, &PermissionsTriad::ReadWrite);
-    assert_eq!(&group.triad, &PermissionsTriad::Read);
-    assert_eq!(&other.triad, &PermissionsTriad::Read);
-
-    let rwx = format!("{file_mode}");
-    assert_eq!(rwx, ".rw-r--r--");
-
-    let octal = format!("{file_mode:o}");
-    assert_eq!(octal, "644");
-
-    Ok(())
+fn sym(mode: u32) -> String {
+    String::from_utf8(symbolic(mode).to_vec()).unwrap()
 }
 
 #[test]
-fn test_symbolic_notation_special_attr() -> Result<(), Box<dyn Error>> {
-    let temp = std::env::temp_dir().join("sub-niggurath.hpl");
+fn file_types() {
+    let cases = [
+        (0o040_755, "drwxr-xr-x"),
+        (0o100_644, ".rw-r--r--"),
+        (0o120_777, "lrwxrwxrwx"),
+        (0o010_600, "prw-------"),
+        (0o140_755, "srwxr-xr-x"),
+        (0o020_620, "crw--w----"),
+        (0o060_660, "brw-rw----"),
+    ];
 
-    // File is created with read + write for user and read-only for all others.
-    let file = File::create(temp)?;
+    for (mode, expected) in cases {
+        assert_eq!(sym(mode), expected, "{mode:o}");
+    }
+}
 
-    let metadata = file.metadata()?;
-    let mut permissions = metadata.permissions();
+#[test]
+fn unknown_file_type() {
+    for kind in [0, 0o030_000, 0o050_000, 0o070_000, 0o160_000, 0o170_000] {
+        assert_eq!(sym(kind | 0o644), "?rw-r--r--", "{kind:o}");
+    }
+}
 
-    // Set the sticky bit
-    permissions.set_mode(0o101_644);
+#[test]
+fn triads() {
+    let cases = [
+        (0o100_000, ".---------"),
+        (0o100_421, ".r---w---x"),
+        (0o100_356, ".-wxr-xrw-"),
+        (0o100_777, ".rwxrwxrwx"),
+    ];
 
-    let file_mode = permissions.try_mode_symbolic_notation()?;
-    let rwx = format!("{file_mode}");
-    assert_eq!(rwx, ".rw-r--r-T");
+    for (mode, expected) in cases {
+        assert_eq!(sym(mode), expected, "{mode:o}");
+    }
+}
 
-    let octal = format!("{file_mode:o}");
-    assert_eq!(octal, "1644");
+#[test]
+fn special_bits() {
+    let cases = [
+        (0o101_644, ".rw-r--r-T", "1644"),
+        (0o102_644, ".rw-r-Sr--", "2644"),
+        (0o104_644, ".rwSr--r--", "4644"),
+        (0o107_644, ".rwSr-Sr-T", "7644"),
+        (0o107_777, ".rwsrwsrwt", "7777"),
+        (0o041_777, "drwxrwxrwt", "1777"),
+        (0o106_711, ".rws--s--x", "6711"),
+    ];
 
-    // Set the getuid bit
-    permissions.set_mode(0o102_644);
+    for (mode, expected_sym, expected_oct) in cases {
+        assert_eq!(sym(mode), expected_sym, "{mode:o}");
+        assert_eq!(octal(mode), expected_oct, "{mode:o}");
+    }
+}
 
-    let file_mode = permissions.try_mode_symbolic_notation()?;
-    let rwx = format!("{file_mode}");
-    assert_eq!(rwx, ".rw-r-Sr--");
-
-    let octal = format!("{file_mode:o}");
-    assert_eq!(octal, "2644");
-
-    // Set the setuid bit
-    permissions.set_mode(0o104_644);
-
-    let file_mode = permissions.try_mode_symbolic_notation()?;
-    let rwx = format!("{file_mode}");
-    assert_eq!(rwx, ".rwSr--r--");
-
-    let octal = format!("{file_mode:o}");
-    assert_eq!(octal, "4644");
-
-    // Set the all the attr bits
-    permissions.set_mode(0o107_644);
-
-    let file_mode = permissions.try_mode_symbolic_notation()?;
-    let rwx = format!("{file_mode}");
-    assert_eq!(rwx, ".rwSr-Sr-T");
-
-    let octal = format!("{file_mode:o}");
-    assert_eq!(octal, "7644");
-
-    // Set all the attr bits and give all classes execute permissions
-    permissions.set_mode(0o107_777);
-
-    let file_mode = permissions.try_mode_symbolic_notation()?;
-    let rwx = format!("{file_mode}");
-    assert_eq!(rwx, ".rwsrwsrwt");
-
-    let octal = format!("{file_mode:o}");
-    assert_eq!(octal, "7777");
-
-    Ok(())
+#[test]
+fn octal_pads_and_drops_file_type() {
+    assert_eq!(octal(0o100_644), "0644");
+    assert_eq!(octal(0o040_000), "0000");
+    assert_eq!(octal(0o120_755), "0755");
 }

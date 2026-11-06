@@ -164,11 +164,10 @@ impl Long {
             return;
         }
 
-        let perms = node.mode().expect("Expected permissions to be initialized");
         let cell = if self.octal {
-            theme::style_oct_permissions(&perms)
+            theme::style_oct_permissions(mode)
         } else {
-            theme::style_sym_permissions(&perms, xattrs)
+            theme::style_sym_permissions(mode, xattrs)
         };
 
         out.extend_from_slice(cell.as_bytes());

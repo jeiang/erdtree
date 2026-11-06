@@ -4,9 +4,6 @@ use crate::{
 };
 use nu_ansi_term::Style;
 
-#[cfg(unix)]
-use crate::fs::permissions::FileMode;
-
 /// Tracks whether a node lies below a followed symlink, whose branches use the link theme.
 pub struct LinkTracker {
     depth: Option<usize>,
@@ -155,16 +152,13 @@ impl StyleCache {
 
 /// Styles the symbolic notation of file permissions.
 #[cfg(unix)]
-pub fn style_sym_permissions(perms: &FileMode, has_xattrs: bool) -> String {
-    use crate::fs::permissions::FileModeXAttrs;
-
-    let symb = if has_xattrs {
-        let perm_xattr = FileModeXAttrs(perms);
-        format!("{perm_xattr}")
-    } else {
-        // extra whitespace to align with permissions with extended attrs
-        format!("{perms} ")
-    };
+pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
+    // A trailing space aligns entries without extended attributes with those with them.
+    let symb: String = crate::fs::permissions::symbolic(mode)
+        .iter()
+        .map(|&b| char::from(b))
+        .chain([if has_xattrs { '@' } else { ' ' }])
+        .collect();
 
     if let Ok(theme) = styles::get_permissions_theme() {
         symb.chars()
@@ -182,8 +176,8 @@ pub fn style_sym_permissions(perms: &FileMode, has_xattrs: bool) -> String {
 
 /// Styles the octal notation of file permissions.
 #[cfg(unix)]
-pub fn style_oct_permissions(perms: &FileMode) -> String {
-    let oct = format!("{perms:04o}");
+pub fn style_oct_permissions(mode: u32) -> String {
+    let oct = crate::fs::permissions::octal(mode);
 
     if let Ok(style) = styles::get_octal_permissions_style() {
         style.paint(oct).to_string()
