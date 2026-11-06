@@ -3,57 +3,29 @@
 
 use crate::{styles, tree::Tree};
 
-/// The pieces of one theme a prefix is made of.
-struct Set {
-    /// Continues the line of an ancestor that has later siblings.
-    vt: Box<[u8]>,
-
-    /// Own glyph of a node that has later siblings.
-    vtrt: Box<[u8]>,
-
-    /// Own glyph of the last sibling with the root at the bottom.
-    drt: Box<[u8]>,
-
-    /// Own glyph of the last sibling with the root on top.
-    uprt: Box<[u8]>,
-}
-
-impl Set {
-    fn new(glyphs: &styles::Glyphs) -> Self {
-        let bytes = |s: &str| s.as_bytes().into();
-
-        Self {
-            vt: bytes(&glyphs.vt),
-            vtrt: bytes(&glyphs.vtrt),
-            drt: bytes(&glyphs.drt),
-            uprt: bytes(&glyphs.uprt),
-        }
-    }
-}
-
 /// The themes of the prefixes: the tree theme, and with `--follow` the link theme of symlinks
 /// and of everything below a symlink.
-pub struct Glyphs {
-    tree: Set,
-    link: Option<Set>,
+pub struct Themes {
+    tree: &'static styles::Glyphs,
+    link: Option<&'static styles::Glyphs>,
 }
 
-impl Glyphs {
+impl Themes {
     /// The glyphs of the current theme; `follow` adds the link theme.
     pub fn new(follow: bool) -> Self {
         let theme = styles::theme();
 
         Self {
-            tree: Set::new(&theme.tree),
-            link: follow.then(|| Set::new(&theme.link)),
+            tree: &theme.tree,
+            link: follow.then_some(&theme.link),
         }
     }
 
     /// The set of the link theme if `link`, else of the tree theme.
-    const fn get(&self, link: bool) -> &Set {
-        match &self.link {
+    const fn get(&self, link: bool) -> &styles::Glyphs {
+        match self.link {
             Some(set) if link => set,
-            _ => &self.tree,
+            _ => self.tree,
         }
     }
 
@@ -92,7 +64,7 @@ impl Cursor {
         tree: &Tree,
         id: u32,
         depth: usize,
-        glyphs: &Glyphs,
+        glyphs: &Themes,
         inverted: bool,
         out: &mut Vec<u8>,
     ) {

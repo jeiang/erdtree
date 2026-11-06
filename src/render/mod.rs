@@ -22,8 +22,8 @@ pub mod prefix;
 /// Concerned with how to write a single row of the output.
 pub mod row;
 
-/// Escape sequences of styles, and the styles of the long columns.
-pub mod theme;
+/// Precomputed style escapes and painting helpers.
+mod paint;
 
 /// Concerned with how to construct the long output.
 #[cfg(unix)]
@@ -36,7 +36,7 @@ enum Rows {
     /// row's ancestors.
     Tree {
         inverted: bool,
-        glyphs: prefix::Glyphs,
+        glyphs: prefix::Themes,
     },
 
     /// Flat rows of the nodes `ids`, each the path of its parent directory in `paths` and its
@@ -56,7 +56,7 @@ impl Rows {
         };
         let tree_rows = |inverted| Self::Tree {
             inverted,
-            glyphs: prefix::Glyphs::new(ctx.follow),
+            glyphs: prefix::Themes::new(ctx.follow),
         };
 
         match ctx.layout {

@@ -1,4 +1,4 @@
-use super::theme::{self, Esc};
+use super::paint::{Esc, paint, placeholder};
 use crate::{
     bytes::{push_spaces, push_str_padded, push_u64_padded},
     context::{Context, time},
@@ -48,15 +48,38 @@ pub struct State {
     time: Vec<u8>,
 }
 
-/// Writes `body` between the sequences of `esc`, if there is one.
-#[inline]
-fn painted(out: &mut Vec<u8>, esc: Option<&Esc>, body: impl FnOnce(&mut Vec<u8>)) {
-    if let Some(esc) = esc {
-        out.extend_from_slice(&esc.pre);
-        body(out);
-        out.extend_from_slice(&esc.suf);
+/// Styles the symbolic notation of file permissions.
+#[cfg(unix)]
+pub fn style_sym_permissions(mode: u32, has_xattrs: bool) -> String {
+    // A trailing space aligns entries without extended attributes with those with them.
+    let symb: String = crate::fs::permissions::symbolic(mode)
+        .iter()
+        .map(|&b| char::from(b))
+        .chain([if has_xattrs { '@' } else { ' ' }])
+        .collect();
+
+    if styles::colors().is_some() {
+        symb.chars()
+            .map(|ch| {
+                styles::Long::permission(ch)
+                    .paint(ch.to_string())
+                    .to_string()
+            })
+            .collect()
     } else {
-        body(out);
+        symb
+    }
+}
+
+/// Styles the octal notation of file permissions.
+#[cfg(unix)]
+pub fn style_oct_permissions(mode: u32) -> String {
+    let oct = crate::fs::permissions::octal(mode);
+
+    if let Some(colors) = styles::colors() {
+        colors.long.octal.paint(oct).to_string()
+    } else {
+        oct
     }
 }
 
@@ -105,13 +128,13 @@ impl Long {
 
         let names = node.owner_and_group();
 
-        painted(out, self.owner_esc.as_ref(), |out| {
+        paint(out, self.owner_esc.as_ref(), |out| {
             push_str_padded(out, names.map_or(PLACEHOLDER, |n| n.0), self.owner_width);
         });
         out.push(b' ');
 
         if self.group {
-            painted(out, self.group_esc.as_ref(), |out| {
+            paint(out, self.group_esc.as_ref(), |out| {
                 push_str_padded(out, names.map_or(PLACEHOLDER, |n| n.1), self.group_width);
             });
             out.push(b' ');
@@ -122,12 +145,11 @@ impl Long {
 
     /// An optional number right-aligned to `width`, or the placeholder.
     fn write_number(out: &mut Vec<u8>, value: Option<u64>, width: usize, esc: Option<&Esc>) {
-        painted(out, esc, |out| {
+        paint(out, esc, |out| {
             if let Some(n) = value {
                 push_u64_padded(out, n, width);
             } else {
-                push_spaces(out, width.saturating_sub(1));
-                out.extend_from_slice(PLACEHOLDER.as_bytes());
+                placeholder(out, width);
             }
         });
     }
@@ -158,9 +180,9 @@ impl Long {
         }
 
         let cell = if self.octal {
-            theme::style_oct_permissions(mode)
+            style_oct_permissions(mode)
         } else {
-            theme::style_sym_permissions(mode, xattrs)
+            style_sym_permissions(mode, xattrs)
         };
 
         out.extend_from_slice(cell.as_bytes());
@@ -177,7 +199,7 @@ impl Long {
             time::Stamp::Mod => node.modified(),
         };
 
-        painted(out, self.time_esc.as_ref(), |out| {
+        paint(out, self.time_esc.as_ref(), |out| {
             push_time(out, state, time, self.format);
         });
     }
@@ -186,8 +208,7 @@ impl Long {
 /// Appends `time` in `format` right-aligned to the width of the format, or the placeholder.
 fn push_time(out: &mut Vec<u8>, state: &mut State, time: Option<SystemTime>, format: time::Format) {
     let Some(time) = time else {
-        push_spaces(out, format.width() - 1);
-        out.extend_from_slice(PLACEHOLDER.as_bytes());
+        placeholder(out, format.width());
         return;
     };
 

@@ -3,12 +3,12 @@
 
 use super::{
     ansi,
+    paint::{Esc, Painter, paint, placeholder},
     paths::DirPaths,
     prefix,
-    theme::{Esc, StyleCache},
 };
 use crate::{
-    bytes::{push_fixed, push_lossy, push_spaces, push_str_padded, push_u64_padded},
+    bytes::{push_fixed, push_lossy, push_str_padded, push_u64_padded},
     context::Context,
     disk_usage::{
         file_size::{DiskUsage, byte},
@@ -71,11 +71,9 @@ impl Size {
     /// The size of `node`, or the placeholder if it has none.
     fn write(&self, node: Node<'_>, out: &mut Vec<u8>) {
         let Some(value) = node.size_value() else {
-            let esc = self.placeholder_esc.as_ref();
-            out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
-            push_spaces(out, self.column_width() - 1);
-            out.extend_from_slice(styles::PLACEHOLDER.as_bytes());
-            out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
+            paint(out, self.placeholder_esc.as_ref(), |out| {
+                placeholder(out, self.column_width());
+            });
             return;
         };
 
@@ -86,13 +84,11 @@ impl Size {
             let mut buf = [0; 32];
             let (number, unit, index) =
                 byte::Metric::new(self.unit, self.human).parts(value, &mut buf);
-            let esc = paint(index);
-
-            out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
-            push_str_padded(out, number, self.width);
-            out.push(b' ');
-            push_str_padded(out, unit, self.unit_width);
-            out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
+            super::paint::paint(out, paint(index), |out| {
+                push_str_padded(out, number, self.width);
+                out.push(b' ');
+                push_str_padded(out, unit, self.unit_width);
+            });
             return;
         }
 
@@ -106,10 +102,9 @@ impl Size {
         #[cfg(not(unix))]
         let index = 0;
 
-        let esc = paint(index);
-        out.extend_from_slice(esc.map_or(&[][..], |e| &e.pre));
-        push_u64_padded(out, value, self.width);
-        out.extend_from_slice(esc.map_or(&[][..], |e| &e.suf));
+        super::paint::paint(out, paint(index), |out| {
+            push_u64_padded(out, value, self.width);
+        });
     }
 }
 
@@ -117,7 +112,6 @@ impl Size {
 /// from one row to the next other than as caches.
 #[derive(Default)]
 pub struct Scratch {
-    styles: StyleCache,
     cursor: prefix::Cursor,
 
     #[cfg(unix)]
@@ -127,7 +121,7 @@ pub struct Scratch {
 /// Everything shared by all rows of a run.
 pub struct RowFmt<'a> {
     tree: &'a Tree,
-    color: bool,
+    painters: Vec<Painter>,
     icons: bool,
     classify: bool,
 
@@ -135,7 +129,7 @@ pub struct RowFmt<'a> {
     truncate_to: Option<usize>,
     /// The size column; `None` if there is none.
     size: Option<Size>,
-    red: Esc,
+    link_arrow: Option<Esc>,
 
     #[cfg(unix)]
     long: Option<long::Long>,
@@ -144,11 +138,9 @@ pub struct RowFmt<'a> {
 impl<'a> RowFmt<'a> {
     /// The row format `ctx` selects for `tree`.
     pub fn new(tree: &'a Tree, ctx: &Context) -> Self {
-        let color = styles::colors().is_some();
-
         Self {
             tree,
-            color,
+            painters: tree.styles().iter().copied().map(Painter::new).collect(),
             icons: ctx.icons,
             classify: ctx.classify,
             // The width of the terminal on stdout; `None` if stdout is not one.
@@ -158,7 +150,7 @@ impl<'a> RowFmt<'a> {
                 .flatten()
                 .map(|(width, _)| usize::from(width.0)),
             size: Size::new(ctx, tree.widths()),
-            red: Esc::new(nu_ansi_term::Color::Red.normal()),
+            link_arrow: styles::colors().map(|colors| Esc::new(colors.link_arrow)),
             #[cfg(unix)]
             long: ctx.long.then(|| long::Long::new(ctx, tree.widths())),
         }
@@ -169,7 +161,7 @@ impl<'a> RowFmt<'a> {
         &self,
         scratch: &mut Scratch,
         id: u32,
-        glyphs: &prefix::Glyphs,
+        glyphs: &prefix::Themes,
         inverted: bool,
         out: &mut Vec<u8>,
     ) {
@@ -191,11 +183,11 @@ impl<'a> RowFmt<'a> {
             .write(self.tree, id, node.depth(), glyphs, inverted, out);
 
         if self.icons {
-            self.write_icon(scratch, node, out);
+            self.write_icon(node, out);
             out.push(b' ');
         }
 
-        self.write_name(scratch, node, out);
+        self.write_name(node, out);
         self.end_row(out, start);
     }
 
@@ -213,7 +205,7 @@ impl<'a> RowFmt<'a> {
                 size.write(node, out);
             }
             out.push(b' ');
-            return self.finish_flat(scratch, paths, id, node, out, start);
+            return self.finish_flat(paths, id, node, out, start);
         }
 
         if let Some(size) = &self.size {
@@ -221,13 +213,12 @@ impl<'a> RowFmt<'a> {
             out.extend_from_slice(b"   ");
         }
 
-        self.finish_flat(scratch, paths, id, node, out, start);
+        self.finish_flat(paths, id, node, out, start);
     }
 
     /// The path column of a flat row, and the end of the row.
     fn finish_flat(
         &self,
-        scratch: &mut Scratch,
         paths: &DirPaths,
         id: u32,
         node: Node<'_>,
@@ -235,20 +226,13 @@ impl<'a> RowFmt<'a> {
         start: usize,
     ) {
         if self.icons {
-            self.write_icon(scratch, node, out);
+            self.write_icon(node, out);
             out.push(b' ');
         }
 
-        let style = node.style();
-        if let Some(style) = style {
-            out.extend_from_slice(&scratch.styles.get(style).plain.pre);
-        }
-
-        self.write_relative_path(paths, id, out);
-
-        if let Some(style) = style {
-            out.extend_from_slice(&scratch.styles.get(style).plain.suf);
-        }
+        paint(out, self.painter(node).map(|p| &p.plain), |out| {
+            self.write_relative_path(paths, id, out);
+        });
 
         if self.classify {
             out.extend_from_slice(node.indicator().unwrap_or_default().as_bytes());
@@ -283,36 +267,30 @@ impl<'a> RowFmt<'a> {
     }
 
     /// The icon of `node` in its colors.
-    fn write_icon(&self, scratch: &mut Scratch, node: Node<'_>, out: &mut Vec<u8>) {
-        let (glyph, paint) = icons::fs::lookup(
+    fn write_icon(&self, node: Node<'_>, out: &mut Vec<u8>) {
+        let (glyph, icon_paint) = icons::fs::lookup(
             node.file_type(),
             node.symlink_target_path(),
             node.file_name(),
         );
 
-        if !self.color {
+        let Some(painter) = self.painter(node) else {
             out.extend_from_slice(glyph.as_bytes());
             return;
-        }
+        };
 
-        match paint {
+        match icon_paint {
             Paint::Fixed(code) => push_fixed(out, code, glyph),
-            Paint::FileStyle => match node.style().filter(|style| !style.is_plain()) {
-                Some(style) => {
-                    let painter = scratch.styles.get(style);
-                    out.extend_from_slice(&painter.bold.pre);
-                    out.extend_from_slice(glyph.as_bytes());
-                    out.extend_from_slice(&painter.bold.suf);
-                },
-                None => out.extend_from_slice(glyph.as_bytes()),
-            },
+            Paint::FileStyle => paint(out, Some(&painter.bold), |out| {
+                out.extend_from_slice(glyph.as_bytes());
+            }),
         }
     }
 
     /// The name of `node` in its style, followed by the indicator and, for a symlink, its target.
-    fn write_name(&self, scratch: &mut Scratch, node: Node<'_>, out: &mut Vec<u8>) {
+    fn write_name(&self, node: Node<'_>, out: &mut Vec<u8>) {
         let name = node.file_name();
-        let style = node.style();
+        let painter = self.painter(node);
         let ind = if self.classify {
             node.indicator().unwrap_or_default().as_bytes()
         } else {
@@ -320,35 +298,29 @@ impl<'a> RowFmt<'a> {
         };
 
         let Some(target) = node.symlink_target_path().map(std::path::Path::as_os_str) else {
-            if let Some(style) = style.filter(|style| !style.is_plain()) {
-                let bold = &scratch.styles.get(style).bold;
-                out.extend_from_slice(&bold.pre);
-                push_lossy(out, name);
-                out.extend_from_slice(&bold.suf);
-            } else {
-                push_lossy(out, name);
-            }
+            paint(out, painter.map(|p| &p.bold), |out| push_lossy(out, name));
 
             out.extend_from_slice(ind);
             return;
         };
 
-        if let Some(style) = style {
-            let plain = &scratch.styles.get(style).plain;
-            out.extend_from_slice(&plain.pre);
-            push_lossy(out, name);
-            out.extend_from_slice(&plain.suf);
+        if let Some(painter) = painter {
+            paint(out, Some(&painter.plain), |out| push_lossy(out, name));
             out.extend_from_slice(ind);
-            out.extend_from_slice(b" ");
-            out.extend_from_slice(&self.red.pre);
-            out.extend_from_slice("\u{2192} ".as_bytes());
-            push_lossy(out, target);
-            out.extend_from_slice(&self.red.suf);
+            out.push(b' ');
+            paint(out, self.link_arrow.as_ref(), |out| {
+                out.extend_from_slice("\u{2192} ".as_bytes());
+                push_lossy(out, target);
+            });
         } else {
             push_lossy(out, name);
             out.extend_from_slice(ind);
             out.extend_from_slice(" \u{2192} ".as_bytes());
             push_lossy(out, target);
         }
+    }
+
+    fn painter(&self, node: Node<'_>) -> Option<&Painter> {
+        node.style().map(|index| &self.painters[index.index()])
     }
 }

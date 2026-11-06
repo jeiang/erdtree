@@ -404,6 +404,11 @@ impl Tree {
         &self.widths
     }
 
+    /// The merged styles addressed by [`Node::style`].
+    pub fn styles(&self) -> &[nu_ansi_term::Style] {
+        &self.cols.style_table
+    }
+
     /// Shown nodes in display pre-order, root first, down to the display level (`--level`).
     pub fn order(&self) -> &[u32] {
         &self.order
