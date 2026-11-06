@@ -8,10 +8,7 @@ use crate::{
         dir,
         sort::{self, By, Direction},
     },
-    tree::{
-        Tree,
-        topo::{Key, ix},
-    },
+    tree::{Tree, id::ix, psort::Key},
 };
 use std::{
     cmp::Ordering,
@@ -342,7 +339,7 @@ mod test {
     use crate::{
         context::{dir, sort},
         fs::stat::Kind,
-        tree::{Tree, columns::Columns, count::FileCount, node::Node, topo::ix, widths::Widths},
+        tree::{Tree, columns::Columns, count::FileCount, id::ix, node::Node, widths::Widths},
     };
     use clap::ValueEnum;
     use std::{

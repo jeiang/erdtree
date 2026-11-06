@@ -2,7 +2,7 @@
 //! path and its own name.
 
 use crate::bytes::{prefetch, push_lossy};
-use crate::tree::{Tree, topo::ix};
+use crate::tree::{Tree, id::ix};
 use std::path::MAIN_SEPARATOR;
 
 /// For every shown directory, its path below the root followed by a separator, converted
@@ -43,18 +43,7 @@ impl DirPaths {
         let share = order
             .len()
             .div_ceil(threads.min(order.len() / MIN_SHARE + 1));
-        let parts: Vec<(usize, Vec<u32>)> = std::thread::scope(|scope| {
-            // Every thread starts before the first is joined.
-            #[allow(clippy::needless_collect)]
-            let workers: Vec<_> = order
-                .chunks(share.max(1))
-                .map(|ids| scope.spawn(move || scan(ids)))
-                .collect();
-            workers
-                .into_iter()
-                .map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-                .collect()
-        });
+        let parts = crate::par::run_parts(order.chunks(share.max(1)), scan);
 
         let nodes = parts.iter().map(|part| part.0).max().unwrap_or(0);
         // Zeroed memory costs nothing until touched, and most nodes are not directories.

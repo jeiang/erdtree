@@ -5,16 +5,18 @@ use crate::{
 use columns::{Collector, Columns, Probe};
 use count::FileCount;
 use error::Error;
+use id::{NONE, id, ix};
 use node::{
     Node,
     cmp::{Sorter, Ties},
 };
 use std::{cmp::Ordering, convert::TryFrom, result::Result as StdResult, sync::atomic::AtomicU64};
-use topo::{Children, NONE, ix};
+use topo::Children;
 use widths::{Scope, Stats, Widths};
 
 /// Struct-of-arrays storage for walked entries.
 pub mod columns;
+pub mod id;
 
 /// Pure algorithms over the tree topology, with Kani proofs.
 pub mod topo;
@@ -128,7 +130,8 @@ impl Tree {
             .parent
             .iter()
             .position(|&p| p == NONE)
-            .and_then(|r| u32::try_from(r).ok())
+            .map(id)
+            .filter(|&r| r != NONE)
             .ok_or(Error::MissingRoot)?;
 
         debug_assert!(
@@ -299,26 +302,15 @@ impl Tree {
         let count = |range: std::ops::Range<usize>| {
             range
                 .filter(|&i| shown[i] && i != ix(self.root))
-                .fold(FileCount::default(), |acc, i| {
-                    acc + self.node(u32::try_from(i).unwrap_or(NONE))
-                })
+                .fold(FileCount::default(), |acc, i| acc + self.node(id(i)))
         };
 
         if n < PAR_COUNT_MIN || threads < 2 {
             count(0..n)
         } else {
-            let width = n.div_ceil(threads);
-            std::thread::scope(|s| {
-                let count = &count;
-                let mut jobs = vec![];
-                for t in 1..threads {
-                    jobs.push(s.spawn(move || count((t * width).min(n)..((t + 1) * width).min(n))));
-                }
-
-                jobs.into_iter().fold(count(0..width.min(n)), |acc, job| {
-                    acc + job.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
-                })
-            })
+            crate::par::run_parts(0..threads, |k| count(crate::par::split(n, threads, k)))
+                .into_iter()
+                .fold(FileCount::default(), |acc, part| acc + part)
         }
     }
 
@@ -438,7 +430,7 @@ impl Tree {
         self.last[ix(i)]
     }
 
-    /// Parent of `i`; [`topo::NONE`] for the root.
+    /// Parent of `i`; [`NONE`] for the root.
     #[inline]
     pub fn parent(&self, i: u32) -> u32 {
         self.cols.parent[ix(i)]
@@ -462,11 +454,9 @@ impl Tree {
 
         // Sort positions in `rest`, breaking ties by position to keep the stable order.
         let sorter = Sorter::new(self, ctx.sort, ctx.dir_order, Ties::Position(rest));
-        let mut positions: Vec<u32> = (0..rest.len())
-            .map(|k| u32::try_from(k).unwrap_or(NONE))
-            .collect();
+        let mut positions: Vec<u32> = (0..rest.len()).map(id).collect();
 
-        topo::sort_keyed(&mut positions, ctx.threads, &|k| sorter.key(k), &|a, b| {
+        psort::sort_keyed(&mut positions, ctx.threads, &|k| sorter.key(k), &|a, b| {
             sorter.cmp(a, b)
         });
 

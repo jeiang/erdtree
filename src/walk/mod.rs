@@ -346,7 +346,7 @@ fn run_worker<'scope, 'env, S, F>(
     let guard = QuitOnPanic(&run.shared);
     let mut worker = Worker {
         walker: run.walker,
-        sink_index: u32::try_from(sink_index).unwrap_or(u32::MAX),
+        sink_index: crate::tree::id::id(sink_index),
         shared: &run.shared,
         run,
         scope,
@@ -405,12 +405,10 @@ impl Walker {
 
         // The pool has room for the sinks of extra workers too.
         let mut pool: Vec<Mutex<Option<S>>> = (0..=self.max_workers())
-            .map(|i| {
-                Mutex::new((i <= threads).then(|| make_sink(u32::try_from(i).unwrap_or(u32::MAX))))
-            })
+            .map(|i| Mutex::new((i <= threads).then(|| make_sink(crate::tree::id::id(i)))))
             .collect();
 
-        let root_sink_index = u32::try_from(threads).unwrap_or(u32::MAX);
+        let root_sink_index = crate::tree::id::id(threads);
         let root = unpoisoned(pool[threads].get_mut())
             .as_mut()
             .and_then(|sink| self.root_job(sink, root_sink_index));
@@ -624,7 +622,7 @@ where
         // Sink `threads` is the root's, so the extra workers follow it. Every sink of the range
         // exists before any worker starts, so a refused thread leaves no gap in the numbering.
         for index in have + 1..=want {
-            let sink = (run.make_sink)(u32::try_from(index).unwrap_or(u32::MAX));
+            let sink = (run.make_sink)(crate::tree::id::id(index));
             *unpoisoned(run.pool[index].lock()) = Some(sink);
         }
 

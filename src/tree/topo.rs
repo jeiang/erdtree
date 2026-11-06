@@ -3,26 +3,12 @@
 //! arrays, or recurses, so these functions are cheap on trees with millions of nodes and small
 //! enough to verify exhaustively for bounded sizes with Kani (see `proofs` below).
 
-use super::psort;
+use super::{
+    id::{NONE, id, ix},
+    psort::{self, Key, PAR_SORT_MIN, sort_keyed_par, sort_keyed_seq},
+};
+use crate::par::{run_parts, split};
 use std::cmp::Ordering;
-
-/// Parent of the root.
-pub const NONE: u32 = u32::MAX;
-
-/// `usize` from a node index.
-#[inline]
-pub const fn ix(i: u32) -> usize {
-    i as usize
-}
-
-/// Node index from a position; [`NONE`] when it does not fit.
-#[inline]
-fn id(i: usize) -> u32 {
-    u32::try_from(i).unwrap_or(NONE)
-}
-
-/// A packed sort key: compared as the pair `(hi, lo)`.
-pub type Key = (u64, u64);
 
 /// Lists with more entries than this are sorted by all threads together; shorter ones by one
 /// thread each.
@@ -31,132 +17,11 @@ const BIG_RUN: usize = 1 << 15;
 /// Child lists totalling at most this many entries are sorted on the calling thread.
 const INLINE_MAX: usize = 1 << 14;
 
-/// Sorts of at least this many items use several threads.
-const PAR_SORT_MIN: usize = 1 << 15;
-
-/// A sort key with the node it belongs to.
-#[derive(Clone, Copy, Default)]
-struct Item {
-    hi: u64,
-    lo: u64,
-    node: u32,
-}
-
-/// Orders items by key and, only when the keys are equal, by `cmp` on the nodes.
-#[inline]
-fn item_cmp(a: &Item, b: &Item, cmp: &impl Fn(u32, u32) -> Ordering) -> Ordering {
-    a.hi.cmp(&b.hi)
-        .then_with(|| a.lo.cmp(&b.lo))
-        .then_with(|| cmp(a.node, b.node))
-}
-
-/// Sorts `ids` on the calling thread by `key`, then `cmp` for equal keys, using `buf` as
-/// scratch. `cmp` must be a total order on `ids` and `key` must never disagree with it: if
-/// `key(a) < key(b)` then `cmp(a, b)` is [`Ordering::Less`].
-fn sort_keyed_seq(
-    ids: &mut [u32],
-    buf: &mut Vec<Item>,
-    key: &impl Fn(u32) -> Key,
-    cmp: &impl Fn(u32, u32) -> Ordering,
-) {
-    buf.clear();
-    buf.extend(ids.iter().map(|&node| {
-        let (hi, lo) = key(node);
-        Item { hi, lo, node }
-    }));
-    buf.sort_unstable_by(|a, b| item_cmp(a, b, cmp));
-
-    for (slot, item) in ids.iter_mut().zip(buf.iter()) {
-        *slot = item.node;
-    }
-}
-
-/// Like [`sort_keyed_seq`] with up to `threads` threads when `ids` has at least `par_min`
-/// entries: keys are computed and chunks sorted in parallel, then merged.
-fn sort_keyed_par(
-    ids: &mut [u32],
-    threads: usize,
-    par_min: usize,
-    key: &(impl Fn(u32) -> Key + Sync),
-    cmp: &(impl Fn(u32, u32) -> Ordering + Sync),
-) {
-    if threads < 2 || ids.len() < par_min.max(2) {
-        sort_keyed_seq(ids, &mut Vec::new(), key, cmp);
-        return;
-    }
-
-    let len = ids.len();
-    let width = len.div_ceil(threads);
-    let mut items: Vec<Item> = Vec::with_capacity(len);
-    let item_cmp = &|a: &Item, b: &Item| item_cmp(a, b, cmp);
-
-    // Each thread keys and sorts its share of `ids`, written straight into the new memory.
-    std::thread::scope(|s| {
-        for (out, ids) in items
-            .spare_capacity_mut()
-            .chunks_mut(width)
-            .zip(ids.chunks(width))
-        {
-            s.spawn(move || {
-                for (slot, &node) in out.iter_mut().zip(ids) {
-                    let (hi, lo) = key(node);
-                    slot.write(Item { hi, lo, node });
-                }
-
-                // SAFETY: every slot of `out` was just written, and `MaybeUninit<Item>` has the
-                // layout of `Item`.
-                let out = unsafe { &mut *(std::ptr::from_mut(out) as *mut [Item]) };
-                out.sort_unstable_by(item_cmp);
-            });
-        }
-    });
-
-    // SAFETY: the threads wrote the first `len` slots.
-    unsafe { items.set_len(len) };
-
-    psort::merge_runs(&mut items, width, threads, item_cmp);
-
-    for (slot, item) in ids.iter_mut().zip(&items) {
-        *slot = item.node;
-    }
-}
-
-/// Sorts `ids` by `key`, then `cmp` (see [`Children::sort_each`] for the contract), with
-/// several threads when `ids` is long.
-pub fn sort_keyed(
-    ids: &mut [u32],
-    threads: usize,
-    key: &(impl Fn(u32) -> Key + Sync),
-    cmp: &(impl Fn(u32, u32) -> Ordering + Sync),
-) {
-    sort_keyed_par(ids, threads, PAR_SORT_MIN, key, cmp);
-}
-
 /// The range of the list that holds the children of `p`, given the end of every range.
 #[inline]
 const fn range_of(end: &[u32], p: u32) -> std::ops::Range<usize> {
     let start = if p == 0 { 0 } else { end[ix(p) - 1] };
     ix(start)..ix(end[ix(p)])
-}
-
-/// Runs `part(0)` to `part(parts - 1)`, the first on this thread and the others on new ones, and
-/// returns their results in order. A single part starts no thread.
-fn run_parts<R: Send>(parts: usize, part: impl Fn(usize) -> R + Sync) -> Vec<R> {
-    if parts < 2 {
-        return vec![part(0)];
-    }
-
-    std::thread::scope(|s| {
-        let part = &part;
-        let jobs: Vec<_> = (1..parts).map(|t| s.spawn(move || part(t))).collect();
-        let mut all = vec![part(0)];
-
-        for job in jobs {
-            all.push(job.join().unwrap_or_else(|e| std::panic::resume_unwind(e)));
-        }
-
-        all
-    })
 }
 
 /// The nodes `start..end` all have the parent `parent`.
@@ -296,9 +161,7 @@ impl Children {
     /// Sorts the child list of every parent `p` with `wanted(p)`; other lists keep their order.
     /// Lists are ordered by `key`, and by `cmp` among equal keys, with up to `threads` threads.
     ///
-    /// `cmp` must be a total order on every list and `key` must be monotone with it: if
-    /// `key(a) < key(b)` then `cmp(a, b)` is [`Ordering::Less`] (equal keys carry no
-    /// information). The result is then exactly the sorted list, as any sort by `cmp` gives.
+    /// The key/comparator contract is that of [`psort::sort_keyed`].
     /// Small inputs are sorted on the calling thread; lists longer than the others are sorted
     /// by all threads together.
     pub fn sort_each(
@@ -360,37 +223,23 @@ impl Children {
         let mut rest = self.list.as_mut_slice();
         let mut taken = 0;
 
-        std::thread::scope(|s| {
-            let mut mine = None;
-
-            for group in groups {
-                let (lo, hi) = match (group.first(), group.last()) {
-                    (Some(&f), Some(&l)) => (range(f).start, range(l).end),
-                    _ => continue,
-                };
-                let (_, tail) = rest.split_at_mut(lo - taken);
-                let (slice, tail) = tail.split_at_mut(hi - lo);
-                rest = tail;
-                taken = hi;
-
-                let job = move || {
-                    let mut buf = vec![];
-                    for &p in group {
-                        let r = range(p);
-                        sort_keyed_seq(&mut slice[r.start - lo..r.end - lo], &mut buf, key, cmp);
-                    }
-                };
-
-                // The first group runs on this thread, after the others are started.
-                if mine.is_none() {
-                    mine = Some(job);
-                } else {
-                    s.spawn(job);
-                }
-            }
-
-            if let Some(mut job) = mine {
-                job();
+        let mut jobs = vec![];
+        for group in groups {
+            let (lo, hi) = match (group.first(), group.last()) {
+                (Some(&f), Some(&l)) => (range(f).start, range(l).end),
+                _ => continue,
+            };
+            let (_, tail) = rest.split_at_mut(lo - taken);
+            let (slice, tail) = tail.split_at_mut(hi - lo);
+            rest = tail;
+            taken = hi;
+            jobs.push((group, lo, slice));
+        }
+        run_parts(jobs, |(group, lo, slice)| {
+            let mut buf = vec![];
+            for &p in group {
+                let r = range(p);
+                sort_keyed_seq(&mut slice[r.start - lo..r.end - lo], &mut buf, key, cmp);
             }
         });
 
@@ -477,13 +326,10 @@ fn last_alive_child_with(
         } else {
             threads
         };
-        let part = |t: usize| -> Vec<u32> {
-            (n * t / parts..n * (t + 1) / parts)
-                .filter_map(|p| last_of(id(p)))
-                .collect()
-        };
+        let part =
+            |t: usize| -> Vec<u32> { split(n, parts, t).filter_map(|p| last_of(id(p))).collect() };
 
-        let found = run_parts(parts, part);
+        let found = run_parts(0..parts, part);
 
         for &child in found.iter().flatten() {
             last[ix(child)] = true;
@@ -629,7 +475,8 @@ fn aggregate_with(
     let sizes: &[Option<u64>] = size;
     let part = |t: usize| {
         let mut sums = vec![];
-        children.for_each_list(total * t / parts, total * (t + 1) / parts, |p, kids| {
+        let range = split(total, parts, t);
+        children.for_each_list(range.start, range.end, |p, kids| {
             let mut sum = 0_u64;
             for &c in kids {
                 let c = ix(c);
@@ -645,7 +492,7 @@ fn aggregate_with(
         sums
     };
 
-    let sums: Vec<(u32, u64)> = run_parts(parts, part).into_iter().flatten().collect();
+    let sums: Vec<(u32, u64)> = run_parts(0..parts, part).into_iter().flatten().collect();
 
     // The directories with children, once each, in increasing order.
     let mut dirs: Vec<u32> = Vec::with_capacity(sums.len());
@@ -731,7 +578,7 @@ pub fn dirs_only(parent: &[u32], is_dir: &[bool], alive: &mut [bool]) {
 }
 
 /// `--min-size`: kills every alive non-root node smaller than `threshold` that has no alive
-/// descendant of at least `threshold`. `order` must be a pre-order of the alive nodes. Returns
+/// descendant of at least `threshold`. `order` must be a parent-first order of the alive nodes. Returns
 /// the killed nodes.
 pub fn hide_small(
     order: &[u32],
@@ -766,13 +613,6 @@ pub fn hide_small(
     hidden
 }
 
-/// Global index of record `index` of a sink, given each sink's offset (the total length of the
-/// sinks before it).
-#[inline]
-pub const fn global_index(offsets: &[u32], sink: u32, index: u32) -> u32 {
-    offsets[ix(sink)] + index
-}
-
 /// Specifications of the functions above, checked two ways: exhaustively for every tree of up
 /// to [`spec::MAX_TEST`] nodes by `cargo test`, and symbolically by Kani (`cargo kani`, see
 /// `proofs`) for every tree of up to 3 nodes and every size, threshold, order and inode
@@ -786,11 +626,6 @@ mod spec {
 
     /// Largest tree checked by the exhaustive tests.
     pub const MAX_TEST: usize = 6;
-
-    /// Node index from a position.
-    fn id(i: usize) -> u32 {
-        u32::try_from(i).unwrap_or(NONE)
-    }
 
     /// Whether `parent` is a tree rooted at `root`: only the root has no parent, every other
     /// parent is another valid node, and every node reaches the root.
@@ -878,16 +713,16 @@ mod spec {
     }
 
     /// Whether `order` lists every node exactly once, root first, each node after its parent.
-    /// `aggregate` and `prune` (called while every node is alive) require such an order; every
-    /// pre-order of the whole tree is one, which `preorder_is_a_valid_preorder` checks.
+    /// `prune` (called while every node is alive) requires such an order; every pre-order
+    /// of the whole tree is one, which `preorder_is_a_valid_preorder` checks.
     pub fn is_parent_first_order(parent: &[u32], root: u32, order: &[u32]) -> bool {
         is_parent_first_order_of(parent, root, &all_alive(parent.len()), order)
     }
 
     /// Whether `alive` is connected (the root is alive and so is the parent of every alive
     /// node) and `order` lists exactly the alive nodes, root first, each after its parent.
-    /// `hide_small` gets such an order: production calls it with the pre-order of the nodes
-    /// left alive by `--prune`, patterns and `--dirs-only`.
+    /// `hide_small` gets such an order, filtered from the parent-first order after pruning
+    /// and `--dirs-only`.
     pub fn is_parent_first_order_of(
         parent: &[u32],
         root: u32,
@@ -999,8 +834,8 @@ mod spec {
         assert!(subtrees_contiguous(&anc, &pos));
 
         // The listed nodes are connected, and the pre-order is a parent-first order of them:
-        // an order `hide_small` accepts. With every node listed it is also one `aggregate` and
-        // `prune` accept; their proofs assume this.
+        // an order `hide_small` accepts. With every node listed it is also one `prune`
+        // accepts; its proof assumes this. `aggregate` takes no order.
         let listed: Vec<bool> = (0..n).map(|i| pos[i] != usize::MAX).collect();
         assert!(is_parent_first_order_of(parent, root, &listed, &order));
         if listed.iter().all(|&l| l) {
@@ -1246,16 +1081,6 @@ mod spec {
             assert_eq!(alive[i], large_below);
             assert_eq!(reported[i], usize::from(!large_below));
         }
-    }
-
-    /// Sink offsets map every record to a distinct global index below the total.
-    pub fn global_indices_are_distinct(lens: [u32; 3], a: (u32, u32), b: (u32, u32)) {
-        let offsets = [0, lens[0], lens[0] + lens[1]];
-        let total: u32 = lens.iter().sum();
-        let g1 = global_index(&offsets, a.0, a.1);
-        let g2 = global_index(&offsets, b.0, b.1);
-        assert!(g1 < total);
-        assert_eq!(g1 == g2, a == b);
     }
 }
 
@@ -1580,17 +1405,6 @@ mod test {
             }
         }
     }
-
-    #[test]
-    fn exhaustive_global_indices() {
-        for lens in [[0, 2, 3], [3, 0, 1], [1, 1, 1], [4, 4, 4]] {
-            for a in (0..3).flat_map(|s| (0..lens[s as usize]).map(move |i| (s, i))) {
-                for b in (0..3).flat_map(|s| (0..lens[s as usize]).map(move |i| (s, i))) {
-                    spec::global_indices_are_distinct(lens, a, b);
-                }
-            }
-        }
-    }
 }
 
 #[cfg(kani)]
@@ -1810,16 +1624,5 @@ mod proofs {
             n2_k1 = 2, 1; n2_k2 = 2, 2;
             n3_k1 = 3, 1; n3_k2 = 3, 2; n3_k3 = 3, 3;
         }
-    }
-
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn global_indices() {
-        let lens: [u32; 3] = kani::any();
-        kani::assume(lens.iter().all(|&l| l <= 4));
-        let a: (u32, u32) = kani::any();
-        let b: (u32, u32) = kani::any();
-        kani::assume(a.0 < 3 && b.0 < 3 && a.1 < lens[a.0 as usize] && b.1 < lens[b.0 as usize]);
-        spec::global_indices_are_distinct(lens, a, b);
     }
 }

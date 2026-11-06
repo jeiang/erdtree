@@ -4,7 +4,10 @@
 //! only when those options are set, and rare data (symlink targets, multiply-linked inodes) is
 //! kept sparse.
 
-use super::topo::{NONE, Run};
+use super::{
+    id::{NONE, id, ix},
+    topo::Run,
+};
 #[cfg(unix)]
 use crate::context::time;
 use crate::{
@@ -226,7 +229,10 @@ impl Collector {
 impl Sink for Collector {
     fn push(&mut self, record: &Record<'_>) -> Option<u32> {
         let probe = self.probe;
-        let index = u32::try_from(self.cols.len()).ok().filter(|&i| i != NONE)?;
+        let index = id(self.cols.len());
+        if index == NONE {
+            return None;
+        }
         let name_end = self.cols.names.len() + record.name.len();
         let stat = record.stat;
         let path = record.path;
@@ -388,16 +394,14 @@ impl Columns {
         for (runs, &len) in runs.iter().zip(lens) {
             for (k, run) in runs.iter().enumerate() {
                 let end = runs.get(k + 1).map_or(len, |next| next.start as usize);
-                let global = run.parent.map_or(NONE, |p| {
-                    super::topo::global_index(offsets, p.sink, p.index)
-                });
-                let start = u32::try_from(parent.len()).unwrap_or(NONE);
+                let global = run.parent.map_or(NONE, |p| offsets[ix(p.sink)] + p.index);
+                let start = id(parent.len());
                 parent.extend(std::iter::repeat_n(global, end - run.start as usize));
 
                 if global != NONE {
                     spans.push(Run {
                         start,
-                        end: u32::try_from(parent.len()).unwrap_or(NONE),
+                        end: id(parent.len()),
                         parent: global,
                     });
                 }
@@ -429,7 +433,7 @@ impl Columns {
         let mut total = 0_u32;
         for &i in &order {
             offsets[i] = total;
-            total = total.saturating_add(u32::try_from(sinks[i].len()).unwrap_or(NONE));
+            total = total.saturating_add(id(sinks[i].len()));
         }
 
         // Plain copies need no thread for one sink or a small tree.
@@ -612,18 +616,7 @@ fn run(jobs: Vec<Box<dyn FnOnce() + Send + '_>>, parallel: bool) {
         return;
     }
 
-    std::thread::scope(|s| {
-        let mut jobs = jobs.into_iter();
-        let first = jobs.next();
-
-        for job in jobs {
-            s.spawn(job);
-        }
-
-        if let Some(job) = first {
-            job();
-        }
-    });
+    crate::par::run_parts(jobs, |job| job());
 }
 
 /// The size of an entry in the configured metric; `None` for entries without one (directories,

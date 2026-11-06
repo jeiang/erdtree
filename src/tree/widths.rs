@@ -197,23 +197,15 @@ impl Tree {
             return self.scan_range(ctx, scope, 0..len);
         }
 
-        let width = len.div_ceil(threads);
-        let ranges: Vec<Range<usize>> = (0..threads)
-            .map(|c| (c * width).min(len)..((c + 1) * width).min(len))
-            .collect();
-
-        std::thread::scope(|s| {
-            let jobs: Vec<_> = ranges[1..]
-                .iter()
-                .map(|r| s.spawn(|| self.scan_range(ctx, scope, r.clone())))
-                .collect();
-
-            let mut total = self.scan_range(ctx, scope, ranges[0].clone());
-            for job in jobs {
-                total.merge(&job.join().unwrap_or_else(|e| std::panic::resume_unwind(e)));
-            }
-            total
-        })
+        let parts = crate::par::run_parts(0..threads, |k| {
+            self.scan_range(ctx, scope, crate::par::split(len, threads, k))
+        });
+        let mut parts = parts.into_iter();
+        let mut total = parts.next().expect("parallel scan has parts");
+        for part in parts {
+            total.merge(&part);
+        }
+        total
     }
 
     /// [`Self::scan`] of the nodes at positions `range` of `scope`, on this thread.

@@ -51,6 +51,7 @@ mod render;
 /// Global used throughout the program to paint the output.
 mod styles;
 
+mod par;
 /// Lock helpers shared by the threads of the walk, render and progress indicator.
 mod sync;
 
