@@ -245,4 +245,27 @@ mod test {
         let config_zero = context(&[], &["--threads", "0"]);
         assert_eq!(config_zero.threads, Context::num_threads());
     }
+
+    /// A non-empty `NO_COLOR` turns `--color auto` plain even on a terminal, and yields to
+    /// `--color force`, from the command line or the config.
+    #[test]
+    fn no_color_env_yields_to_force() {
+        for (cli, config, tty, no_color_env, plain) in [
+            (&["--color", "auto"][..], &[][..], true, true, true),
+            (&["--color", "auto"], &[], true, false, false),
+            (&["--color", "auto"], &[], false, false, true),
+            (&["--color", "none"], &[], true, false, true),
+            (&["--color", "force"], &[], false, true, false),
+            (&[], &["--color", "force"], false, true, false),
+        ] {
+            let mut ctx = context(cli, config);
+            ctx.stdout_is_tty = tty;
+            ctx.no_color_env = no_color_env;
+            assert_eq!(
+                ctx.no_color(),
+                plain,
+                "{cli:?} {config:?} tty={tty} NO_COLOR={no_color_env}"
+            );
+        }
+    }
 }

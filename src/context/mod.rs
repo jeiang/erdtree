@@ -308,17 +308,14 @@ impl Context {
         Ok(())
     }
 
-    /// Whether output is plain: always when `NO_COLOR` is set to a non-empty value, even with
-    /// `--color force`; otherwise with `--color none`, or `--color auto` when stdout is not a tty.
+    /// Whether output is plain: with `--color none`; with `--color auto` when `NO_COLOR` is set
+    /// to a non-empty value or stdout is not a tty. `--color force` always colors: command-line
+    /// arguments and config override `NO_COLOR` (<https://no-color.org>).
     pub const fn no_color(&self) -> bool {
-        if self.no_color_env {
-            return true;
-        }
-
         match self.color {
-            Coloring::Auto if !self.stdout_is_tty => true,
             Coloring::None => true,
-            Coloring::Auto | Coloring::Force => false,
+            Coloring::Auto => self.no_color_env || !self.stdout_is_tty,
+            Coloring::Force => false,
         }
     }
 

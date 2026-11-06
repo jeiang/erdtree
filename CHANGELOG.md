@@ -19,6 +19,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Entries that tie in a size or time sort are ordered by name; before, their order depended on the order in which directories were read.
 - The progress indicator no longer shows "Preparing output..."; output is streamed as soon as the walk finishes.
 - `--threads 0` now means the default thread count (the available CPU cores, at most the performance cores on macOS) and applies to output too; before, it meant every available core and output was formatted on one thread.
+- `--color force` now colors even when `NO_COLOR` is set, as <https://no-color.org> asks of command-line arguments and configuration; before, a non-empty `NO_COLOR` turned color off in every mode. `NO_COLOR` still turns off the default `--color auto`.
 
 ### Removed
 - The legacy `.erdtreerc` config file (deprecated since 3.x) and `$ERDTREE_CONFIG_PATH` are no longer read; an existing `.erdtreerc` is silently ignored. Move its options to `.erdtree.toml`.
