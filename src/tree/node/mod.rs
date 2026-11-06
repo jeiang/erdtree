@@ -1,4 +1,4 @@
-use super::{Tree, columns::StyleIndex, topo::ix};
+use super::{Tree, columns::StyleIndex, id::ix};
 use crate::fs::stat::Kind;
 use std::{ffi::OsStr, path::Path, time::SystemTime};
 

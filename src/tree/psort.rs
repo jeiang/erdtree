@@ -3,6 +3,106 @@
 
 use std::{cmp::Ordering, mem::MaybeUninit};
 
+/// A packed sort key: compared as the pair `(hi, lo)`.
+pub type Key = (u64, u64);
+
+/// Sorts of at least this many items use several threads.
+pub(super) const PAR_SORT_MIN: usize = 1 << 15;
+
+/// A sort key with the node it belongs to.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Item {
+    hi: u64,
+    lo: u64,
+    node: u32,
+}
+
+/// Orders items by key and, only when the keys are equal, by `cmp` on the nodes.
+#[inline]
+fn item_cmp(a: &Item, b: &Item, cmp: &impl Fn(u32, u32) -> Ordering) -> Ordering {
+    a.hi.cmp(&b.hi)
+        .then_with(|| a.lo.cmp(&b.lo))
+        .then_with(|| cmp(a.node, b.node))
+}
+
+/// Calling-thread version of [`sort_keyed`], reusing `buf`.
+pub(super) fn sort_keyed_seq(
+    ids: &mut [u32],
+    buf: &mut Vec<Item>,
+    key: &impl Fn(u32) -> Key,
+    cmp: &impl Fn(u32, u32) -> Ordering,
+) {
+    buf.clear();
+    buf.extend(ids.iter().map(|&node| {
+        let (hi, lo) = key(node);
+        Item { hi, lo, node }
+    }));
+    buf.sort_unstable_by(|a, b| item_cmp(a, b, cmp));
+
+    for (slot, item) in ids.iter_mut().zip(buf.iter()) {
+        *slot = item.node;
+    }
+}
+
+/// Like [`sort_keyed_seq`] with up to `threads` threads when `ids` has at least `par_min`
+/// entries: keys are computed and chunks sorted in parallel, then merged.
+pub(super) fn sort_keyed_par(
+    ids: &mut [u32],
+    threads: usize,
+    par_min: usize,
+    key: &(impl Fn(u32) -> Key + Sync),
+    cmp: &(impl Fn(u32, u32) -> Ordering + Sync),
+) {
+    if threads < 2 || ids.len() < par_min.max(2) {
+        sort_keyed_seq(ids, &mut Vec::new(), key, cmp);
+        return;
+    }
+
+    let len = ids.len();
+    let width = len.div_ceil(threads);
+    let mut items: Vec<Item> = Vec::with_capacity(len);
+    let item_cmp = &|a: &Item, b: &Item| item_cmp(a, b, cmp);
+
+    // Each thread keys and sorts its share of `ids`, written straight into the new memory.
+    crate::par::run_parts(
+        items
+            .spare_capacity_mut()
+            .chunks_mut(width)
+            .zip(ids.chunks(width)),
+        |(out, ids)| {
+            for (slot, &node) in out.iter_mut().zip(ids) {
+                let (hi, lo) = key(node);
+                slot.write(Item { hi, lo, node });
+            }
+            // SAFETY: every slot of `out` was just written, and `MaybeUninit<Item>` has the
+            // layout of `Item`.
+            let out = unsafe { &mut *(std::ptr::from_mut(out) as *mut [Item]) };
+            out.sort_unstable_by(item_cmp);
+        },
+    );
+
+    // SAFETY: the threads wrote the first `len` slots.
+    unsafe { items.set_len(len) };
+
+    merge_runs(&mut items, width, threads, item_cmp);
+
+    for (slot, item) in ids.iter_mut().zip(&items) {
+        *slot = item.node;
+    }
+}
+
+/// Sorts `ids` by `key`, then `cmp` for equal keys, with several threads for long inputs.
+/// `cmp` must be a total order and keys must agree with it: `key(a) < key(b)` implies
+/// `cmp(a, b) == Ordering::Less`. Equal keys carry no information.
+pub fn sort_keyed(
+    ids: &mut [u32],
+    threads: usize,
+    key: &(impl Fn(u32) -> Key + Sync),
+    cmp: &(impl Fn(u32, u32) -> Ordering + Sync),
+) {
+    sort_keyed_par(ids, threads, PAR_SORT_MIN, key, cmp);
+}
+
 /// Sorts `items` by `cmp` (an unstable sort: equal items may swap) with up to `threads` threads.
 /// Inputs shorter than `min_len`, and calls with one thread, sort on the calling thread without
 /// spawning anything.
@@ -22,11 +122,7 @@ where
     let width = len.div_ceil(threads);
     let cmp = &cmp;
 
-    std::thread::scope(|s| {
-        for chunk in items.chunks_mut(width) {
-            s.spawn(move || chunk.sort_unstable_by(cmp));
-        }
-    });
+    crate::par::run_parts(items.chunks_mut(width), |chunk| chunk.sort_unstable_by(cmp));
 
     merge_runs(items, width, threads, cmp);
 }
@@ -94,7 +190,14 @@ where
     for (pair, out) in src.chunks(2 * run).zip(dst.chunks_mut(2 * run)) {
         let (left, right) = pair.split_at(run.min(pair.len()));
         let cuts: Vec<(usize, usize)> = (0..=pieces)
-            .map(|k| co_rank(left, right, pair.len() * k / pieces, cmp))
+            .map(|k| {
+                co_rank(
+                    left,
+                    right,
+                    crate::par::split(pair.len(), pieces, k).start,
+                    cmp,
+                )
+            })
             .collect();
         let mut rest = out;
 
@@ -106,24 +209,8 @@ where
         }
     }
 
-    if jobs.len() == 1 {
-        for (left, right, out) in jobs {
-            merge_piece(left, right, out, cmp);
-        }
-        return;
-    }
-
-    std::thread::scope(|s| {
-        let mut jobs = jobs.into_iter();
-        let first = jobs.next();
-
-        for (left, right, out) in jobs {
-            s.spawn(move || merge_piece(left, right, out, cmp));
-        }
-
-        if let Some((left, right, out)) = first {
-            merge_piece(left, right, out, cmp);
-        }
+    crate::par::run_parts(jobs, |(left, right, out)| {
+        merge_piece(left, right, out, cmp);
     });
 }
 
@@ -194,6 +281,19 @@ mod test {
                 expected.sort_unstable();
                 sort_by(&mut items, threads, 0, Ord::cmp);
                 assert_eq!(items, expected, "len {len}, threads {threads}");
+            }
+        }
+    }
+
+    #[test]
+    fn keyed_sort_breaks_collisions_with_comparator() {
+        for len in [0_u32, 1, 2, 3, 31, 1001] {
+            let cmp = |a: u32, b: u32| (a / 7, a % 7).cmp(&(b / 7, b % 7));
+            let expected: Vec<u32> = (0..len).collect();
+            for threads in 1..=5 {
+                let mut ids: Vec<u32> = (0..len).rev().collect();
+                super::sort_keyed_par(&mut ids, threads, 0, &|i| (u64::from(i / 7), 0), &cmp);
+                assert_eq!(ids, expected, "len {len}, threads {threads}");
             }
         }
     }
