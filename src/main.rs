@@ -63,9 +63,9 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn Error>> {
     // Color is only ever used on a terminal unless forced; parse `LS_COLORS` while clap works.
-    if stdout().is_terminal() && std::env::var_os("LS_COLORS").is_some_and(|v| !v.is_empty()) {
-        styles::prefetch_ls_colors();
-    }
+    let prefetched = (stdout().is_terminal()
+        && std::env::var_os("LS_COLORS").is_some_and(|v| !v.is_empty()))
+    .then(styles::prefetch_ls_colors);
 
     let (ctx, roots) = Context::try_init()?;
 
@@ -74,7 +74,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let theme = styles::init(ctx.no_color());
+    let theme = styles::init(ctx.no_color(), prefetched);
 
     let indicator = Indicator::maybe_init(&ctx);
     let no_report = ctx.no_report;
