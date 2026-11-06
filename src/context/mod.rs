@@ -155,7 +155,8 @@ pub struct Context {
     #[arg(short = 'P', long)]
     pub prune: bool,
 
-    /// How to sort entries
+    /// How to sort entries; orders read outward from the root: bottom to top in the 'regular'
+    /// and 'flat' layouts, top to bottom in 'inverted' and 'iflat'
     #[arg(short, long, value_enum, default_value_t)]
     pub sort: sort::Type,
 
@@ -163,7 +164,7 @@ pub struct Context {
     #[arg(long, value_enum, default_value_t)]
     pub dir_order: dir::Order,
 
-    /// Number of threads to use; defaults to the number of available CPU cores (performance cores on macOS), as does 0; without this option the walk adds threads while it waits on the file system
+    /// Number of threads to use; defaults to the number of available CPU cores (performance cores on macOS), as does 0; on Linux, without this option the walk adds threads while it waits on the file system
     #[arg(short = 'T', long, default_value_t = Context::num_threads(), hide_default_value = true)]
     pub threads: usize,
 
@@ -223,8 +224,8 @@ pub struct Context {
     #[arg(long)]
     pub report_ignored: bool,
 
-    /// Print only the root and its total disk usage, like 'du -s'; same as '--level 0
-    /// --no-report' and overrides '--level'
+    /// Print only one line per root with its total disk usage, like 'du -s'; overrides
+    /// '--level'
     #[arg(long)]
     pub summarize: bool,
 

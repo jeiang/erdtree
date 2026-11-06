@@ -1,6 +1,6 @@
 //! Byte-level building blocks of the output: decimal numbers, padding, lossy names and prefetch
-//! hints. A leaf module, so the size formats, icons and tree columns use it without depending on
-//! the renderer.
+//! hints. A leaf module, so the size formats and the tree's columns and widths use it without
+//! depending on the renderer.
 
 use std::ffi::OsStr;
 
