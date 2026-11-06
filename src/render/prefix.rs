@@ -3,27 +3,80 @@
 
 use crate::{styles, tree::Tree};
 
-/// The pieces a prefix is made of.
-pub struct Glyphs {
+/// The pieces of one theme a prefix is made of.
+struct Set {
     /// Continues the line of an ancestor that has later siblings.
-    pub vt: Box<[u8]>,
+    vt: Box<[u8]>,
 
     /// Own glyph of a node that has later siblings.
-    pub vtrt: Box<[u8]>,
+    vtrt: Box<[u8]>,
 
-    /// Own glyph of the last sibling.
-    pub last: Box<[u8]>,
+    /// Own glyph of the last sibling with the root at the bottom.
+    drt: Box<[u8]>,
+
+    /// Own glyph of the last sibling with the root on top.
+    uprt: Box<[u8]>,
+}
+
+impl Set {
+    fn new(glyphs: &styles::Glyphs) -> Self {
+        let bytes = |s: &str| s.as_bytes().into();
+
+        Self {
+            vt: bytes(&glyphs.vt),
+            vtrt: bytes(&glyphs.vtrt),
+            drt: bytes(&glyphs.drt),
+            uprt: bytes(&glyphs.uprt),
+        }
+    }
+}
+
+/// The themes of the prefixes: the tree theme, and with `--follow` the link theme of symlinks
+/// and of everything below a symlink.
+pub struct Glyphs {
+    tree: Set,
+    link: Option<Set>,
+}
+
+impl Glyphs {
+    /// The glyphs of the current theme; `follow` adds the link theme.
+    pub fn new(follow: bool) -> Self {
+        let theme = styles::theme();
+
+        Self {
+            tree: Set::new(&theme.tree),
+            link: follow.then(|| Set::new(&theme.link)),
+        }
+    }
+
+    /// The set of the link theme if `link`, else of the tree theme.
+    const fn get(&self, link: bool) -> &Set {
+        match &self.link {
+            Some(set) if link => set,
+            _ => &self.tree,
+        }
+    }
+
+    /// Whether node `id` of `tree` is in the link theme, given whether its parent is: it is a
+    /// symlink or lies below one. Always `false` without the link theme.
+    fn inside(&self, tree: &Tree, id: u32, parent_inside: bool) -> bool {
+        self.link.is_some() && (parent_inside || tree.node(id).is_symlink())
+    }
 }
 
 /// Prefixes of consecutive rows share most of their bytes, so the cursor keeps the prefix of
 /// the ancestors of the last row and only changes its tail. A row's prefix is, for each ancestor
 /// below the root, outermost first, blank if the ancestor is the last of its siblings and a
-/// vertical line otherwise, then the glyph of the row itself. A fresh or stale cursor is always
-/// correct: ancestors are compared by identity.
+/// vertical line otherwise, then the glyph of the row itself; each piece is in the link theme
+/// if its node is a symlink or lies below one (the root never is). A fresh or stale cursor is
+/// always correct: ancestors are compared by identity.
 #[derive(Default)]
 pub struct Cursor {
     /// `chain[k]` is the ancestor at depth `k + 1`.
     chain: Vec<u32>,
+
+    /// `inside[k]` is whether `chain[k]` is in the link theme.
+    inside: Vec<bool>,
 
     /// `ends[k]` is the end of the segment of `chain[k]` in `bytes`.
     ends: Vec<usize>,
@@ -32,13 +85,15 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    /// Appends the prefix of node `id`, which is at `depth`, to `out`. The root has none.
+    /// Appends the prefix of node `id`, which is at `depth`, to `out`; `inverted` puts the root
+    /// on top. The root has none.
     pub fn write(
         &mut self,
         tree: &Tree,
         id: u32,
         depth: usize,
         glyphs: &Glyphs,
+        inverted: bool,
         out: &mut Vec<u8>,
     ) {
         if depth == 0 {
@@ -60,28 +115,39 @@ impl Cursor {
         }
 
         self.chain.truncate(cur_depth);
+        self.inside.truncate(cur_depth);
         self.ends.truncate(cur_depth);
         self.bytes
             .truncate(cur_depth.checked_sub(1).map_or(0, |k| self.ends[k]));
 
+        let mut inside = self.inside.last().copied().unwrap_or(false);
+
         for &ancestor in self.fresh.iter().rev() {
+            inside = glyphs.inside(tree, ancestor, inside);
             let segment = if tree.is_last(ancestor) {
                 styles::SEP.as_bytes()
             } else {
-                &glyphs.vt
+                &glyphs.get(inside).vt
             };
             self.chain.push(ancestor);
+            self.inside.push(inside);
             self.bytes.extend_from_slice(segment);
             self.ends.push(self.bytes.len());
         }
 
         // Deeper leftovers of an earlier row are not part of this prefix.
-        let upto = depth.checked_sub(2).map_or(0, |k| self.ends[k]);
+        let parent = depth - 1;
+        let upto = parent.checked_sub(1).map_or(0, |k| self.ends[k]);
+        let parent_inside = parent.checked_sub(1).is_some_and(|k| self.inside[k]);
+        let set = glyphs.get(glyphs.inside(tree, id, parent_inside));
+
         out.extend_from_slice(&self.bytes[..upto]);
-        out.extend_from_slice(if tree.is_last(id) {
-            &glyphs.last
+        out.extend_from_slice(if !tree.is_last(id) {
+            &set.vtrt
+        } else if inverted {
+            &set.uprt
         } else {
-            &glyphs.vtrt
+            &set.drt
         });
     }
 }

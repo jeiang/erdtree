@@ -1,19 +1,18 @@
-use crate::{context::Context, sync::unpoisoned, tree::Tree};
+use crate::{
+    context::{Context, layout},
+    sync::unpoisoned,
+    tree::Tree,
+};
 use row::{RowFmt, Scratch};
 use std::{
     collections::BTreeMap,
     io::{self, Write},
-    marker::PhantomData,
     ops::Range,
     sync::{Condvar, Mutex},
 };
 
 /// Truncation of ANSI escaped rows.
 mod ansi;
-
-/// Module containing all of the layout variants.
-pub mod layout;
-
 /// Directory paths of the flat layouts.
 pub mod paths;
 
@@ -23,84 +22,22 @@ pub mod prefix;
 /// Concerned with how to write a single row of the output.
 pub mod row;
 
-/// Utility module to fetch the appropriate theme used to paint the box-drawing characters of the
-/// output tree.
+/// Escape sequences of styles, and the styles of the long columns.
 pub mod theme;
 
 /// Concerned with how to construct the long output.
 #[cfg(unix)]
 pub mod long;
 
-/// The struct that is generic over T, which is generally expected to be a unit-struct that
-/// ultimately determines which variant to use for the output.
-pub struct Engine<T> {
-    ctx: Context,
-    tree: Tree,
-    layout: PhantomData<T>,
-}
-
-/// The flat output that is similar to `du`, without the ASCII tree.
-pub struct Flat;
-
-/// Same as [`Flat`] but the root is at the top of the output.
-pub struct FlatInverted;
-
-/// The tree output with the root directory at the bottom of the output.
-pub struct Regular;
-
-/// The tree output with the root directory at the top of the output. More like the traditional
-/// `tree` command.
-pub struct Inverted;
-
-/// An explicit list of tree rows: the node of each row and its box-drawing prefix. Computing it
-/// is sequential; tree layouts use it only for `--follow`, whose link theme depends on the rows
-/// before.
-pub struct Plan {
-    ids: Vec<u32>,
-    /// Concatenated prefixes; row `k` has `prefixes[prefix_end[k - 1]..prefix_end[k]]`.
-    prefixes: String,
-    prefix_end: Vec<usize>,
-}
-
-impl Plan {
-    /// A plan with room for `rows` rows.
-    pub fn with_capacity(rows: usize) -> Self {
-        Self {
-            ids: Vec::with_capacity(rows),
-            // Most prefixes are a few box-drawing segments of 3 to 9 bytes.
-            prefixes: String::with_capacity(rows * 24),
-            prefix_end: Vec::with_capacity(rows),
-        }
-    }
-
-    /// Adds a tree row whose prefix is the concatenation of `parts`.
-    pub fn push_with_prefix<'a>(&mut self, id: u32, parts: impl IntoIterator<Item = &'a str>) {
-        self.ids.push(id);
-        parts
-            .into_iter()
-            .for_each(|part| self.prefixes.push_str(part));
-        self.prefix_end.push(self.prefixes.len());
-    }
-
-    /// The prefix of row `k`.
-    fn prefix(&self, k: usize) -> &str {
-        let end = self.prefix_end[k];
-        let start = k.checked_sub(1).map_or(0, |p| self.prefix_end[p]);
-        &self.prefixes[start..end]
-    }
-}
-
 /// Which rows a layout prints, in order.
-pub enum Rows {
-    /// The shown nodes of the tree in pre-order, or reversed, with the prefixes worked out from
-    /// each row's ancestors. Rows deeper than the level are left out.
+enum Rows {
+    /// The shown nodes of the tree in pre-order with the root on top if `inverted`, else in
+    /// reverse pre-order with the root at the bottom, with the prefixes worked out from each
+    /// row's ancestors. Rows deeper than the level are left out.
     Tree {
-        reverse: bool,
+        inverted: bool,
         glyphs: prefix::Glyphs,
     },
-
-    /// The tree rows of a [`Plan`].
-    Prefixed(Plan),
 
     /// Flat rows of the nodes `ids`, each the path of its parent directory in `paths` and its
     /// name.
@@ -111,12 +48,26 @@ pub enum Rows {
 }
 
 impl Rows {
-    /// Flat rows of the nodes `ids`, whose paths are made from the directories of `tree` down to
-    /// `level`, found with `threads` threads.
-    pub fn flat(ids: Vec<u32>, tree: &Tree, level: usize, threads: usize) -> Self {
-        Self::Flat {
+    /// The rows of `tree` in the layout of `ctx`.
+    fn new(tree: &Tree, ctx: &Context) -> Self {
+        let flat = |ids| Self::Flat {
             ids,
-            paths: paths::DirPaths::new(tree, level, threads),
+            paths: paths::DirPaths::new(tree, ctx.level(), ctx.threads),
+        };
+        let tree_rows = |inverted| Self::Tree {
+            inverted,
+            glyphs: prefix::Glyphs::new(ctx.follow),
+        };
+
+        match ctx.layout {
+            layout::Type::Regular => tree_rows(false),
+            layout::Type::Inverted => tree_rows(true),
+            layout::Type::Iflat => flat(tree.flat_order(ctx)),
+            layout::Type::Flat => {
+                let mut ids = tree.flat_order(ctx);
+                ids.reverse();
+                flat(ids)
+            },
         }
     }
 
@@ -124,7 +75,6 @@ impl Rows {
     fn len(&self, tree: &Tree) -> usize {
         match self {
             Self::Tree { .. } => tree.order().len(),
-            Self::Prefixed(plan) => plan.ids.len(),
             Self::Flat { ids, .. } => ids.len(),
         }
     }
@@ -140,27 +90,16 @@ impl Rows {
         out: &mut Vec<u8>,
     ) {
         match self {
-            Self::Tree { reverse, glyphs } => {
+            Self::Tree { inverted, glyphs } => {
                 let order = tree.order();
                 let last = order.len().saturating_sub(1);
 
                 for k in positions {
-                    let id = order[if *reverse { last - k } else { k }];
-                    let depth = tree.node(id).depth();
+                    let id = order[if *inverted { k } else { last - k }];
 
-                    if depth <= level {
-                        fmt.tree_row(scratch, id, out, |cursor, out| {
-                            cursor.write(tree, id, depth, glyphs, out);
-                        });
+                    if tree.node(id).depth() <= level {
+                        fmt.tree_row(scratch, id, glyphs, *inverted, out);
                     }
-                }
-            },
-            Self::Prefixed(plan) => {
-                for k in positions {
-                    let prefix = plan.prefix(k);
-                    fmt.tree_row(scratch, plan.ids[k], out, |_, out| {
-                        out.extend_from_slice(prefix.as_bytes());
-                    });
                 }
             },
             Self::Flat { ids, paths } => {
@@ -193,12 +132,6 @@ fn prefetch_flat(ids: &[u32], paths: &paths::DirPaths, tree: &Tree, k: usize) {
     }
 }
 
-/// A layout decides which rows are printed, in which order, and with which prefixes.
-pub trait Layout {
-    /// The rows of `tree`.
-    fn rows(tree: &Tree, ctx: &Context) -> Rows;
-}
-
 /// Positions formatted per unit of work. A chunk of rows is a few hundred KB of output, which
 /// stays in the cache until it is written.
 const CHUNK: usize = 4096;
@@ -207,36 +140,23 @@ const CHUNK: usize = 4096;
 /// than formatting a few thousand rows.
 const INLINE_MAX: usize = 2 * CHUNK;
 
-impl<T: Layout> Engine<T> {
-    /// Writes every row, one per line. Rows are formatted in parallel and written in order.
-    pub fn write(&self, out: &mut impl Write) -> io::Result<()> {
-        let tree = &self.tree;
-        let rows = T::rows(tree, &self.ctx);
-        let fmt = RowFmt::new(tree, &self.ctx);
-        let level = self.ctx.level();
+/// Writes the rows of `tree` in the layout of `ctx`, one per line. Rows are formatted in
+/// parallel and written in order.
+pub fn write(tree: &Tree, ctx: &Context, out: &mut impl Write) -> io::Result<()> {
+    let rows = Rows::new(tree, ctx);
+    let fmt = RowFmt::new(tree, ctx);
+    let level = ctx.level();
 
-        write_chunked(
-            rows.len(tree),
-            self.ctx.threads,
-            CHUNK,
-            INLINE_MAX,
-            &|scratch: &mut Scratch, positions, buf: &mut Vec<u8>| {
-                rows.write_range(&fmt, tree, level, scratch, positions, buf);
-            },
-            out,
-        )
-    }
-}
-
-impl<T> Engine<T> {
-    /// Initializes a new [Engine].
-    pub const fn new(tree: Tree, ctx: Context) -> Self {
-        Self {
-            ctx,
-            tree,
-            layout: PhantomData,
-        }
-    }
+    write_chunked(
+        rows.len(tree),
+        ctx.threads,
+        CHUNK,
+        INLINE_MAX,
+        &|scratch: &mut Scratch, positions, buf: &mut Vec<u8>| {
+            rows.write_range(&fmt, tree, level, scratch, positions, buf);
+        },
+        out,
+    )
 }
 
 /// What the workers and the writer of [`write_chunked`] share.

@@ -159,10 +159,9 @@ impl Tree {
         let is_dir: Vec<bool> = cols.file_type.iter().map(|kind| kind.is_dir()).collect();
         let mut children = Children::from_runs(n, &std::mem::take(&mut cols.runs));
 
-        // Nothing is hidden by a filter, so the display order can stop at `--level`. The link
-        // theme of `--follow` is stateful and must see the entries below it, too.
+        // Nothing is hidden by a filter, so the display order can stop at `--level`.
         let filters = Filters::new(ctx);
-        let cap = if filters.any() || ctx.follow {
+        let cap = if filters.any() {
             u32::MAX
         } else {
             u32::try_from(ctx.level()).unwrap_or(u32::MAX)
@@ -479,7 +478,7 @@ impl Tree {
         if ctx.sort.is_name() || self.order.len() <= 1 {
             let mut ids = self.order.clone();
 
-            // The order is cut at the level unless a filter or `--follow` kept all of it.
+            // The order is cut at the level unless a filter kept all of it.
             if ix(self.shown_depth) > level {
                 ids.retain(|&i| ix(self.cols.depth[ix(i)]) <= level);
             }

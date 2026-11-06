@@ -1,6 +1,5 @@
-//! The parallel row writer must print exactly what a single thread prints, and the prefixes it
-//! works out per row must equal those of the sequential plan that `--follow` still uses (the
-//! two differ only for trees with symlinks, which these have none of).
+//! The parallel row writer must print exactly what a single thread prints, also with the link
+//! theme of `--follow`, which each worker works out from a row's ancestors.
 
 use std::{fs, path::Path, process::Command};
 use tempfile::TempDir;
@@ -115,32 +114,77 @@ fn zero_threads_print_the_same_as_one() {
     }
 }
 
+/// Workers that start in the middle of a followed directory, or of one below it, paint the
+/// same branches as one thread that saw every row before.
+#[cfg(unix)]
 #[test]
-fn prefixes_equal_those_of_the_sequential_plan() {
+fn follow_threads_print_the_same_as_one() {
+    use std::os::unix::fs::symlink;
+
     let dir = big_tree();
-    let root = dir.path().to_str().unwrap();
+    let root = dir.path();
+
+    // Links to whole top-level directories, one of them inside a linked directory, and links
+    // to a file and to nothing.
+    symlink("../top10", root.join("top3/lnk")).unwrap();
+    symlink("../top20", root.join("top17/lnk")).unwrap();
+    symlink("../top25", root.join("top10/lnk")).unwrap();
+    symlink("../top3/lnk", root.join("top33/lnk")).unwrap();
+    fs::write(root.join("file"), "x").unwrap();
+    symlink("../file", root.join("top5/flnk")).unwrap();
+    symlink("missing", root.join("top6/dangling")).unwrap();
+
+    let root = root.to_str().unwrap();
 
     for layout in [
-        &["-y", "inverted"][..],
         &[][..],
-        &["-L", "2"],
-        &["-y", "inverted", "-L", "4"],
+        &["-y", "inverted"],
+        &["-L", "3"],
+        &["-y", "inverted", "-L", "2"],
         &["--dirs-only"],
         &["--prune", "-p", "f1"],
         &["--min-size", "20"],
         &["-s", "rsize"],
     ] {
         for color in ["none", "force"] {
-            let mut args = vec!["--threads", "4", "-C", color];
+            let mut args = vec!["--follow", "-C", color];
             args.extend_from_slice(layout);
             args.push(root);
 
-            let cursor = erd(&args);
-            args.push("--follow");
-            let plan = erd(&args);
+            let one = erd(&[&["--threads", "1"], &args[..]].concat());
+            let four = erd(&[&["--threads", "4"], &args[..]].concat());
 
-            assert!(cursor == plan, "{layout:?} {color}");
+            assert!(one.iter().filter(|&&b| b == b'\n').count() > 100);
+            assert!(one == four, "{layout:?} {color}");
+
+            // Red is the color of the link theme.
+            if color == "force" {
+                assert!(one.windows(5).any(|w| w == b"\x1b[31m"), "{layout:?}");
+            }
         }
+    }
+}
+
+/// Without symlinks the link theme of `--follow` paints nothing.
+#[test]
+fn follow_without_links_prints_the_tree_theme() {
+    let dir = big_tree();
+    let root = dir.path().to_str().unwrap();
+
+    for layout in [
+        &[][..],
+        &["-y", "inverted"],
+        &["-L", "2"],
+        &["--prune", "-p", "f1"],
+    ] {
+        let mut args = vec!["--threads", "4", "-C", "force"];
+        args.extend_from_slice(layout);
+        args.push(root);
+
+        let plain = erd(&args);
+        args.push("--follow");
+
+        assert!(plain == erd(&args), "{layout:?}");
     }
 }
 

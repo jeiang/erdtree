@@ -1,52 +1,6 @@
-use crate::{styles, tree::node::Node};
+#[cfg(unix)]
+use crate::styles;
 use nu_ansi_term::Style;
-
-/// Tracks whether a node lies below a followed symlink, whose branches use the link theme.
-pub struct LinkTracker {
-    depth: Option<usize>,
-}
-
-/// The pieces of the prefixes of the tree theme; `inverted` selects the glyph of a last sibling
-/// of the layout with the root on top.
-pub fn prefix_glyphs(inverted: bool) -> super::prefix::Glyphs {
-    let glyphs = &styles::theme().tree;
-    let bytes = |s: &str| s.as_bytes().into();
-
-    super::prefix::Glyphs {
-        vt: bytes(&glyphs.vt),
-        vtrt: bytes(&glyphs.vtrt),
-        last: bytes(if inverted { &glyphs.uprt } else { &glyphs.drt }),
-    }
-}
-
-impl LinkTracker {
-    pub const fn new() -> Self {
-        Self { depth: None }
-    }
-
-    /// Whether `node` gets the link theme: it is a symlink or lies below a followed symlinked
-    /// directory. Nodes must arrive in render order: pre-order, or the reverse pre-order of the
-    /// regular layout, where a directory's `End` edge precedes its descendants. Either way, the
-    /// first node no deeper than the followed directory after it leaves its subtree.
-    pub fn is_link(&mut self, node: Node<'_>) -> bool {
-        let current_depth = node.depth();
-
-        if let Some(ldepth) = self.depth
-            && current_depth <= ldepth
-        {
-            self.depth = None;
-        }
-
-        if self.depth.is_some() || node.is_symlink() {
-            if node.is_dir() && self.depth.is_none() {
-                self.depth = Some(current_depth);
-            }
-            true
-        } else {
-            false
-        }
-    }
-}
 
 /// The escape sequences that open and close `style`, built once so that painting a string is
 /// two copies around it.
