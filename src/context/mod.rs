@@ -4,20 +4,16 @@ use super::disk_usage::{
     units::PrefixKind,
 };
 
-use crate::walk::Entry;
 use clap::{
     CommandFactory, FromArgMatches, Parser, ValueEnum, error::ErrorKind, parser::ValueSource,
 };
 use color::Coloring;
 use error::Error;
-use ignore::overrides::{Override, OverrideBuilder};
-use regex::Regex;
 use std::{
-    borrow::Borrow,
     convert::From,
     io::{IsTerminal, stdout},
     num::NonZeroUsize,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::OnceLock,
     thread::available_parallelism,
 };
@@ -58,6 +54,7 @@ pub mod time;
 #[command(version)]
 #[command(about = "erdtree (erd) is a cross-platform, multi-threaded, and general purpose filesystem and disk usage utility.", long_about = None)]
 pub struct Context {
+    // `Context::try_init` moves the roots out and returns them beside the options.
     /// Directories to traverse, each shown as its own tree; defaults to current working directory
     dir: Vec<PathBuf>,
 
@@ -261,18 +258,23 @@ pub struct Context {
     /// Whether `NO_COLOR` is set to a non-empty value (<https://no-color.org>).
     #[clap(skip)]
     pub no_color_env: bool,
-
-    /// Canonical form of the root, computed on first use by [`Context::dir_canonical`].
-    #[clap(skip)]
-    canonical_dir: OnceLock<PathBuf>,
 }
 
 impl Context {
     /// Initializes [Context], optionally reading in the configuration file to override defaults.
-    /// Arguments provided will take precedence over config.
-    pub fn try_init() -> Result<Self, Error> {
+    /// Arguments provided will take precedence over config. Also returns the root directories,
+    /// in command-line order; the current directory when none is given.
+    pub fn try_init() -> Result<(Self, Vec<PathBuf>), Error> {
         let no_color_env = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
-        args::compute_args().and_then(|args| Self::from_merged(args, no_color_env))
+        let mut ctx =
+            args::compute_args().and_then(|args| Self::from_merged(args, no_color_env))?;
+
+        let mut roots = std::mem::take(&mut ctx.dir);
+        if roots.is_empty() {
+            roots.push(PathBuf::from("."));
+        }
+
+        Ok((ctx, roots))
     }
 
     /// Builds [Context] from the merged command-line and config matches.
@@ -326,48 +328,6 @@ impl Context {
         }
     }
 
-    /// Returns [Path] of the root directory to be traversed.
-    pub fn dir(&self) -> &Path {
-        self.dir
-            .first()
-            .map_or_else(|| Path::new("."), PathBuf::as_path)
-    }
-
-    /// One [Context] per root directory given on the command line, in order.
-    pub fn split_roots(self) -> Vec<Self> {
-        if self.dir.len() <= 1 {
-            return vec![self];
-        }
-
-        self.dir
-            .iter()
-            .map(|dir| Self {
-                dir: vec![dir.clone()],
-                canonical_dir: OnceLock::new(),
-                ..self.clone()
-            })
-            .collect()
-    }
-
-    /// Returns canonical [Path] of the root directory to be traversed. The filesystem is asked
-    /// once per [`Context`]; the root itself is used when it cannot be canonicalized.
-    pub fn dir_canonical(&self) -> &Path {
-        self.canonical_dir.get_or_init(|| {
-            std::fs::canonicalize(self.dir()).unwrap_or_else(|_| self.dir().to_path_buf())
-        })
-    }
-
-    /// Canonicalizes the root like [`Self::dir_canonical`], but reports a failure instead of
-    /// falling back. A success is cached, so that the walk and its filters ask the filesystem
-    /// once.
-    pub fn try_dir_canonical(&self) -> std::io::Result<&Path> {
-        if let Some(dir) = self.canonical_dir.get() {
-            return Ok(dir);
-        }
-        let dir = std::fs::canonicalize(self.dir())?;
-        Ok(self.canonical_dir.get_or_init(|| dir))
-    }
-
     /// The max depth to print. Note that all directories are fully traversed to compute file
     /// sizes; this just determines how much to print.
     pub fn level(&self) -> usize {
@@ -389,74 +349,6 @@ impl Context {
     /// Which `FileType` to filter on; defaults to regular file.
     pub fn file_type(&self) -> file::Type {
         self.file_type.unwrap_or_default()
-    }
-
-    /// Whether `--include` is given without `--hidden`. Hidden entries are then filtered by the
-    /// [`EntryFilter`] instead of the walker's own hidden-entry filter, which cannot make
-    /// exceptions.
-    pub const fn include_hidden(&self) -> bool {
-        !self.hidden && !self.include.is_empty()
-    }
-
-    /// The filter applied to each walked entry for `--include` (see [`Self::include_hidden`]),
-    /// `--pattern` and `--file-type`; `None` when there is nothing to filter.
-    pub fn entry_filter(&self) -> Result<Option<EntryFilter>, Error> {
-        let include = if self.include_hidden() {
-            let mut builder = OverrideBuilder::new(self.dir_canonical());
-
-            for glob in &self.include {
-                builder.add(glob.trim_start_matches('!'))?;
-            }
-
-            Some(builder.build()?)
-        } else {
-            None
-        };
-
-        let pattern = match self.pattern.as_deref() {
-            None => None,
-            Some(glob) if self.glob || self.iglob => {
-                let mut builder = OverrideBuilder::new(self.dir_canonical());
-
-                if self.iglob {
-                    builder.case_insensitive(true)?;
-                }
-
-                let trim = glob.trim_start();
-                let negated = trim.starts_with('!');
-                builder.add(trim.trim_start_matches('!'))?;
-
-                Some(Pattern::Glob {
-                    ovr: builder.build()?,
-                    negated,
-                })
-            },
-            Some(re) => Some(Pattern::Regex(Regex::new(re)?)),
-        };
-
-        if include.is_none() && pattern.is_none() {
-            return Ok(None);
-        }
-
-        Ok(Some(EntryFilter {
-            include,
-            pattern: pattern.map(|pattern| (pattern, self.file_type())),
-        }))
-    }
-
-    /// Special override to toggle the visibility of the git directory and to apply `--exclude`.
-    pub fn no_git_override(&self) -> Result<Override, Error> {
-        let mut builder = OverrideBuilder::new(self.dir_canonical());
-
-        if self.no_git {
-            builder.add("!.git")?;
-        }
-
-        for glob in &self.exclude {
-            builder.add(&format!("!{}", glob.trim_start_matches('!')))?;
-        }
-
-        Ok(builder.build()?)
     }
 
     /// The number of threads used by default and for `--threads 0`: the available parallelism,
@@ -499,84 +391,5 @@ impl Context {
     #[cfg(not(target_os = "macos"))]
     const fn performance_cores() -> Option<usize> {
         None
-    }
-}
-
-/// What `--pattern` matches: a regular expression against entry names, or a glob (rooted at
-/// the root, optionally negated with a leading `!`) against entry paths.
-enum Pattern {
-    Regex(Regex),
-    Glob { ovr: Override, negated: bool },
-}
-
-impl Pattern {
-    /// Does the entry itself match: its name for a regex, its path for a glob?
-    fn leaf(&self, entry: &Entry<'_>) -> bool {
-        match self {
-            Self::Regex(re) => re.is_match(&entry.file_name().to_string_lossy()),
-            Self::Glob { ovr, negated } => {
-                ovr.matched(entry.path(), false).is_whitelist() != *negated
-            },
-        }
-    }
-
-    /// Does any component of the entry's path below the root, after dropping the last `skip`,
-    /// match? A negated glob holds when none does. An entry at depth `d` has `d` components
-    /// below the root.
-    fn ancestors(&self, entry: &Entry<'_>, skip: usize) -> bool {
-        let mut below_root = entry
-            .path()
-            .components()
-            .rev()
-            .take(entry.depth())
-            .skip(skip);
-
-        match self {
-            Self::Regex(re) => {
-                below_root.any(|c| re.is_match(c.as_os_str().to_string_lossy().borrow()))
-            },
-            Self::Glob { ovr, negated } => {
-                below_root.any(|c| ovr.matched(c, false).is_whitelist()) != *negated
-            },
-        }
-    }
-}
-
-/// Decides which walked entries are kept; built by [`Context::entry_filter`].
-pub struct EntryFilter {
-    /// With [`Context::include_hidden`]: the `--include` globs, which hidden entries must match.
-    include: Option<Override>,
-    /// `--pattern` and `--file-type`.
-    pattern: Option<(Pattern, file::Type)>,
-}
-
-impl EntryFilter {
-    /// Whether `entry` is kept (and, for a directory, descended into). With `--file-type dir`, an
-    /// entry is kept when it or a directory above it (below the root) matches. Otherwise
-    /// directories are always kept, since matched files are bridged back to the root through
-    /// them; empty directories are pruned later by [`Tree`].
-    ///
-    /// [`Tree`]: crate::tree::Tree
-    pub fn keep(&self, entry: &Entry<'_>) -> bool {
-        let kind = entry.file_type();
-
-        if let Some(include) = &self.include
-            && entry.is_hidden()
-            && !include.matched(entry.path(), kind.is_dir()).is_whitelist()
-        {
-            return false;
-        }
-
-        let Some((pattern, file_type)) = &self.pattern else {
-            return true;
-        };
-
-        match file_type {
-            file::Type::Dir => pattern.ancestors(entry, usize::from(!kind.is_dir())),
-            _ if kind.is_dir() => true,
-            file::Type::File if !kind.is_file() => false,
-            file::Type::Link if !kind.is_symlink() => false,
-            _ => pattern.leaf(entry),
-        }
     }
 }

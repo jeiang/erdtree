@@ -1,7 +1,5 @@
 use super::config::error::Error as TomlError;
 use clap::{Error as ClapError, parser::MatchesError};
-use ignore::Error as IgnoreError;
-use regex::Error as RegexError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -10,12 +8,6 @@ pub enum Error {
 
     #[error("A configuration file was found but failed to parse: {0}")]
     Config(ClapError),
-
-    #[error("{0}")]
-    IgnoreError(#[from] IgnoreError),
-
-    #[error("{0}")]
-    InvalidRegularExpression(#[from] RegexError),
 
     #[error("{0}")]
     Toml(#[from] TomlError),

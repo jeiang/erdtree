@@ -89,7 +89,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         styles::prefetch_ls_colors();
     }
 
-    let ctx = Context::try_init()?;
+    let (ctx, roots) = Context::try_init()?;
 
     if let Some(shell) = ctx.completions {
         clap_complete::generate(shell, &mut Context::command(), "erd", &mut stdout());
@@ -109,18 +109,18 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut trees = vec![];
 
     // On an error return, dropping `indicator` restores the terminal before the error is printed.
-    for ctx in ctx.split_roots() {
-        let tree = Tree::try_init(&ctx, indicator.as_ref().map(IndicatorHandle::indexed))?;
-        trees.push((tree, ctx));
+    for root in &roots {
+        let tree = Tree::try_init(&ctx, root, indicator.as_ref().map(IndicatorHandle::indexed))?;
+        trees.push(tree);
     }
 
-    if !roots_only && trees.iter().all(|(tree, _)| tree.is_stump()) {
+    if !roots_only && trees.iter().all(Tree::is_stump) {
         return Err(Box::new(tree::error::Error::NoMatches));
     }
 
-    let file_count = trees.iter().fold(FileCount::default(), |acc, (tree, _)| {
-        acc + tree.file_count()
-    });
+    let file_count = trees
+        .iter()
+        .fold(FileCount::default(), |acc, tree| acc + tree.file_count());
 
     // Rows are streamed to stdout, so the indicator must be gone first.
     if let Some(progress) = indicator {
@@ -131,9 +131,9 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     // Every rendered tree ends in a newline, so the "\n" separator leaves a blank line between
     // trees.
-    let roots = trees.len();
+    let count = trees.len();
 
-    for (k, (tree, ctx)) in trees.into_iter().enumerate() {
+    for (k, tree) in trees.into_iter().enumerate() {
         if k > 0 {
             out.write_all(separator.as_bytes())?;
         }
@@ -141,7 +141,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
         // The last tree is not freed: the process ends soon after, and returning its memory to
         // the allocator page by page is wasted time.
-        if k + 1 == roots {
+        if k + 1 == count {
             std::mem::forget(tree);
         }
         written?;
