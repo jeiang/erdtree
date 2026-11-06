@@ -1,10 +1,7 @@
-use crate::{disk_usage::units::PREFIXES, sync::unpoisoned};
+use crate::disk_usage::units::PREFIXES;
 use lscolors::LsColors;
 use nu_ansi_term::{Color, Style};
-use std::{
-    sync::{Mutex, OnceLock},
-    thread::JoinHandle,
-};
+use std::{sync::OnceLock, thread::JoinHandle};
 
 /// `LS_COLORS` style of a directory entry.
 pub mod entry;
@@ -100,15 +97,16 @@ impl Glyphs {
 }
 
 /// The theme of the run, kept for the whole process (walk workers hold its `LS_COLORS`); the
-/// first call builds it. If `plain`, output has no color and `LS_COLORS` is not read.
-pub fn init(plain: bool) -> &'static Theme {
+/// first call builds it. If `plain`, output has no color and `LS_COLORS` is not read; otherwise
+/// it comes from `prefetched` if given (see [`prefetch_ls_colors`]).
+pub fn init(plain: bool, prefetched: Option<LsPrefetch>) -> &'static Theme {
     static THEME: OnceLock<Theme> = OnceLock::new();
 
-    THEME.get_or_init(|| build(plain))
+    THEME.get_or_init(|| build(plain, prefetched))
 }
 
 /// A new theme, plain or in color.
-fn build(plain: bool) -> Theme {
+fn build(plain: bool, prefetched: Option<LsPrefetch>) -> Theme {
     #[cfg(windows)]
     let _ = nu_ansi_term::enable_ansi_support();
 
@@ -123,7 +121,7 @@ fn build(plain: bool) -> Theme {
             tree: Glyphs::new(Some(Color::Purple)),
             link: Glyphs::new(Some(Color::Red)),
             colors: Some(Colors {
-                ls: ls_colors(),
+                ls: ls_colors(prefetched),
                 du: [
                     Color::Cyan.bold(),
                     Color::Yellow.bold(),
@@ -147,23 +145,20 @@ fn build(plain: bool) -> Theme {
     }
 }
 
-/// Reads the `LS_COLORS` environment variable, or takes the result of [`prefetch_ls_colors`]. If
-/// it isn't set, a default determined by `lscolors` crate is used.
-fn ls_colors() -> LsColors {
-    let handle = unpoisoned(PREFETCH.lock()).take();
-    let prefetched = handle.and_then(|handle| handle.join().ok());
-
+/// Takes the result of `prefetched`, or reads the `LS_COLORS` environment variable when there is
+/// none or its thread failed. If it isn't set, a default determined by `lscolors` crate is used.
+fn ls_colors(prefetched: Option<LsPrefetch>) -> LsColors {
     prefetched
+        .and_then(|LsPrefetch(handle)| handle.join().ok())
         .unwrap_or_else(LsColors::from_env)
         .unwrap_or_default()
 }
 
-/// A helper thread started by [`prefetch_ls_colors`].
-static PREFETCH: Mutex<Option<JoinHandle<Option<LsColors>>>> = Mutex::new(None);
+/// A helper thread parsing `LS_COLORS`, started by [`prefetch_ls_colors`].
+pub struct LsPrefetch(JoinHandle<Option<LsColors>>);
 
 /// Starts parsing `LS_COLORS` on a helper thread so that it overlaps with argument parsing; a
-/// large `LS_COLORS` takes milliseconds to parse. [`init`] picks up the result, and parses on
-/// the calling thread when this was not called or the thread failed.
-pub fn prefetch_ls_colors() {
-    *unpoisoned(PREFETCH.lock()) = Some(std::thread::spawn(LsColors::from_env));
+/// large `LS_COLORS` takes milliseconds to parse. [`init`] takes the result.
+pub fn prefetch_ls_colors() -> LsPrefetch {
+    LsPrefetch(std::thread::spawn(LsColors::from_env))
 }
