@@ -10,10 +10,7 @@ use super::{
 use crate::{
     bytes::{push_lossy, push_str_padded, push_u64_padded},
     context::Context,
-    disk_usage::{
-        file_size::byte,
-        units::{PREFIXES, PrefixKind},
-    },
+    disk_usage::{file_size::byte, units::PREFIXES},
     icons::{self, fs::Paint},
     styles::{Colors, Theme},
     tree::{
@@ -33,11 +30,6 @@ struct Size {
     format: SizeFormat,
     width: usize,
     unit_width: usize,
-    /// Whether sizes are block counts, colored by the prefix of their size in bytes.
-    #[cfg(unix)]
-    blocks: bool,
-    /// The prefix kind that picks the colors of sizes, by the closest prefix.
-    unit: PrefixKind,
 
     placeholder_esc: Option<Esc>,
 
@@ -46,21 +38,15 @@ struct Size {
 }
 
 impl Size {
-    /// The size column of `ctx` with `widths` and `colors`, if there is one: only if some row
-    /// has a size.
-    fn new(ctx: &Context, widths: &Widths, colors: Option<&Colors>) -> Option<Self> {
+    /// The size column with `widths` and `colors`, if there is one: only if some row has a
+    /// size.
+    fn new(widths: &Widths, colors: Option<&Colors>) -> Option<Self> {
         let format = widths.size_format?;
 
         Some(Self {
             format,
             width: widths.max_size_width,
             unit_width: widths.max_size_unit_width,
-            #[cfg(unix)]
-            blocks: matches!(
-                ctx.disk_usage,
-                crate::disk_usage::file_size::DiskUsage::Block
-            ),
-            unit: ctx.unit,
             placeholder_esc: colors.map(|colors| Esc::new(colors.placeholder)),
             du: colors.map(|colors| colors.du.map(Esc::new)),
         })
@@ -69,8 +55,10 @@ impl Size {
     /// Width of the size column: the number, then a space and the unit for byte metrics.
     const fn column_width(&self) -> usize {
         match self.format {
-            SizeFormat::Human(_) | SizeFormat::Bytes => self.width + 1 + self.unit_width,
+            SizeFormat::Human(_) | SizeFormat::Bytes(_) => self.width + 1 + self.unit_width,
             SizeFormat::Count => self.width,
+            #[cfg(unix)]
+            SizeFormat::Blocks(_) => self.width,
         }
     }
 
@@ -87,35 +75,30 @@ impl Size {
         let unit_esc = |index: usize| self.du.as_ref().map(|du| &du[index]);
 
         let metric = match self.format {
-            SizeFormat::Human(unit) => Some(byte::Metric::new(unit, true)),
-            SizeFormat::Bytes => Some(byte::Metric::new(self.unit, false)),
-            SizeFormat::Count => None,
+            SizeFormat::Human(unit) => byte::Metric::new(unit, true),
+            SizeFormat::Bytes(unit) => byte::Metric::new(unit, false),
+            // Counts take the color of bytes, except blocks, which take that of their size in
+            // bytes.
+            SizeFormat::Count => return self.write_count(out, value, unit_esc(0)),
+            #[cfg(unix)]
+            SizeFormat::Blocks(unit) => {
+                let index = unit.index_of(value * Stat::BLOCK_BYTES);
+                return self.write_count(out, value, unit_esc(index));
+            },
         };
 
-        if let Some(metric) = metric {
-            let mut buf = [0; 32];
-            let (number, unit, index) = metric.parts(value, &mut buf);
-            paint(out, unit_esc(index), |out| {
-                push_str_padded(out, number, self.width);
-                out.push(b' ');
-                push_str_padded(out, unit, self.unit_width);
-            });
-            return;
-        }
-
-        // Counts take the color of bytes, except blocks, which take that of their size in bytes.
-        #[cfg(unix)]
-        let index = if self.blocks {
-            self.unit.index_of(value * Stat::BLOCK_BYTES)
-        } else {
-            0
-        };
-        #[cfg(not(unix))]
-        let index = 0;
-
+        let mut buf = [0; 32];
+        let (number, unit, index) = metric.parts(value, &mut buf);
         paint(out, unit_esc(index), |out| {
-            push_u64_padded(out, value, self.width);
+            push_str_padded(out, number, self.width);
+            out.push(b' ');
+            push_str_padded(out, unit, self.unit_width);
         });
+    }
+
+    /// `value` as a count without a unit, in `esc`.
+    fn write_count(&self, out: &mut Vec<u8>, value: u64, esc: Option<&Esc>) {
+        paint(out, esc, |out| push_u64_padded(out, value, self.width));
     }
 }
 
@@ -159,7 +142,7 @@ impl<'a> RowFmt<'a> {
                 .then(terminal_size::terminal_size)
                 .flatten()
                 .map(|(width, _)| usize::from(width.0)),
-            size: Size::new(ctx, tree.widths(), colors),
+            size: Size::new(tree.widths(), colors),
             link_arrow: colors.map(|colors| Esc::new(colors.link_arrow)),
             #[cfg(unix)]
             long: ctx

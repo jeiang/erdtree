@@ -22,7 +22,7 @@ use std::{
     sync::atomic::AtomicU64,
 };
 use topo::Children;
-use widths::{Scope, Stats, Widths};
+use widths::{Scope, SizeFormat, Stats, Widths};
 
 pub mod columns;
 pub mod id;
@@ -189,18 +189,25 @@ impl Tree {
 
         // Entries hidden by `--min-size` must not widen the size columns, so then the widths
         // wait for the filters.
-        let stats = tree.sort_children(ctx, &mut children, filters.min_size.is_none(), threads);
+        let format = SizeFormat::new(ctx);
+        let stats = tree.sort_children(
+            ctx,
+            format,
+            &mut children,
+            filters.min_size.is_none(),
+            threads,
+        );
         let shown = tree.filter_and_order(&children, &is_dir, filters, threads);
-        let stats = stats.unwrap_or_else(|| tree.scan(ctx, Scope::Shown(&shown), threads));
+        let stats = stats.unwrap_or_else(|| tree.scan(ctx, format, Scope::Shown(&shown), threads));
 
         #[cfg(unix)]
         {
             tree.owners = Owners::resolve(stats.owners());
-            tree.widths = Widths::new(ctx, &stats, &tree.owners);
+            tree.widths = Widths::new(ctx, format, &stats, &tree.owners);
         }
         #[cfg(not(unix))]
         {
-            tree.widths = Widths::new(ctx, &stats);
+            tree.widths = Widths::new(ctx, format, &stats);
         }
 
         Ok(tree)
@@ -272,11 +279,12 @@ impl Tree {
     }
 
     /// Sorts the child lists of the directories shown (down to the display level), and with
-    /// `scan` also returns the width facts of every node. The widths do not depend on the
-    /// order, so large trees find them while the lists are sorted.
+    /// `scan` also returns the width facts of every node for sizes in `format`. The widths do
+    /// not depend on the order, so large trees find them while the lists are sorted.
     fn sort_children(
         &self,
         ctx: &Context,
+        format: SizeFormat,
         children: &mut Children,
         scan: bool,
         threads: usize,
@@ -286,7 +294,7 @@ impl Tree {
         let overlap = scan && self.cols.len() >= OVERLAP_MIN && threads > 1;
 
         std::thread::scope(|s| {
-            let job = overlap.then(|| s.spawn(|| self.scan(ctx, Scope::All, 1)));
+            let job = overlap.then(|| s.spawn(|| self.scan(ctx, format, Scope::All, 1)));
 
             children.sort_each(
                 threads,
@@ -296,7 +304,7 @@ impl Tree {
             );
 
             job.map_or_else(
-                || scan.then(|| self.scan(ctx, Scope::All, threads)),
+                || scan.then(|| self.scan(ctx, format, Scope::All, threads)),
                 |job| Some(job.join().unwrap_or_else(|e| std::panic::resume_unwind(e))),
             )
         })
