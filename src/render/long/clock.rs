@@ -141,9 +141,9 @@ impl Clock {
     }
 }
 
-/// Appends the fields of `local`, which is `offset` seconds east of UTC, for the formats
-/// `%d %h %H:%M %g`, `%Y-%m-%d %H:%M:%S`, `%Y-%m-%d` and `%Y-%m-%dT%H:%M:%S%Z` (which chrono
-/// shows as `+HH:MM`); returns `false`, writing nothing, for an offset with seconds.
+/// Appends the fields of `local`, which is `offset` seconds east of UTC, as
+/// [`Format::pattern`] gives them (`%Z` of `iso-strict` shows as `+HH:MM`); returns `false`,
+/// writing nothing, for an offset with seconds.
 fn write_fields(out: &mut Vec<u8>, local: &NaiveDateTime, offset: i32, format: Format) -> bool {
     const MONTHS: [&[u8; 3]; 12] = [
         b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov",
@@ -212,11 +212,11 @@ mod test {
     use chrono::{FixedOffset, NaiveDate, NaiveTime};
     use std::time::Duration;
 
-    const FORMATS: [(Format, &str); 4] = [
-        (Format::Default, "%d %h %H:%M %g"),
-        (Format::Iso, "%Y-%m-%d %H:%M:%S"),
-        (Format::Short, "%Y-%m-%d"),
-        (Format::IsoStrict, "%Y-%m-%dT%H:%M:%S%Z"),
+    const FORMATS: [Format; 4] = [
+        Format::Default,
+        Format::Iso,
+        Format::Short,
+        Format::IsoStrict,
     ];
 
     /// A zone with two changes a year, at half past midnight UTC, so that an hour contains each.
@@ -261,13 +261,13 @@ mod test {
                 .unwrap()
                 .with_timezone(&FixedOffset::east_opt(offset).unwrap());
 
-            for (format, chrono_format) in FORMATS {
+            for format in FORMATS {
                 let mut out = vec![];
                 assert!(clock.write_with(&mut out, time, format, zone));
                 assert_eq!(
                     String::from_utf8(out).unwrap(),
-                    expected.format(chrono_format).to_string(),
-                    "{s} {chrono_format}"
+                    expected.format(format.pattern()).to_string(),
+                    "{s} {format:?}"
                 );
             }
         }
@@ -278,7 +278,6 @@ mod test {
     #[test]
     fn iso_strict_offsets_match_chrono() {
         let mut clock = Clock::default();
-        let format = "%Y-%m-%dT%H:%M:%S%Z";
 
         for (n, offset) in [
             0, 3600, -3600, 19_800, -12_600, 20_700, -43_200, 50_400, 1, -17_762,
@@ -291,7 +290,7 @@ mod test {
             let expected = DateTime::from_timestamp(secs, 0)
                 .unwrap()
                 .with_timezone(&FixedOffset::east_opt(offset).unwrap())
-                .format(format)
+                .format(Format::IsoStrict.pattern())
                 .to_string();
             let mut out = vec![];
             let done = clock.write_with(&mut out, time, Format::IsoStrict, |_| offset);
