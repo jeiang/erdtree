@@ -113,12 +113,25 @@
 
       checks = lib.mapAttrs (_: s: s.checks) systems;
 
-      devShells = lib.mapAttrs (_: s: {
-        default = (s.craneLib.overrideToolchain s.devToolchain).devShell {
-          # Build inputs of every check, so `cargo` sees the same environment.
-          inherit (s) checks;
-        };
-      }) systems;
+      devShells = lib.mapAttrs (
+        system: s:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = (s.craneLib.overrideToolchain s.devToolchain).devShell {
+            # Build inputs of every check, so `cargo` sees the same environment.
+            inherit (s) checks;
+            # Language servers for local editing; rust-analyzer comes from devToolchain.
+            packages = [
+              pkgs.nixd
+              pkgs.bash-language-server
+              pkgs.basedpyright
+              pkgs.taplo
+            ];
+          };
+        }
+      ) systems;
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt);
     };
